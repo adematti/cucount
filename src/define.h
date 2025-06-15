@@ -1,0 +1,95 @@
+#include <stdlib.h>
+
+#ifndef _CUCOUNT_DEFINE_
+#define _CUCOUNT_DEFINE_
+
+#define FLOAT double
+#define NDIM 3
+
+#define MAX(a, b) (((a) > (b)) ? (a) : (b))  // maximum of two numbers
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))  // minimum of two numbers
+#define CLIP(x, low, high)  (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))  // min(max(a, low), high)
+#define MAX_NMESH 3  // 3-pt correlation function at maximum
+
+// Global variable to define the logging level
+extern LogLevel global_log_level;
+
+// Logging levels
+typedef enum {LOG_LEVEL_DEBUG, LOG_LEVEL_INFO, LOG_LEVEL_WARN, LOG_LEVEL_ERROR} LogLevel;
+
+extern void log_message(LogLevel level, const char *format, ...);
+
+typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
+typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE} VAR_TYPE;
+
+
+typedef struct {
+    size_t size;
+    size_t total_nparticles;
+    size_t *nparticles;
+    size_t *cumnparticles;
+    FLOAT *spositions;
+    FLOAT *positions;
+    FLOAT *weights;
+} Mesh;
+
+
+// Particles
+typedef struct {
+    size_t nparticles;
+    FLOAT *spositions;  // positions on the sphere
+    FLOAT *positions;
+    FLOAT *weights;
+} Particles; // Particles
+
+
+typedef struct {
+    size_t nbins;
+    FLOAT min, max, step;
+    VAR_TYPE var;
+} BinAttrs;
+
+
+typedef struct {
+    FLOAT min = 0., max = 0.;
+    FLOAT smin = 0., smax = 0.;
+    VAR_TYPE var = VAR_NONE;
+} SelectionAttrs;
+
+
+typedef struct {
+    size_t ellmax = 0;
+} PoleAttrs;
+
+
+typedef struct {
+    size_t meshsize[NDIM] = {0.};
+    FLOAT boxsize[NDIM] = {0.};
+    FLOAT boxcenter[NDIM] = {0.};
+    FLOAT sepmax = -1.;
+    MESH_TYPE type;
+} MeshAttrs;
+
+
+// Wrapper for calloc with error handling
+void* my_calloc(size_t num, size_t size) {
+    void* ptr = calloc(num, size);
+    if (!ptr) {
+        log_message(LOG_LEVEL_ERROR, "Memory allocation failed in my_calloc for %zu elements of size %zu.", num, size);
+        exit(EXIT_FAILURE); // Exit the program on allocation failure
+    }
+    return ptr;
+}
+
+// Wrapper for malloc with error handling
+void* my_malloc(size_t size) {
+    void* ptr = malloc(size);
+    if (!ptr) {
+        log_message(LOG_LEVEL_ERROR, "Memory allocation failed in my_malloc for size %zu.", size);
+        exit(EXIT_FAILURE); // Exit the program on allocation failure
+    }
+    return ptr;
+}
+
+
+#endif //_CUCOUNT_DEFINE_
