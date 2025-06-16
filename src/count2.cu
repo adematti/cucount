@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <cuda.h>
 #include <sm_20_atomic_functions.h>
-#include "define.h"
+#include "common.h"
 #include "count2.h"
 
 __device__ __constant__ MeshAttrs device_mattrs; // [0] = cth, [1] = phi
@@ -174,23 +174,22 @@ __global__ void count2_kernel(FLOAT *counts, size_t nparticles1, FLOAT *mesh1_sp
     } while (0)
 
 
-static void copy_mesh_to_device(Mesh mesh, size_t *mesh_nparticles, size_t *mesh_cumnparticles, FLOAT *mesh_spositions, FLOAT *mesh_positions, FLOAT *mesh_weights) {
-    CUDA_CHECK(cudaMalloc((void **)&mesh_positions, NDIM * mesh.total_nparticles * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemcpy(mesh_positions, mesh.positions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+static void copy_mesh_to_device(Mesh mesh, size_t **mesh_nparticles, size_t **mesh_cumnparticles, FLOAT **mesh_spositions, FLOAT **mesh_positions, FLOAT **mesh_weights) {
+    CUDA_CHECK(cudaMalloc((void **)mesh_positions, NDIM * mesh.total_nparticles * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemcpy(*mesh_positions, mesh.positions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc((void **)&mesh_spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemcpy(mesh_spositions, mesh.spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc((void **)mesh_spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemcpy(*mesh_spositions, mesh.spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc((void **)&mesh_weights, mesh.total_nparticles * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemcpy(mesh_weights, mesh.weights, mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc((void **)mesh_weights, mesh.total_nparticles * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemcpy(*mesh_weights, mesh.weights, mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc((void **)&mesh_nparticles, mesh.size * sizeof(size_t)));
-    CUDA_CHECK(cudaMemcpy(mesh_nparticles, mesh.nparticles, mesh.size * sizeof(size_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc((void **)mesh_nparticles, mesh.size * sizeof(size_t)));
+    CUDA_CHECK(cudaMemcpy(*mesh_nparticles, mesh.nparticles, mesh.size * sizeof(size_t), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc((void **)&mesh_cumnparticles, mesh.size * sizeof(size_t)));
-    CUDA_CHECK(cudaMemcpy(mesh_cumnparticles, mesh.cumnparticles, mesh.size * sizeof(size_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc((void **)mesh_cumnparticles, mesh.size * sizeof(size_t)));
+    CUDA_CHECK(cudaMemcpy(*mesh_cumnparticles, mesh.cumnparticles, mesh.size * sizeof(size_t), cudaMemcpyHostToDevice));
 }
-
 
 static void free_mesh_from_device(size_t *mesh_nparticles, size_t *mesh_cumnparticles, FLOAT *mesh_spositions, FLOAT *mesh_positions, FLOAT *mesh_weights) {
     // Free GPU memory
@@ -217,7 +216,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     float elapsed_time;
 
     // Initialize histograms
-    for (int i = 0; i < device_battrs.nbins; i++) counts[i] = 0;
+    for (int i = 0; i < battrs.nbins; i++) counts[i] = 0;
 
     // Copy constants to device
     CUDA_CHECK(cudaMemcpyToSymbol(device_mattrs, &mattrs, sizeof(MeshAttrs)));
@@ -225,8 +224,8 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaMemcpyToSymbol(device_battrs, &battrs, sizeof(BinAttrs)));
 
     // Allocate GPU memory and copy data
-    copy_mesh_to_device(list_mesh[0], device_mesh1_nparticles, device_mesh1_cumnparticles, device_mesh1_spositions, device_mesh1_positions, device_mesh1_weights);
-    copy_mesh_to_device(list_mesh[1], device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_positions, device_mesh2_weights);
+    copy_mesh_to_device(list_mesh[0], &device_mesh1_nparticles, &device_mesh1_cumnparticles, &device_mesh1_spositions, &device_mesh1_positions, &device_mesh1_weights);
+    copy_mesh_to_device(list_mesh[1], &device_mesh2_nparticles, &device_mesh2_cumnparticles, &device_mesh2_spositions, &device_mesh2_positions, &device_mesh2_weights);
 
     CUDA_CHECK(cudaMalloc((void **)&device_counts, battrs.nbins * sizeof(FLOAT)));
     CUDA_CHECK(cudaMemcpy(device_counts, counts, battrs.nbins * sizeof(FLOAT), cudaMemcpyHostToDevice));

@@ -1,4 +1,4 @@
-#include "define.h"
+#include "common.h"
 
 #ifndef _CUCOUNT_MESH_
 #define _CUCOUNT_MESH_

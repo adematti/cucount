@@ -2,7 +2,7 @@
 #include <pybind11/numpy.h>
 #include "mesh.h"
 #include "count2.h"
-#include "define.h"
+#include "common.h"
 
 namespace py = pybind11;
 

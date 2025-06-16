@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdarg.h>
-#include "define.h"
+#include "common.h"
 
 
 // Initialize the global logging level

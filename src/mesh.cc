@@ -1,6 +1,6 @@
 #include <math.h>
 #include <stdio.h>
-#include "define.h"
+#include "common.h"
 
 #define LARGE_VALUE 1e4 // Replace magic numbers with constants
 #define DTORAD 0.017453292519943295 // x deg = x*DTORAD rad

@@ -1,5 +1,3 @@
-#include "define.h"
-
 #ifndef _CUCOUNT_COUNT2_
 #define _CUCOUNT_COUNT2_
 

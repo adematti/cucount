@@ -1,7 +1,7 @@
 #include <stdlib.h>
 
-#ifndef _CUCOUNT_DEFINE_
-#define _CUCOUNT_DEFINE_
+#ifndef _CUCOUNT_COMMON_
+#define _CUCOUNT_COMMON_
 
 #define FLOAT double
 #define NDIM 3
@@ -16,6 +16,8 @@ typedef enum {LOG_LEVEL_DEBUG, LOG_LEVEL_INFO, LOG_LEVEL_WARN, LOG_LEVEL_ERROR} 
 
 // Declare the global logging level as extern
 extern LogLevel global_log_level;
+
+void log_message(LogLevel level, const char *format, ...);
 
 
 typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
@@ -69,26 +71,7 @@ typedef struct {
     MESH_TYPE type;
 } MeshAttrs;
 
+void* my_calloc(size_t num, size_t size);
+void* my_malloc(size_t size);
 
-// Wrapper for calloc with error handling
-inline void* my_calloc(size_t num, size_t size) {
-    void* ptr = calloc(num, size);
-    if (!ptr) {
-        log_message(LOG_LEVEL_ERROR, "Memory allocation failed in my_calloc for %zu elements of size %zu.", num, size);
-        exit(EXIT_FAILURE); // Exit the program on allocation failure
-    }
-    return ptr;
-}
-
-// Wrapper for malloc with error handling
-inline void* my_malloc(size_t size) {
-    void* ptr = malloc(size);
-    if (!ptr) {
-        log_message(LOG_LEVEL_ERROR, "Memory allocation failed in my_malloc for size %zu.", size);
-        exit(EXIT_FAILURE); // Exit the program on allocation failure
-    }
-    return ptr;
-}
-
-
-#endif //_CUCOUNT_DEFINE_
+#endif //_CUCOUNT_COMMON_
