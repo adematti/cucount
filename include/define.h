@@ -1,6 +1,4 @@
 #include <stdlib.h>
-#include <stdio.h>
-#include <stdarg.h>
 
 #ifndef _CUCOUNT_DEFINE_
 #define _CUCOUNT_DEFINE_
@@ -16,25 +14,9 @@
 // Logging levels
 typedef enum {LOG_LEVEL_DEBUG, LOG_LEVEL_INFO, LOG_LEVEL_WARN, LOG_LEVEL_ERROR} LogLevel;
 
-// Initialize the global logging level
-LogLevel global_log_level = LOG_LEVEL_INFO;
+// Declare the global logging level as extern
+extern LogLevel global_log_level;
 
-void log_message(LogLevel level, const char *format, ...) {
-    if (level < global_log_level) {
-        return; // Skip logging messages below the current level
-    }
-
-    const char *level_strings[] = {"DEBUG", "INFO", "WARN", "ERROR"};
-    va_list args;
-
-    fprintf(stderr, "[%s] ", level_strings[level]);
-
-    va_start(args, format);
-    vfprintf(stderr, format, args);
-    va_end(args);
-
-    fprintf(stderr, "\n");
-}
 
 typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
 typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE} VAR_TYPE;
@@ -89,7 +71,7 @@ typedef struct {
 
 
 // Wrapper for calloc with error handling
-void* my_calloc(size_t num, size_t size) {
+inline void* my_calloc(size_t num, size_t size) {
     void* ptr = calloc(num, size);
     if (!ptr) {
         log_message(LOG_LEVEL_ERROR, "Memory allocation failed in my_calloc for %zu elements of size %zu.", num, size);
@@ -99,7 +81,7 @@ void* my_calloc(size_t num, size_t size) {
 }
 
 // Wrapper for malloc with error handling
-void* my_malloc(size_t size) {
+inline void* my_malloc(size_t size) {
     void* ptr = malloc(size);
     if (!ptr) {
         log_message(LOG_LEVEL_ERROR, "Memory allocation failed in my_malloc for size %zu.", size);
