@@ -1,4 +1,6 @@
 #include <stdlib.h>
+#include <stdio.h>
+#include <stdarg.h>
 
 #ifndef _CUCOUNT_DEFINE_
 #define _CUCOUNT_DEFINE_
@@ -11,13 +13,28 @@
 #define CLIP(x, low, high)  (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))  // min(max(a, low), high)
 #define MAX_NMESH 3  // 3-pt correlation function at maximum
 
-// Global variable to define the logging level
-extern LogLevel global_log_level;
-
 // Logging levels
 typedef enum {LOG_LEVEL_DEBUG, LOG_LEVEL_INFO, LOG_LEVEL_WARN, LOG_LEVEL_ERROR} LogLevel;
 
-extern void log_message(LogLevel level, const char *format, ...);
+// Initialize the global logging level
+LogLevel global_log_level = LOG_LEVEL_INFO;
+
+void log_message(LogLevel level, const char *format, ...) {
+    if (level < global_log_level) {
+        return; // Skip logging messages below the current level
+    }
+
+    const char *level_strings[] = {"DEBUG", "INFO", "WARN", "ERROR"};
+    va_list args;
+
+    fprintf(stderr, "[%s] ", level_strings[level]);
+
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+
+    fprintf(stderr, "\n");
+}
 
 typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
 typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE} VAR_TYPE;
@@ -51,22 +68,22 @@ typedef struct {
 
 
 typedef struct {
-    FLOAT min = 0., max = 0.;
-    FLOAT smin = 0., smax = 0.;
-    VAR_TYPE var = VAR_NONE;
+    FLOAT min, max;
+    FLOAT smin, smax;
+    VAR_TYPE var;
 } SelectionAttrs;
 
 
 typedef struct {
-    size_t ellmax = 0;
+    size_t ellmax;
 } PoleAttrs;
 
 
 typedef struct {
-    size_t meshsize[NDIM] = {0.};
-    FLOAT boxsize[NDIM] = {0.};
-    FLOAT boxcenter[NDIM] = {0.};
-    FLOAT sepmax = -1.;
+    size_t meshsize[NDIM];
+    FLOAT boxsize[NDIM];
+    FLOAT boxcenter[NDIM];
+    FLOAT sepmax;
     MESH_TYPE type;
 } MeshAttrs;
 

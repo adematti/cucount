@@ -20,10 +20,10 @@ struct Particles_py {
         return positions.shape(0); // Return the size of the first dimension
     }
 
-    Particles data() const {
+    Particles data() {
         Particles particles;
-        particles.positions = positions.data();
-        particles.weights = weights.data();
+        particles.positions = positions.mutable_data();
+        particles.weights = weights.mutable_data();
         particles.nparticles = nparticles();
         return particles;
     }
@@ -66,13 +66,13 @@ struct BinAttrs_py {
 
 // Expose the PoleAttrs struct to Python
 struct PoleAttrs_py {
-    size_t npoles;
+    size_t ellmax;
 
-    PoleAttrs_py(size_t npoles) : npoles(npoles) {}
+    PoleAttrs_py(size_t ellmax) : ellmax(ellmax) {}
 
     PoleAttrs data() const {
         PoleAttrs pattrs;
-        pattrs.npoles = npoles;
+        pattrs.ellmax = ellmax;
         return pattrs;
     }
 };
@@ -91,17 +91,16 @@ struct SelectionAttrs_py {
         sattrs.min = min;
         sattrs.max = max;
         if (var == VAR_THETA) {
-            sattrs.smin = arccos(max);
-            sattrs.smax = arccos(min);
+            sattrs.smin = acos(max);
+            sattrs.smax = acos(min);
             if (min <= 0.) sattrs.smax = 2.;
         }
         return sattrs;
     }
-
-
 };
 
-void count2_py(const Particles_py& particles1, const Particles_py& particles2,
+
+py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
                const BinAttrs_py& battrs,
                const PoleAttrs_py& pattrs = PoleAttrs_py(0), // Default: 0 poles
                const SelectionAttrs_py& sattrs = SelectionAttrs_py("", 0.0, 1.0)) {
@@ -111,6 +110,7 @@ void count2_py(const Particles_py& particles1, const Particles_py& particles2,
     list_particles[0] = particles1.data();
     list_particles[1] = particles2.data();
     MeshAttrs mattrs;
+    
     if ((battrs.var == VAR_THETA) || (sattrs.var == VAR_THETA)) {
         mattrs.type = MESH_ANGULAR;
         mattrs.sepmax = sattrs.max;
@@ -152,7 +152,7 @@ PYBIND11_MODULE(cucount, m) {
 
     py::class_<PoleAttrs_py>(m, "PoleAttrs")
         .def(py::init<size_t>())
-        .def_readwrite("npoles", &PoleAttrs_py::npoles);
+        .def_readwrite("ellmax", &PoleAttrs_py::ellmax);
 
     py::class_<SelectionAttrs_py>(m, "SelectionAttrs")
         .def(py::init<const std::string&, FLOAT, FLOAT>()) // Accept var as a string

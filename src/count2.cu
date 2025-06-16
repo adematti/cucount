@@ -1,4 +1,5 @@
 #include <math.h>
+#include <stdio.h>
 #include <cuda.h>
 #include <sm_20_atomic_functions.h>
 #include "define.h"
@@ -79,33 +80,33 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
 
 __device__ bool is_selected(FLOAT *spositions1, FLOAT *spositions2, FLOAT *positions1, FLOAT *positions2) {
     bool selected = 1;
-    if (sattrs.var == VAR_THETA) {
+    if (device_sattrs.var == VAR_THETA) {
         FLOAT costheta = spositions1[0] * spositions2[0] + spositions1[1] * spositions2[1] + spositions1[2] * spositions2[2];
-        selected = (costheta >= sattrs.smin) && (costheta <= sattrs.smax);
+        selected = (costheta >= device_sattrs.smin) && (costheta <= device_sattrs.smax);
     }
     return selected;
 }
 
 
-__device__ void add_weight(FLOAT *counts, FLOAT *spositions1, FLOAT *spositions2, FLOAT *positions1, FLOAT *positions2, FLOAT weigths1, FLOAT weights2) {
-    size_t ibin = 0;
-    if (battrs.var == VAR_S) {
+__device__ void add_weight(FLOAT *counts, FLOAT *spositions1, FLOAT *spositions2, FLOAT *positions1, FLOAT *positions2, FLOAT weights1, FLOAT weights2) {
+    int ibin = 0;
+    if (device_battrs.var == VAR_S) {
         FLOAT dist = 0, diff = 0;
         for (size_t axis = 0; axis < NDIM; axis++) {
             diff = positions2[axis] - positions1[axis];
             dist += diff * diff;
         }
         dist = sqrt(dist);
-        ibin = (dist - battrs.min) / battrs.sep + battrs.min;
+        ibin = (dist - device_battrs.min) / device_battrs.step + device_battrs.min;
     }
-    if ((ibin >= 0) & (ibin < battrs.max)) {
+    if ((ibin >= 0) && (ibin < device_battrs.max)) {
         FLOAT weight = weights1 * weights2;
         atomicAdd(&(counts[ibin]), weight);
     }
 }
 
 
-__global__ void _count2(FLOAT *counts, size_t nparticles1, FLOAT *mesh1_spositions, FLOAT *mesh1_positions, FLOAT *mesh1_weights,
+__global__ void count2_kernel(FLOAT *counts, size_t nparticles1, FLOAT *mesh1_spositions, FLOAT *mesh1_positions, FLOAT *mesh1_weights,
                         size_t *mesh2_nparticles, size_t *mesh2_cumnparticles, FLOAT *mesh2_spositions, FLOAT *mesh2_positions, FLOAT *mesh2_weights) {
     // Shared memory for local histogram
     extern __shared__ FLOAT local_counts[];
@@ -173,7 +174,7 @@ __global__ void _count2(FLOAT *counts, size_t nparticles1, FLOAT *mesh1_spositio
     } while (0)
 
 
-static void copy_mesh_to_device(Mesh mesh, FLOAT *mesh_spositions, FLOAT *mesh_positions, FLOAT *mesh_weights, FLOAT *mesh_nparticles, FLOAT *mesh_cumnparticles) {
+static void copy_mesh_to_device(Mesh mesh, size_t *mesh_nparticles, size_t *mesh_cumnparticles, FLOAT *mesh_spositions, FLOAT *mesh_positions, FLOAT *mesh_weights) {
     CUDA_CHECK(cudaMalloc((void **)&mesh_positions, NDIM * mesh.total_nparticles * sizeof(FLOAT)));
     CUDA_CHECK(cudaMemcpy(mesh_positions, mesh.positions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
 
@@ -191,7 +192,7 @@ static void copy_mesh_to_device(Mesh mesh, FLOAT *mesh_spositions, FLOAT *mesh_p
 }
 
 
-static void free_mesh_from_device(FLOAT *mesh_spositions, FLOAT *mesh_positions, FLOAT *mesh_weights, FLOAT *mesh_nparticles, FLOAT *mesh_cumnparticles) {
+static void free_mesh_from_device(size_t *mesh_nparticles, size_t *mesh_cumnparticles, FLOAT *mesh_spositions, FLOAT *mesh_positions, FLOAT *mesh_weights) {
     // Free GPU memory
     CUDA_CHECK(cudaFree(mesh_nparticles));
     CUDA_CHECK(cudaFree(mesh_cumnparticles));
@@ -204,19 +205,19 @@ static void free_mesh_from_device(FLOAT *mesh_spositions, FLOAT *mesh_positions,
 void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, const BinAttrs battrs, const PoleAttrs pattrs, const int nblocks, const int nthreads_per_block) {
 
     // Device pointers
-    FLOAT *device1_positions, *device2_positions;
-    FLOAT *device1_spositions, *device2_spositions;
-    FLOAT *device1_weights, *device2_weights;
-    size_t *device1_nparticles, *device2_nparticles;
-    size_t *device1_cumnparticles, *device2_cumnparticles;
+    FLOAT *device_mesh1_positions, *device_mesh2_positions;
+    FLOAT *device_mesh1_spositions, *device_mesh2_spositions;
+    FLOAT *device_mesh1_weights, *device_mesh2_weights;
+    size_t *device_mesh1_nparticles, *device_mesh2_nparticles;
+    size_t *device_mesh1_cumnparticles, *device_mesh2_cumnparticles;
     FLOAT *device_counts;
 
     // CUDA timing events
     cudaEvent_t start, stop;
-    FLOAT elapsed_time;
+    float elapsed_time;
 
     // Initialize histograms
-    for (int i = 0; i < bin.nbins; i++) counts[i] = 0;
+    for (int i = 0; i < device_battrs.nbins; i++) counts[i] = 0;
 
     // Copy constants to device
     CUDA_CHECK(cudaMemcpyToSymbol(device_mattrs, &mattrs, sizeof(MeshAttrs)));
@@ -224,14 +225,8 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaMemcpyToSymbol(device_battrs, &battrs, sizeof(BinAttrs)));
 
     // Allocate GPU memory and copy data
-    copy_mesh_to_device(list_mesh[0], device1_spositions, device1_positions, device1_weights, device1_nparticles, device1_cumnparticles);
-    copy_mesh_to_device(list_mesh[1], device2_spositions, device2_positions, device2_weights, device2_nparticles, device2_cumnparticles);
-
-    size_t shared_memory_size = battrs.nbins * sizeof(FLOAT);
-    if (shared_memory_size > device_properties.sharedMemPerBlock) {
-        log_message(LOG_LEVEL_ERROR, "Error: Shared memory size exceeds the maximum allowed by the GPU.\n");
-        exit(EXIT_FAILURE);
-    }
+    copy_mesh_to_device(list_mesh[0], device_mesh1_nparticles, device_mesh1_cumnparticles, device_mesh1_spositions, device_mesh1_positions, device_mesh1_weights);
+    copy_mesh_to_device(list_mesh[1], device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_positions, device_mesh2_weights);
 
     CUDA_CHECK(cudaMalloc((void **)&device_counts, battrs.nbins * sizeof(FLOAT)));
     CUDA_CHECK(cudaMemcpy(device_counts, counts, battrs.nbins * sizeof(FLOAT), cudaMemcpyHostToDevice));
@@ -246,15 +241,15 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
         cudaOccupancyMaxPotentialBlockSize(
             &this_nblocks,
             &this_nthreads_per_block,
-            histogram_kernel,
+            count2_kernel,
             battrs.nbins * sizeof(FLOAT),
             0
-        )
+        );
     }
     log_message(LOG_LEVEL_INFO, "Running counts with %d blocks and %d threads per block\n", nblocks, nthreads_per_block);
 
     CUDA_CHECK(cudaEventRecord(start, 0));
-    _count2<<<nblocks, nthreads_per_block, battrs.nbins * sizeof(FLOAT)>>>(counts, list_mesh[0].nparticles, device1_spositions, device1_positions, device1_weights, device2_nparticles, device2_cumnparticles, device2_spositions, device2_positions, device2_weights);
+    count2_kernel<<<nblocks, nthreads_per_block, battrs.nbins * sizeof(FLOAT)>>>(counts, list_mesh[0].total_nparticles, device_mesh1_spositions, device_mesh1_positions, device_mesh1_weights, device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_positions, device_mesh2_weights);
     CUDA_CHECK(cudaEventRecord(stop, 0));
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaEventElapsedTime(&elapsed_time, start, stop));
@@ -264,8 +259,8 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaMemcpy(counts, device_counts, battrs.nbins * sizeof(FLOAT), cudaMemcpyDeviceToHost));
 
     // Free GPU memory
-    free_mesh_from_device(device1_spositions, device1_spositions, device1_weights, device1_nparticles, device1_cumnparticles);
-    free_mesh_from_device(device2_spositions, device2_spositions, device2_weights, device2_nparticles, device2_cumnparticles);
+    free_mesh_from_device(device_mesh1_nparticles, device_mesh1_cumnparticles, device_mesh1_spositions, device_mesh1_spositions, device_mesh1_weights);
+    free_mesh_from_device(device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_spositions, device_mesh2_weights);
 
     // Destroy CUDA events
     CUDA_CHECK(cudaEventDestroy(start));

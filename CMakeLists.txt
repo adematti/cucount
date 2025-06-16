@@ -3,10 +3,13 @@ project(cucount LANGUAGES CUDA CXX)
 
 set(PYBIND11_FINDPYTHON ON)
 find_package(pybind11 CONFIG REQUIRED)
+set(CMAKE_CUDA_ARCHITECTURES 80)  # or "80-real" for full PTX
 
 enable_language(CUDA)
 # Add the CUDA source file
-pybind11_add_module(cucount src/cucount.cpp src/cucount.cu)
+pybind11_add_module(cucount src/cucount.cc src/mesh.cc src/count2.cu)
+
+target_include_directories(cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 
 # Enable CUDA separable compilation
 set_target_properties(cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
