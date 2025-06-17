@@ -86,16 +86,23 @@ struct BinAttrs_py {
         for (auto item : kwargs) {
             // Extract the variable name and range tuple
             std::string var_name = py::cast<std::string>(item.first);
-            auto range_tuple = py::cast<std::tuple<FLOAT, FLOAT, FLOAT>>(item.second);
-
             // Parse the values
-            VAR_TYPE v = string_to_var_type(var_name)
+            VAR_TYPE v = string_to_var_type(var_name);
             var.push_back(v);
-            min.push_back(std::get<0>(range_tuple));
-            max.push_back(std::get<1>(range_tuple));
-            step.push_back(std::get<2>(range_tuple));
-            if ((v == VAR_MU) || (v == VAR_POLE)) los.push_back(std::get<3>(range_tuple));
-            else los.push_back(LOS_NONE);
+            if ((v == VAR_MU) || (v == VAR_POLE)) {
+                auto range_tuple = py::cast<std::tuple<FLOAT, FLOAT, FLOAT, std::string>>(item.second);
+                min.push_back(std::get<0>(range_tuple));
+                max.push_back(std::get<1>(range_tuple));
+                step.push_back(std::get<2>(range_tuple));
+                los.push_back(string_to_los_type(std::get<3>(range_tuple)));
+            }
+            else {
+                auto range_tuple = py::cast<std::tuple<FLOAT, FLOAT, FLOAT>>(item.second);
+                min.push_back(std::get<0>(range_tuple));
+                max.push_back(std::get<1>(range_tuple));
+                step.push_back(std::get<2>(range_tuple));
+                los.push_back(LOS_NONE);
+            }
         }
         // Sort variables to ensure VAR_POLE is last
         std::vector<size_t> indices(var.size());
@@ -161,6 +168,9 @@ struct SelectionAttrs_py {
     std::vector<FLOAT> min, max;
     std::vector<VAR_TYPE> var;
 
+    // Default constructor
+    SelectionAttrs_py() {}
+
     // Constructor that takes a Python dictionary
     SelectionAttrs_py(const py::kwargs& kwargs) {
         for (auto item : kwargs) {
@@ -222,7 +232,8 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
 
     if ((cbattrs.var[0] == VAR_THETA) || (csattrs.var[0] == VAR_THETA)) {
         cmattrs.type = MESH_ANGULAR;
-        cmattrs.smax = csattrs.smin;
+        if (csattrs.var[0] == VAR_THETA) cmattrs.smax = cos(csattrs.max[0] * DTORAD);
+        else cmattrs.smax = cos(cbattrs.max[0] * DTORAD);
     }
     set_mesh_attrs(list_particles, &cmattrs);
     set_mesh(list_particles, list_mesh, cmattrs);
@@ -244,16 +255,15 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
 PYBIND11_MODULE(cucount, m) {
     py::class_<Particles_py>(m, "Particles")
         .def(py::init<py::array_t<FLOAT>, py::array_t<FLOAT>>())
-        .def_property_readonly("nparticles", &Particles_py::nparticles)
+        .def_property_readonly("size", &Particles_py::size)
         .def_readwrite("positions", &Particles_py::positions)
         .def_readwrite("weights", &Particles_py::weights);
 
     py::class_<BinAttrs_py>(m, "BinAttrs")
         .def(py::init<py::kwargs>()) // Accept Python kwargs
-        .def_property_readonly("shape", &BinAttrs_py::shape)
         .def_property_readonly("size", &BinAttrs_py::size)
         .def_property_readonly("ndim", &BinAttrs_py::ndim)
-        .def_readwrite("var", &BinAttrs_py::vars)
+        .def_readwrite("var", &BinAttrs_py::var)
         .def_readwrite("min", &BinAttrs_py::min)
         .def_readwrite("max", &BinAttrs_py::max)
         .def_readwrite("step", &BinAttrs_py::step);
@@ -261,7 +271,7 @@ PYBIND11_MODULE(cucount, m) {
     py::class_<SelectionAttrs_py>(m, "SelectionAttrs")
         .def(py::init<py::kwargs>()) // Accept Python kwargs
         .def_property_readonly("ndim", &SelectionAttrs_py::ndim)
-        .def_readwrite("var", &SelectionAttrs_py::vars)
+        .def_readwrite("var", &SelectionAttrs_py::var)
         .def_readwrite("min", &SelectionAttrs_py::min)
         .def_readwrite("max", &SelectionAttrs_py::max);
 
@@ -269,6 +279,5 @@ PYBIND11_MODULE(cucount, m) {
         py::arg("particles1"),
         py::arg("particles2"),
         py::arg("battrs"),
-        py::arg("pattrs") = PoleAttrs_py(0), // Default value
-        py::arg("sattrs") = SelectionAttrs_py("", 0.0, 1.0)); // Default value
+        py::arg("sattrs") = SelectionAttrs_py()); // Default value
 }

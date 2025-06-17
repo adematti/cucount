@@ -7,7 +7,7 @@
 
 __device__ __constant__ MeshAttrs device_mattrs; // [0] = cth, [1] = phi
 __device__ __constant__ SelectionAttrs device_sattrs; // [0] = min, [1] = max
-__device__ __constant__ BinAttrs device_battrs;
+__device__ BinAttrs device_battrs;
 
 
 __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
@@ -31,7 +31,7 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
     th_lo = acos(-1.0 + 2.0 * ((FLOAT)(icth + 1.0)) / device_mattrs.meshsize[0]);
     phi_hi = 2 * M_PI * ((FLOAT)(iphi + 1.0) / device_mattrs.meshsize[1]);
     phi_lo = 2 * M_PI * ((FLOAT)(iphi + 0.0) / device_mattrs.meshsize[1]);
-    FLOAT smax = device_sattrs.max * DTORAD;
+    FLOAT smax = acos(device_mattrs.smax);
 
     // Handle edge cases for angular bounds
     if (th_hi > M_PI - smax) {
@@ -76,20 +76,26 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
     bounds[1] = (int)(0.5 * (1 + cth_max) * device_mattrs.meshsize[0]);
     if (bounds[0] < 0) bounds[0] = 0;
     if (bounds[1] >= device_mattrs.meshsize[0]) bounds[1] = device_mattrs.meshsize[0] - 1;
+    /*
+    bounds[0] = 0;
+    bounds[1] = device_mattrs.meshsize[0] - 1;
+    bounds[2] = 0;
+    bounds[3] = device_mattrs.meshsize[1] - 1;
+    */
 
 }
 
 
-__device__ inline void addition(FLOAT *diff; const FLOAT *position1, const FLOAT *position2) {
-    for (size_t i = 0; i < NDIM; i++) diff[i] = position1[i] + position2[i];
+__device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
+    for (size_t i = 0; i < NDIM; i++) add[i] = position1[i] + position2[i];
 }
 
-__device__ inline void difference(FLOAT *diff; const FLOAT *position1, const FLOAT *position2) {
+__device__ inline void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2) {
     for (size_t i = 0; i < NDIM; i++) diff[i] = position1[i] - position2[i];
 }
 
 __device__ inline FLOAT dot(const FLOAT *position1, const FLOAT *position2) {
-    FLOAT d = 0.0;
+    FLOAT d = 0.;
     for (size_t i = 0; i < NDIM; i++) d += position1[i] * position2[i];
     return d;
 }
@@ -97,23 +103,24 @@ __device__ inline FLOAT dot(const FLOAT *position1, const FLOAT *position2) {
 __device__ inline bool is_selected(FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2) {
     bool selected = 1;
     for (size_t i = 0; i < device_sattrs.ndim; i++) {
-        VAR_TYPE var = device_sattrs.var[i];
+        int var = device_sattrs.var[i];
         if (var == VAR_THETA) {
             FLOAT costheta = dot(sposition1, sposition2);
             selected &= (costheta >= device_sattrs.smin[i]) && (costheta <= device_sattrs.smax[i]);
-            //if (!selected) printf("costheta %f %.4f %.4f ", costheta, device_sattrs.smin, device_sattrs.smax);
+            //if (selected) printf("costheta %d %f %.4f %.4f ", i, costheta, device_sattrs.smin[i], device_sattrs.smax[i]);
         }
     }
     return selected;
 }
 
 
-__device__ inline FLOAT set_legendre(FLOAT legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2) {
-    legendre_cache[0] = 1.0; // P_0(mu) = 1
-    legendre_cache[1] = mu; // P_1(mu) = mu
+__device__ inline void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2) {
     if ((ellmin % 2 == 0) && (ellstep % 2 == 0)) {
         for (int ell = ellmin; ell < ellmax; ell+=ellstep) {
-            if (ell == 2) {
+            if (ell == 0) {
+                legendre_cache[ell] = 1.;
+            }
+            else if (ell == 2) {
                 legendre_cache[ell] = (3.0 * mu2 - 1.0) / 2.0;
             }
             else if (ell == 4) {
@@ -137,6 +144,8 @@ __device__ inline FLOAT set_legendre(FLOAT legendre_cache, int ellmin, int ellma
         }
     }
     else {
+        legendre_cache[0] = 1.0; // P_0(mu) = 1
+        legendre_cache[1] = mu; // P_1(mu) = mu
         for (int ell = 2; ell < ellmax; ell++) {
             legendre_cache[ell] = ((2.0 * ell - 1.0) * mu * legendre_cache[ell - 1] - (ell - 1.0) * legendre_cache[ell - 2]) / ell;
         }
@@ -153,14 +162,15 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
     FLOAT s = DEFAULT_VALUE;
     FLOAT mu = DEFAULT_VALUE;
     FLOAT mu2 = DEFAULT_VALUE;
-    LOS_TYPE los = LOS_NONE;
-    VAR_TYPE var = VAR_NONE;
+    int los = LOS_NONE;
+    int var = VAR_NONE;
     size_t ellmin, ellmax, ellstep;
 
-    bool REQUIRED_S = 0, REQUIRED_MU = 0, REQUIRED_MU2 = 0, REQUIRED_POLE = 0;
+    bool REQUIRED_S = 0, REQUIRED_MU = 0, REQUIRED_MU2 = 0;
+    size_t i = 0;
     for (i = 0; i < device_battrs.ndim; i++) {
         var = device_battrs.var[i];
-        if ((var == VAR_S) | (var = VAR_K)) {
+        if ((var == VAR_S) | (var == VAR_K)) {
             REQUIRED_S = 1;
         }
         if (var == VAR_MU) {
@@ -169,7 +179,6 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
         }
         if (var == VAR_POLE) {
             los = device_battrs.los[i];
-            REQUIRED_POLE = 1;
             REQUIRED_MU2 = 1;
             ellmin = (size_t) device_battrs.min[i];
             ellmax = (size_t) device_battrs.max[i];
@@ -197,14 +206,17 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
             addition(vlos, sposition1, sposition2);
             d = dot(diff, vlos);
             if (REQUIRED_MU) mu = d / sqrt(dot(vlos, vlos)) / s;
-            else: mu2 = d * d / dot(vlos, vlos) / s2;
+            else mu2 = d * d / dot(vlos, vlos) / s2;
         }
+        if (s == 0) {
+            mu = 0.;
+            mu2 = 0.;
+        };
     }
 
-    size_t i = 0, size = 1;
+    size_t size = 1;
     for (i = 0; i < device_battrs.ndim; i++) {
         var = device_battrs.var[i];
-        LOS_TYPE los = device_battrs.los[i];
         FLOAT value = 0;
         if (var == VAR_S) {
             value = s;
@@ -226,15 +238,15 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
     }
     if ((ibin >= 0) && (ibin < size)) {
         FLOAT weight = weight1 * weight2;
-        if (i == device_battrs.ndim - 1) {
+        if (i == device_battrs.ndim) {
             atomicAdd(&(counts[ibin]), weight);
         }
         if (var == VAR_POLE) {
             FLOAT legendre_cache[MAX_POLE + 1];
             set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
-            for (int ill; ill < device_battrs.shape[i]; ill++) {
+            for (int ill = 0; ill < device_battrs.shape[i]; ill++) {
                 size_t ell = ill * ellstep + ellmin;
-                atomicAdd(&(counts[ibin + ill]), weight * legendre_cache[ell]);
+                atomicAdd(&(counts[ibin * device_battrs.shape[i] + ill]), weight * (2 * ell + 1) * legendre_cache[ell]);
             }
         }
     }
@@ -256,6 +268,8 @@ __global__ void count2_kernel(FLOAT *counts, size_t nparticles1, FLOAT *mesh1_sp
     // Global thread index
     size_t stride = gridDim.x * blockDim.x;
     size_t gid = tid + blockIdx.x * blockDim.x;
+
+    //printf("%d %d  ", device_battrs.ndim, device_battrs.var[1]);
 
     // Process particles
     for (size_t ii = gid; ii < nparticles1; ii += stride) {
@@ -386,7 +400,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaEventRecord(stop, 0));
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaEventElapsedTime(&elapsed_time, start, stop));
-    log_message(LOG_LEVEL_INFO, "Time elapsed: %3.1f ms\n", elapsed_time);
+    log_message(LOG_LEVEL_INFO, "Time elapsed: %3.1f ms.\n", elapsed_time);
 
     // Copy histograms back to host
     CUDA_CHECK(cudaMemcpy(counts, device_counts, battrs.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));

@@ -11,6 +11,7 @@
 #define CLIP(x, low, high)  (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))  // min(max(a, low), high)
 #define MAX_NMESH 3  // 3-pt correlation function at maximum
 #define MAX_NBIN 3  // maximum number of binning dimension
+#define MAX_POLE 8
 #define DTORAD 0.017453292519943295 // x deg = x*DTORAD rad
 
 
@@ -21,7 +22,6 @@ typedef enum {LOG_LEVEL_DEBUG, LOG_LEVEL_INFO, LOG_LEVEL_WARN, LOG_LEVEL_ERROR} 
 extern LogLevel global_log_level;
 
 void log_message(LogLevel level, const char *format, ...);
-
 
 typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
 typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
@@ -49,9 +49,9 @@ typedef struct {
 
 
 typedef struct {
-    VAR_TYPE var[MAX_NBIN];
-    LOS_TYPE los[MAX_NBIN];
-    FLOAT min[MAX_NBIN], max[MAX_NBIN], step[MAX_NBIN], los[MAX_NBIN];
+    int var[MAX_NBIN];
+    int los[MAX_NBIN];
+    FLOAT min[MAX_NBIN], max[MAX_NBIN], step[MAX_NBIN];
     size_t shape[MAX_NBIN];
     size_t size;
     size_t ndim;
@@ -59,7 +59,7 @@ typedef struct {
 
 
 typedef struct {
-    VAR_TYPE var[MAX_NBIN];
+    int var[MAX_NBIN];
     FLOAT min[MAX_NBIN], max[MAX_NBIN];
     FLOAT smin[MAX_NBIN], smax[MAX_NBIN];
     size_t ndim;

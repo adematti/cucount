@@ -5,9 +5,9 @@ import sys
 sys.path.insert(0, '../build')
 
 try:
-    from cucount import count2, Particles, BinAttrs, PoleAttrs, SelectionAttrs
+    from cucount import count2, Particles, BinAttrs, SelectionAttrs
 except ImportError:
-    pass
+    raise
 
 
 @np.vectorize
@@ -181,10 +181,10 @@ def test_thetacut():
     TwoPointWeight = namedtuple('TwoPointWeight', ['sep', 'weight'])
 
     edges = np.linspace(0., 100, 11)
-    size = 50000000
-    boxsize = (1000,) * 3
+    size = int(5e7)
+    boxsize = (100,) * 3
 
-    list_options = [{'ells': (0,)}]
+    list_options = [{'ells': (0, 2)}]
 
     for options in list_options:
         options = options.copy()
@@ -202,6 +202,8 @@ def test_thetacut():
         bitwise_type = options.pop('bitwise_type', None)
         iip = options.pop('iip', False)
         dtype = options.pop('dtype', None)
+        ells = options.get('ells', (0,))
+        los = options.get('los')
 
         ref_options = options.copy()
         weight_attrs = ref_options.pop('weight_attrs', {}).copy()
@@ -301,16 +303,16 @@ def test_thetacut():
             print(positions1.shape)
             particles1 = Particles(positions1, weights1)
             particles2 = Particles(positions2, weights2)
-            battrs = BinAttrs('s', edges[0], edges[-1], edges[1] - edges[0])
+            battrs = BinAttrs(**{'s': (edges[0], edges[-1], edges[1] - edges[0]), 'pole': (0, ells[-1] + 1, 2, los)})
             for var in selection_attrs:
-                sattrs = SelectionAttrs(var, selection_attrs[var][0], selection_attrs[var][1])
+                sattrs = SelectionAttrs(**{var: (selection_attrs[var][0], selection_attrs[var][1])})
             return count2(particles1, particles2, battrs=battrs, sattrs=sattrs)
 
         test = run()
         print(test)
-        print(poles_ref)
+        print(poles_ref.T)
 
-        assert np.allclose(test, poles_ref, **tol)
+        assert np.allclose(test.T, poles_ref, **tol)
 
 
 if __name__ == '__main__':

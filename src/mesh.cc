@@ -95,7 +95,7 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
         }
 
         FLOAT fsky = (cth_max - cth_min) * (phi_max - phi_min) / (4 * M_PI);
-        log_message(LOG_LEVEL_INFO, "Enclosing fractional area is %.4f.\n", fsky);
+        log_message(LOG_LEVEL_INFO, "Enclosing fractional area is %.4f [%.4f %.4f] x [%.4f %.4f].\n", fsky, cth_min, cth_max, phi_min, phi_max);
 
         if (mattrs->meshsize[0] * mattrs->meshsize[1] == 0) {
             FLOAT theta_max = acos(mattrs->smax);
