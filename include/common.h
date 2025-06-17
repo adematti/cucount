@@ -10,6 +10,7 @@
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))  // minimum of two numbers
 #define CLIP(x, low, high)  (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))  // min(max(a, low), high)
 #define MAX_NMESH 3  // 3-pt correlation function at maximum
+#define MAX_NBIN 3  // maximum number of binning dimension
 #define DTORAD 0.017453292519943295 // x deg = x*DTORAD rad
 
 
@@ -23,7 +24,8 @@ void log_message(LogLevel level, const char *format, ...);
 
 
 typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
-typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE} VAR_TYPE;
+typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
+typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT} LOS_TYPE;
 
 
 typedef struct {
@@ -39,7 +41,7 @@ typedef struct {
 
 // Particles
 typedef struct {
-    size_t nparticles=0;
+    size_t size=0;
     FLOAT *spositions;  // positions on the sphere
     FLOAT *positions;
     FLOAT *weights;
@@ -47,22 +49,21 @@ typedef struct {
 
 
 typedef struct {
-    size_t nbins;
-    FLOAT min, max, step;
-    VAR_TYPE var;
+    VAR_TYPE var[MAX_NBIN];
+    LOS_TYPE los[MAX_NBIN];
+    FLOAT min[MAX_NBIN], max[MAX_NBIN], step[MAX_NBIN], los[MAX_NBIN];
+    size_t shape[MAX_NBIN];
+    size_t size;
+    size_t ndim;
 } BinAttrs;
 
 
 typedef struct {
-    FLOAT min, max;
-    FLOAT smin, smax;
-    VAR_TYPE var;
+    VAR_TYPE var[MAX_NBIN];
+    FLOAT min[MAX_NBIN], max[MAX_NBIN];
+    FLOAT smin[MAX_NBIN], smax[MAX_NBIN];
+    size_t ndim;
 } SelectionAttrs;
-
-
-typedef struct {
-    size_t ellmax;
-} PoleAttrs;
 
 
 typedef struct {

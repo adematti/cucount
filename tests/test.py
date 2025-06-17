@@ -4,7 +4,10 @@ from scipy import special
 import sys
 sys.path.insert(0, '../build')
 
-from cucount import count2, Particles, BinAttrs, PoleAttrs, SelectionAttrs
+try:
+    from cucount import count2, Particles, BinAttrs, PoleAttrs, SelectionAttrs
+except ImportError:
+    pass
 
 
 @np.vectorize

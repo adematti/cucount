@@ -73,10 +73,10 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
         size_t sum_nparticles = 0, n_nparticles = 0;
         for (size_t imesh=0; imesh<MAX_NMESH; imesh++) {
             const Particles particles = list_particles[imesh];
-            if (particles.nparticles == 0) continue;
-            sum_nparticles += particles.nparticles;
+            if (particles.size == 0) continue;
+            sum_nparticles += particles.size;
             n_nparticles += 1;
-            for (size_t i = 0; i < particles.nparticles; i++) {
+            for (size_t i = 0; i < particles.size; i++) {
                 const FLOAT *position = &(particles.positions[NDIM * i]);
                 FLOAT cth, phi, r;
                 cartesian_to_sphere(position, &r, &cth, &phi);
@@ -122,15 +122,15 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
 
     for (size_t imesh=0; imesh<MAX_NMESH; imesh++) {
         const Particles particles = list_particles[imesh];
-        if (particles.nparticles == 0) continue;
+        if (particles.size == 0) continue;
         Mesh &mesh = list_mesh[imesh];
         mesh.size = 0;
-        size_t* index = (size_t*)my_calloc(particles.nparticles, sizeof(size_t));
-        FLOAT* spositions = (FLOAT*)my_calloc(NDIM * particles.nparticles, sizeof(FLOAT));
+        size_t* index = (size_t*)my_calloc(particles.size, sizeof(size_t));
+        FLOAT* spositions = (FLOAT*)my_calloc(NDIM * particles.size, sizeof(FLOAT));
 
         if (mattrs.type == MESH_ANGULAR) {
             mesh.size = mattrs.meshsize[0] * mattrs.meshsize[1];
-            for (size_t i = 0; i < particles.nparticles; i++) {
+            for (size_t i = 0; i < particles.size; i++) {
                 const FLOAT *position = &(particles.positions[NDIM * i]);
                 FLOAT cth, phi, r;
                 cartesian_to_sphere(position, &r, &cth, &phi);
@@ -138,7 +138,7 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
             }
         }
         //log_message(LOG_LEVEL_INFO, "Min max %d %d %d %d %d.\n", idxmin, idxmax, mattrs.meshsize[0], mattrs.meshsize[1], mesh.size);
-        for (size_t i = 0; i < particles.nparticles; i++) {
+        for (size_t i = 0; i < particles.size; i++) {
             const FLOAT *position = &(particles.positions[NDIM * i]);
             FLOAT r = cartesian_distance(position);
             for (size_t axis=0; axis < NDIM; axis++) spositions[NDIM * i + axis] = position[axis] / r;
@@ -147,13 +147,13 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         // Allocate memory for box variables
         mesh.nparticles = (size_t*)my_calloc(mesh.size, sizeof(size_t));
         mesh.cumnparticles = (size_t*)my_malloc(mesh.size * sizeof(size_t));
-        mesh.positions = (FLOAT*)my_malloc(NDIM * particles.nparticles * sizeof(FLOAT));
-        mesh.spositions = (FLOAT*)my_malloc(NDIM * particles.nparticles * sizeof(FLOAT));
-        mesh.weights = (FLOAT*)my_malloc(particles.nparticles * sizeof(FLOAT));
+        mesh.positions = (FLOAT*)my_malloc(NDIM * particles.size * sizeof(FLOAT));
+        mesh.spositions = (FLOAT*)my_malloc(NDIM * particles.size * sizeof(FLOAT));
+        mesh.weights = (FLOAT*)my_malloc(particles.size * sizeof(FLOAT));
 
         // Initialize box variables
         size_t n_full_boxes = 0;
-        for (size_t i = 0; i < particles.nparticles; i++) {
+        for (size_t i = 0; i < particles.size; i++) {
             size_t idx = index[i];
             if (mesh.nparticles[idx] == 0) n_full_boxes++;
             mesh.nparticles[idx]++;
@@ -170,7 +170,7 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         mesh.total_nparticles = total_nparticles;
         // Assign particle positions to boxes
 
-        for (size_t i = 0; i < particles.nparticles; i++) {
+        for (size_t i = 0; i < particles.size; i++) {
             size_t idx = index[i];
             const FLOAT* position = &(particles.positions[NDIM * i]);
             //if (i == 0) log_message(LOG_LEVEL_INFO, "Position %.3f %.3f %.3f.", position[0], position[1], position[2]);
