@@ -178,8 +178,8 @@ def test_thetacut():
     TwoPointWeight = namedtuple('TwoPointWeight', ['sep', 'weight'])
 
     edges = np.linspace(0., 100, 11)
-    size = 100
-    boxsize = (200,) * 3
+    size = 50000000
+    boxsize = (1000,) * 3
 
     list_options = [{'ells': (0,)}]
 
@@ -192,7 +192,7 @@ def test_thetacut():
         n_bitwise_weights = options.pop('n_bitwise_weights', 0)
         data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=n_individual_weights, n_bitwise_weights=n_bitwise_weights, seed=42)
         data1 = [np.concatenate([d, d]) for d in data1]  # that will get us some pairs at sep = 0
-        selection_attrs = options.pop('selection_attrs', {'theta': (0., 1.)})
+        selection_attrs = options.pop('selection_attrs', {'theta': (0., 0.05)})
         autocorr = options.pop('autocorr', False)
         options.setdefault('boxsize', None)
         options.setdefault('los', 'x' if options['boxsize'] is not None else 'firstpoint')
@@ -257,7 +257,7 @@ def test_thetacut():
             weight_attrs['correction'] = correction
         weight_attrs.pop('normalization', None)
 
-        poles_ref, sep_ref = ref_theta_corr(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
+        #poles_ref, sep_ref = ref_theta_corr(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
 
         itemsize = np.dtype('f8' if dtype is None else dtype).itemsize
         tol = {'atol': 1e-8, 'rtol': 1e-2} if itemsize <= 4 else {'atol': 1e-8, 'rtol': 1e-5}

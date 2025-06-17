@@ -69,7 +69,7 @@ typedef struct {
     size_t meshsize[NDIM];
     FLOAT boxsize[NDIM];
     FLOAT boxcenter[NDIM];
-    FLOAT sepmax;
+    FLOAT smax;
     MESH_TYPE type;
 } MeshAttrs;
 

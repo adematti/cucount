@@ -44,17 +44,17 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
         cth_max = 1;
         bounds[2] = 0;
         bounds[3] = device_mattrs.meshsize[1] - 1;
-    } else {
+    } else {  // theta-stripe
         FLOAT dphi, calpha = cos(smax);
         cth_min = cos(th_hi + smax);
         cth_max = cos(th_lo - smax);
 
         if (theta < 0.5 * M_PI) {
-            FLOAT c_thlo = cos(th_lo);
-            dphi = acos(sqrt((calpha * calpha - c_thlo * c_thlo) / (1 - c_thlo * c_thlo)));
+            FLOAT cth_lo = cos(th_lo);
+            dphi = acos(sqrt((calpha * calpha - cth_lo * cth_lo) / (1 - cth_lo * cth_lo)));
         } else {
-            FLOAT c_thhi = cos(th_hi);
-            dphi = acos(sqrt((calpha * calpha - c_thhi * c_thhi) / (1 - c_thhi * c_thhi)));
+            FLOAT cth_hi = cos(th_hi);
+            dphi = acos(sqrt((calpha * calpha - cth_hi * cth_hi) / (1 - cth_hi * cth_hi)));
         }
 
         if (dphi < M_PI) {
@@ -76,12 +76,6 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
     bounds[1] = (int)(0.5 * (1 + cth_max) * device_mattrs.meshsize[0]);
     if (bounds[0] < 0) bounds[0] = 0;
     if (bounds[1] >= device_mattrs.meshsize[0]) bounds[1] = device_mattrs.meshsize[0] - 1;
-
-
-    bounds[0] = 0;
-    bounds[1] = device_mattrs.meshsize[0] - 1;
-    bounds[2] = 0;
-    bounds[3] = device_mattrs.meshsize[1] - 1;
 
 }
 

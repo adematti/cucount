@@ -124,25 +124,29 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
     Mesh list_mesh[MAX_NMESH];
     list_particles[0] = particles1.data();
     list_particles[1] = particles2.data();
-    MeshAttrs mattrs;
+    SelectionAttrs csattrs = sattrs.data();
+    BinAttrs cbattrs = battrs.data();
+    PoleAttrs cpattrs = pattrs.data();
+    MeshAttrs cmattrs;
     for (size_t axis=0; axis<NDIM; axis++) {
-        mattrs.meshsize[axis] = 0;
-        mattrs.boxsize[axis] = 0.;
+        cmattrs.meshsize[axis] = 0;
+        cmattrs.boxsize[axis] = 0.;
     }
+
     // Create a numpy array to store the results
     py::array_t<FLOAT> counts(battrs.nbins());
     
-    if ((battrs.var == VAR_THETA) || (sattrs.var == VAR_THETA)) {
-        mattrs.type = MESH_ANGULAR;
-        mattrs.sepmax = sattrs.max;
+    if ((cbattrs.var == VAR_THETA) || (csattrs.var == VAR_THETA)) {
+        cmattrs.type = MESH_ANGULAR;
+        cmattrs.smax = csattrs.smin;
     }
-    set_mesh_attrs(list_particles, &mattrs);
-    set_mesh(list_particles, list_mesh, mattrs);
+    set_mesh_attrs(list_particles, &cmattrs);
+    set_mesh(list_particles, list_mesh, cmattrs);
 
     auto counts_ptr = counts.mutable_data(); // Get a pointer to the array's data
 
     // Perform the computation
-    count2(counts_ptr, list_mesh, mattrs, sattrs.data(), battrs.data(), pattrs.data(), 0, 0);
+    count2(counts_ptr, list_mesh, cmattrs, csattrs, cbattrs, cpattrs, 0, 0);
     
     // Free allocated memory
     free_mesh(&(list_mesh[0]));

@@ -65,7 +65,7 @@ static size_t angle_to_cell(const size_t *meshsize, const FLOAT cth, const FLOAT
 
 
 void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
-    if ((mattrs->type == MESH_ANGULAR) && (mattrs->meshsize[0] == 0 || mattrs->meshsize[1] == 0)) {
+    if (mattrs->type == MESH_ANGULAR) {
         FLOAT cth_min = LARGE_VALUE, cth_max = -LARGE_VALUE;
         FLOAT phi_min = LARGE_VALUE, phi_max = -LARGE_VALUE;
 
@@ -96,12 +96,19 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
 
         FLOAT fsky = (cth_max - cth_min) * (phi_max - phi_min) / (4 * M_PI);
         log_message(LOG_LEVEL_INFO, "Enclosing fractional area is %.4f.\n", fsky);
-        FLOAT theta_max = mattrs->sepmax * DTORAD;
-        int nside1 = 5 * (int)(M_PI / theta_max);
-        size_t nparticles = sum_nparticles / n_nparticles;
-        int nside2 = (int)(sqrt(0.25 * nparticles / fsky));
-        mattrs->meshsize[0] = (size_t) MIN(nside1, nside2);
-        mattrs->meshsize[1] = 2 * mattrs->meshsize[0];
+
+        if (mattrs->meshsize[0] * mattrs->meshsize[1] == 0) {
+            FLOAT theta_max = acos(mattrs->smax);
+            int nside1 = 5 * (int)(M_PI / theta_max);
+            size_t nparticles = sum_nparticles / n_nparticles;
+            int nside2 = (int)(sqrt(0.25 * nparticles / fsky));
+            mattrs->meshsize[0] = (size_t) MAX(MIN(nside1, nside2), 1);
+            mattrs->meshsize[1] = 2 * mattrs->meshsize[0];
+        }
+        mattrs->boxsize[0] = cth_max - cth_min;
+        mattrs->boxsize[1] = phi_max - phi_min;
+        mattrs->boxcenter[0] = (cth_max + cth_min) / 2.;
+        mattrs->boxcenter[1] = (phi_max + phi_min) / 2.;
         size_t meshsize = mattrs->meshsize[0] * mattrs->meshsize[1];
         FLOAT pixel_resolution = sqrt(4 * M_PI / meshsize) / DTORAD;
         log_message(LOG_LEVEL_INFO, "There will be %d pixels in total.\n", meshsize);
