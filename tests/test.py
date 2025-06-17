@@ -1,6 +1,10 @@
 import numpy as np
 from scipy import special
-from cucountlib import count2, Particles, BinAttrs, PoleAttrs, SelectionAttrs
+
+import sys
+sys.path.insert(0, '../build')
+
+from cucount import count2, Particles, BinAttrs, PoleAttrs, SelectionAttrs
 
 
 @np.vectorize
@@ -47,7 +51,7 @@ def generate_catalogs(size=100, boxsize=(1000,) * 3, offset=(1000., 0., 0.), n_i
     toret = []
     for i in range(2):
         positions = [o + rng.uniform(0., 1., size) * b for o, b in zip(offset, boxsize)]
-        weoghts = []
+        weights = []
         # weights = utils.pack_bitarrays(*[rng.randint(0, 2, size) for i in range(64 * n_bitwise_weights)], dtype=np.uint64)
         # weights = utils.pack_bitarrays(*[rng.randint(0, 2, size) for i in range(33)], dtype=np.uint64)
         # weights = [rng.randint(0, 0xffffffff, size, dtype=np.uint64) for i in range(n_bitwise_weights)]
@@ -175,7 +179,7 @@ def test_thetacut():
 
     edges = np.linspace(0., 100, 11)
     size = 100
-    boxsize = (100,) * 3
+    boxsize = (200,) * 3
 
     list_options = [{'ells': (0,)}]
 
@@ -184,7 +188,7 @@ def test_thetacut():
         print(options)
         nthreads = options.pop('nthreads', None)
         weights_one = options.pop('weights_one', [])
-        n_individual_weights = options.pop('n_individual_weights', 0)
+        n_individual_weights = options.pop('n_individual_weights', 1)
         n_bitwise_weights = options.pop('n_bitwise_weights', 0)
         data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=n_individual_weights, n_bitwise_weights=n_bitwise_weights, seed=42)
         data1 = [np.concatenate([d, d]) for d in data1]  # that will get us some pairs at sep = 0
@@ -273,8 +277,8 @@ def test_thetacut():
         def run(pass_none=False, pass_zero=False, **kwargs):
             positions1 = data1[:3]
             positions2 = data2[:3]
-            weights1 = data1[3:]
-            weights2 = data2[3:]
+            weights1 = data1[3]
+            weights2 = data2[3]
 
             def get_zero(arrays):
                 if isinstance(arrays, list):
@@ -289,18 +293,19 @@ def test_thetacut():
                 weights1 = get_zero(weights1)
                 weights2 = get_zero(weights2)
 
-            positions1 = np.array(positions1).T
-            positions2 = np.array(positions2).T
-
-            particles1 = Particles(positions=positions1, weights=weights1)
-            particles2 = Particles(positions=positions2, weights=weights2)
-            battrs = BinAttrs(var='s', min=edges[0], max=edges[-1], step=edges[1] - edges[0])
+            positions1 = np.column_stack(positions1)
+            positions2 = np.column_stack(positions2)
+            print(positions1.shape)
+            particles1 = Particles(positions1, weights1)
+            particles2 = Particles(positions2, weights2)
+            battrs = BinAttrs('s', edges[0], edges[-1], edges[1] - edges[0])
             for var in selection_attrs:
-                sattrs = SelectionAttrs(var, min=selection_attrs[var][0], max=selection_attrs[var][1])
-
+                sattrs = SelectionAttrs(var, selection_attrs[var][0], selection_attrs[var][1])
             return count2(particles1, particles2, battrs=battrs, sattrs=sattrs)
 
         test = run()
+        print(test)
+        print(poles_ref)
 
         assert np.allclose(test, poles_ref, **tol)
 

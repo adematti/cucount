@@ -10,6 +10,8 @@
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))  // minimum of two numbers
 #define CLIP(x, low, high)  (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))  // min(max(a, low), high)
 #define MAX_NMESH 3  // 3-pt correlation function at maximum
+#define DTORAD 0.017453292519943295 // x deg = x*DTORAD rad
+
 
 // Logging levels
 typedef enum {LOG_LEVEL_DEBUG, LOG_LEVEL_INFO, LOG_LEVEL_WARN, LOG_LEVEL_ERROR} LogLevel;
@@ -37,7 +39,7 @@ typedef struct {
 
 // Particles
 typedef struct {
-    size_t nparticles;
+    size_t nparticles=0;
     FLOAT *spositions;  // positions on the sphere
     FLOAT *positions;
     FLOAT *weights;

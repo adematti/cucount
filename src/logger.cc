@@ -20,5 +20,5 @@ void log_message(LogLevel level, const char *format, ...) {
     vfprintf(stderr, format, args);
     va_end(args);
 
-    fprintf(stderr, "\n");
+    //fprintf(stderr, "\n");
 }

@@ -31,22 +31,23 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
     th_lo = acos(-1.0 + 2.0 * ((FLOAT)(icth + 1.0)) / device_mattrs.meshsize[0]);
     phi_hi = 2 * M_PI * ((FLOAT)(iphi + 1.0) / device_mattrs.meshsize[1]);
     phi_lo = 2 * M_PI * ((FLOAT)(iphi + 0.0) / device_mattrs.meshsize[1]);
+    FLOAT smax = device_sattrs.max * DTORAD;
 
     // Handle edge cases for angular bounds
-    if (th_hi > M_PI - device_sattrs.max) {
+    if (th_hi > M_PI - smax) {
         cth_min = -1;
-        cth_max = cos(th_lo - device_sattrs.max);
+        cth_max = cos(th_lo - smax);
         bounds[2] = 0;
         bounds[3] = device_mattrs.meshsize[1] - 1;
-    } else if (th_lo < device_sattrs.max) {
-        cth_min = cos(th_hi + device_sattrs.max);
+    } else if (th_lo < smax) {
+        cth_min = cos(th_hi + smax);
         cth_max = 1;
         bounds[2] = 0;
         bounds[3] = device_mattrs.meshsize[1] - 1;
     } else {
-        FLOAT dphi, calpha = cos(device_sattrs.max);
-        cth_min = cos(th_hi + device_sattrs.max);
-        cth_max = cos(th_lo - device_sattrs.max);
+        FLOAT dphi, calpha = cos(smax);
+        cth_min = cos(th_hi + smax);
+        cth_max = cos(th_lo - smax);
 
         if (theta < 0.5 * M_PI) {
             FLOAT c_thlo = cos(th_lo);
@@ -75,32 +76,40 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
     bounds[1] = (int)(0.5 * (1 + cth_max) * device_mattrs.meshsize[0]);
     if (bounds[0] < 0) bounds[0] = 0;
     if (bounds[1] >= device_mattrs.meshsize[0]) bounds[1] = device_mattrs.meshsize[0] - 1;
+
+
+    bounds[0] = 0;
+    bounds[1] = device_mattrs.meshsize[0] - 1;
+    bounds[2] = 0;
+    bounds[3] = device_mattrs.meshsize[1] - 1;
+
 }
 
 
-__device__ bool is_selected(FLOAT *spositions1, FLOAT *spositions2, FLOAT *positions1, FLOAT *positions2) {
+__device__ bool is_selected(FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2) {
     bool selected = 1;
     if (device_sattrs.var == VAR_THETA) {
-        FLOAT costheta = spositions1[0] * spositions2[0] + spositions1[1] * spositions2[1] + spositions1[2] * spositions2[2];
+        FLOAT costheta = sposition1[0] * sposition2[0] + sposition1[1] * sposition2[1] + sposition1[2] * sposition2[2];
         selected = (costheta >= device_sattrs.smin) && (costheta <= device_sattrs.smax);
+        //if (!selected) printf("costheta %f %.4f %.4f ", costheta, device_sattrs.smin, device_sattrs.smax);
     }
     return selected;
 }
 
 
-__device__ void add_weight(FLOAT *counts, FLOAT *spositions1, FLOAT *spositions2, FLOAT *positions1, FLOAT *positions2, FLOAT weights1, FLOAT weights2) {
+__device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2, FLOAT weight1, FLOAT weight2) {
     int ibin = 0;
     if (device_battrs.var == VAR_S) {
-        FLOAT dist = 0, diff = 0;
+        FLOAT dist = 0, diff;
         for (size_t axis = 0; axis < NDIM; axis++) {
-            diff = positions2[axis] - positions1[axis];
+            diff = position2[axis] - position1[axis];
             dist += diff * diff;
         }
         dist = sqrt(dist);
-        ibin = (dist - device_battrs.min) / device_battrs.step + device_battrs.min;
+        ibin = (int) (floor((dist - device_battrs.min) / device_battrs.step));
     }
-    if ((ibin >= 0) && (ibin < device_battrs.max)) {
-        FLOAT weight = weights1 * weights2;
+    if ((ibin >= 0) && (ibin < device_battrs.nbins)) {
+        FLOAT weight = weight1 * weight2;
         atomicAdd(&(counts[ibin]), weight);
     }
 }
@@ -115,7 +124,7 @@ __global__ void count2_kernel(FLOAT *counts, size_t nparticles1, FLOAT *mesh1_sp
 
     // Initialize local histogram
     for (size_t i = tid; i < device_battrs.nbins; i += blockDim.x) {
-        local_counts[i] = 0;
+        local_counts[i] = 0.;
     }
     __syncthreads();
 
@@ -125,30 +134,29 @@ __global__ void count2_kernel(FLOAT *counts, size_t nparticles1, FLOAT *mesh1_sp
 
     // Process particles
     for (size_t ii = gid; ii < nparticles1; ii += stride) {
-        FLOAT *position1 = &mesh1_positions[NDIM * ii];
-        FLOAT *sposition1 = &mesh1_spositions[NDIM * ii];
+        FLOAT *position1 = &(mesh1_positions[NDIM * ii]);
+        FLOAT *sposition1 = &(mesh1_spositions[NDIM * ii]);
         FLOAT weight1 = mesh1_weights[ii];
-
         if (device_mattrs.type == MESH_ANGULAR) {
             int bounds[4];
             set_angular_bounds(sposition1, bounds);
+            //printf("%d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3]);
 
             for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
                 int icth_n = icth * device_mattrs.meshsize[1];
                 for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
                     int iphi_true = (iphi + device_mattrs.meshsize[1]) % device_mattrs.meshsize[1];
                     int icell = iphi_true + icth_n;
-
                     int np2 = mesh2_nparticles[icell];
-                    FLOAT *positions2 = &mesh2_positions[NDIM * mesh2_cumnparticles[icell]];
-                    FLOAT *spositions2 = &mesh2_spositions[NDIM * mesh2_cumnparticles[icell]];
-                    FLOAT *weights2 = &mesh2_weights[mesh2_cumnparticles[icell]];
+                    FLOAT *positions2 = &(mesh2_positions[NDIM * mesh2_cumnparticles[icell]]);
+                    FLOAT *spositions2 = &(mesh2_spositions[NDIM * mesh2_cumnparticles[icell]]);
+                    FLOAT *weights2 = &(mesh2_weights[mesh2_cumnparticles[icell]]);
 
                     for (size_t jj = 0; jj < np2; jj++) {
-                        if (!is_selected(sposition1, &spositions2[NDIM * jj], position1, &positions2[NDIM * jj])) {
+                        if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
                             continue;
                         }
-                        add_weight(local_counts, sposition1, &spositions2[NDIM * jj], position1, &positions2[NDIM * jj], weight1, weights2[jj]);
+                        add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj]);
                     }
                 }
             }
@@ -175,28 +183,28 @@ __global__ void count2_kernel(FLOAT *counts, size_t nparticles1, FLOAT *mesh1_sp
 
 
 static void copy_mesh_to_device(Mesh mesh, size_t **mesh_nparticles, size_t **mesh_cumnparticles, FLOAT **mesh_spositions, FLOAT **mesh_positions, FLOAT **mesh_weights) {
-    CUDA_CHECK(cudaMalloc((void **)mesh_positions, NDIM * mesh.total_nparticles * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemcpy(*mesh_positions, mesh.positions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
-
-    CUDA_CHECK(cudaMalloc((void **)mesh_spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemcpy(*mesh_spositions, mesh.spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
-
-    CUDA_CHECK(cudaMalloc((void **)mesh_weights, mesh.total_nparticles * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemcpy(*mesh_weights, mesh.weights, mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
-
     CUDA_CHECK(cudaMalloc((void **)mesh_nparticles, mesh.size * sizeof(size_t)));
     CUDA_CHECK(cudaMemcpy(*mesh_nparticles, mesh.nparticles, mesh.size * sizeof(size_t), cudaMemcpyHostToDevice));
 
     CUDA_CHECK(cudaMalloc((void **)mesh_cumnparticles, mesh.size * sizeof(size_t)));
     CUDA_CHECK(cudaMemcpy(*mesh_cumnparticles, mesh.cumnparticles, mesh.size * sizeof(size_t), cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMalloc((void **)mesh_spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemcpy(*mesh_spositions, mesh.spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMalloc((void **)mesh_positions, NDIM * mesh.total_nparticles * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemcpy(*mesh_positions, mesh.positions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMalloc((void **)mesh_weights, mesh.total_nparticles * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemcpy(*mesh_weights, mesh.weights, mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
 }
 
 static void free_mesh_from_device(size_t *mesh_nparticles, size_t *mesh_cumnparticles, FLOAT *mesh_spositions, FLOAT *mesh_positions, FLOAT *mesh_weights) {
     // Free GPU memory
     CUDA_CHECK(cudaFree(mesh_nparticles));
     CUDA_CHECK(cudaFree(mesh_cumnparticles));
-    CUDA_CHECK(cudaFree(mesh_positions));
     CUDA_CHECK(cudaFree(mesh_spositions));
+    CUDA_CHECK(cudaFree(mesh_positions));
     CUDA_CHECK(cudaFree(mesh_weights));
 }
 
@@ -245,10 +253,10 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
             0
         );
     }
-    log_message(LOG_LEVEL_INFO, "Running counts with %d blocks and %d threads per block\n", nblocks, nthreads_per_block);
+    log_message(LOG_LEVEL_INFO, "Running counts with %d blocks and %d threads per block.\n", this_nblocks, this_nthreads_per_block);
 
     CUDA_CHECK(cudaEventRecord(start, 0));
-    count2_kernel<<<nblocks, nthreads_per_block, battrs.nbins * sizeof(FLOAT)>>>(counts, list_mesh[0].total_nparticles, device_mesh1_spositions, device_mesh1_positions, device_mesh1_weights, device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_positions, device_mesh2_weights);
+    count2_kernel<<<this_nblocks, this_nthreads_per_block, battrs.nbins * sizeof(FLOAT)>>>(device_counts, list_mesh[0].total_nparticles, device_mesh1_spositions, device_mesh1_positions, device_mesh1_weights, device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_positions, device_mesh2_weights);
     CUDA_CHECK(cudaEventRecord(stop, 0));
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaEventElapsedTime(&elapsed_time, start, stop));
@@ -258,8 +266,8 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaMemcpy(counts, device_counts, battrs.nbins * sizeof(FLOAT), cudaMemcpyDeviceToHost));
 
     // Free GPU memory
-    free_mesh_from_device(device_mesh1_nparticles, device_mesh1_cumnparticles, device_mesh1_spositions, device_mesh1_spositions, device_mesh1_weights);
-    free_mesh_from_device(device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_spositions, device_mesh2_weights);
+    free_mesh_from_device(device_mesh1_nparticles, device_mesh1_cumnparticles, device_mesh1_spositions, device_mesh1_positions, device_mesh1_weights);
+    free_mesh_from_device(device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_positions, device_mesh2_weights);
 
     // Destroy CUDA events
     CUDA_CHECK(cudaEventDestroy(start));

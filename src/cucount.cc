@@ -6,6 +6,11 @@
 
 namespace py = pybind11;
 
+
+static bool is_contiguous(py::array array) {
+    return array.flags() & py::array::c_style;
+}
+
 // Expose the Particles struct to Python
 struct Particles_py {
     py::array_t<FLOAT> positions;
@@ -13,11 +18,21 @@ struct Particles_py {
 
     // Constructor
     Particles_py(py::array_t<FLOAT> positions, py::array_t<FLOAT> weights)
-        : positions(positions), weights(weights) {}
+        : positions(positions), weights(weights) {
+        // Ensure positions are C-contiguous
+        if (!is_contiguous(positions)) {
+            this->positions = py::array_t<FLOAT>(positions.attr("copy")());
+        }
+
+        // Ensure weights are C-contiguous
+        if (!is_contiguous(weights)) {
+            this->weights = py::array_t<FLOAT>(weights.attr("copy")());
+        }
+    }
 
     // Method to get the number of particles automatically
     size_t nparticles() const {
-        return positions.shape(0); // Return the size of the first dimension
+        return positions.shape(0);
     }
 
     Particles data() {
@@ -91,8 +106,8 @@ struct SelectionAttrs_py {
         sattrs.min = min;
         sattrs.max = max;
         if (var == VAR_THETA) {
-            sattrs.smin = acos(max);
-            sattrs.smax = acos(min);
+            sattrs.smin = cos(max * DTORAD);
+            sattrs.smax = cos(min * DTORAD);
             if (min <= 0.) sattrs.smax = 2.;
         }
         return sattrs;
@@ -110,25 +125,28 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
     list_particles[0] = particles1.data();
     list_particles[1] = particles2.data();
     MeshAttrs mattrs;
+    for (size_t axis=0; axis<NDIM; axis++) {
+        mattrs.meshsize[axis] = 0;
+        mattrs.boxsize[axis] = 0.;
+    }
+    // Create a numpy array to store the results
+    py::array_t<FLOAT> counts(battrs.nbins());
     
     if ((battrs.var == VAR_THETA) || (sattrs.var == VAR_THETA)) {
         mattrs.type = MESH_ANGULAR;
         mattrs.sepmax = sattrs.max;
     }
-    set_mesh_attrs(list_particles, mattrs);
+    set_mesh_attrs(list_particles, &mattrs);
     set_mesh(list_particles, list_mesh, mattrs);
 
-    // Create a numpy array to store the results
-    py::array_t<FLOAT> counts(battrs.nbins());
     auto counts_ptr = counts.mutable_data(); // Get a pointer to the array's data
 
     // Perform the computation
     count2(counts_ptr, list_mesh, mattrs, sattrs.data(), battrs.data(), pattrs.data(), 0, 0);
-
+    
     // Free allocated memory
-    free_mesh(list_mesh[0]);
-    free_mesh(list_mesh[1]);
-
+    free_mesh(&(list_mesh[0]));
+    free_mesh(&(list_mesh[1]));
     // Return the numpy array
     return counts;
 }
