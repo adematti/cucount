@@ -315,6 +315,26 @@ def test_thetacut():
         assert np.allclose(test.T, poles_ref, **tol)
 
 
+def test_corrfunc():
+    edges = (np.linspace(0., 100, 101), np.linspace(-1., 1., 201))
+    size = int(1e6)
+    boxsize = (1000,) * 3
+    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=0, seed=42)
+    positions1, weights1 = np.column_stack(data1[:3]), data1[3]
+    positions2, weights2 = np.column_stack(data2[:3]), data2[3]
+
+    particles1 = Particles(positions1, weights1)
+    particles2 = Particles(positions2, weights2)
+    los = 'midpoint'
+    battrs = BinAttrs(**{'s': (edges[0][0], edges[0][-1], edges[0][1] - edges[0][0]), 'mu': (edges[1][0], edges[1][-1], edges[1][1] - edges[1][0], los)})
+    test = count2(particles1, particles2, battrs=battrs, sattrs=sattrs)
+
+    from pycorr import TwoPointCounter
+    ref = TwoPointCounter('smu', edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los)
+    tol = {'atol': 1e-8, 'rtol': 1e-5}
+    assert np.allclose(test, ref.wcounts, **tol)
+
+
 if __name__ == '__main__':
 
     test_thetacut()
