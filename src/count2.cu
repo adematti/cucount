@@ -253,15 +253,16 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
 }
 
 
-__global__ void count2_kernel(FLOAT *counts, size_t nparticles1, FLOAT *mesh1_spositions, FLOAT *mesh1_positions, FLOAT *mesh1_weights,
+__global__ void count2_kernel(FLOAT *block_counts, size_t nparticles1, FLOAT *mesh1_spositions, FLOAT *mesh1_positions, FLOAT *mesh1_weights,
                         size_t *mesh2_nparticles, size_t *mesh2_cumnparticles, FLOAT *mesh2_spositions, FLOAT *mesh2_positions, FLOAT *mesh2_weights) {
-    // Shared memory for local histogram
-    extern __shared__ FLOAT local_counts[];
 
     size_t tid = threadIdx.x;
 
     // Initialize local histogram
-    for (size_t i = tid; i < device_battrs.size; i += blockDim.x) local_counts[i] = 0.;
+    FLOAT *local_counts = &block_counts[blockIdx.x * device_battrs.size];
+
+    // Zero initialize histogram for this block
+    for (int i = tid; i < device_battrs.size; i += blockDim.x) local_counts[i] = 0;
 
     __syncthreads();
 
@@ -300,12 +301,6 @@ __global__ void count2_kernel(FLOAT *counts, size_t nparticles1, FLOAT *mesh1_sp
                 }
             }
         }
-    }
-    __syncthreads();
-
-    // Combine local histograms into global histogram
-    for (size_t i = tid; i < device_battrs.size; i += blockDim.x) {
-        atomicAdd(&counts[i], local_counts[i]);
     }
 }
 
@@ -349,6 +344,19 @@ static void free_mesh_from_device(size_t *mesh_nparticles, size_t *mesh_cumnpart
 }
 
 
+__global__ void reduce_kernel(const FLOAT *block_counts, int nblocks, FLOAT *final_counts, size_t size)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= size) return;
+
+    FLOAT sum = 0;
+    for (int b = 0; b < nblocks; ++b) {
+        sum += block_counts[b * size + i];
+    }
+    final_counts[i] = sum;
+}
+
+
 void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, const BinAttrs battrs, const int nblocks, const int nthreads_per_block) {
 
     // Device pointers
@@ -357,7 +365,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     FLOAT *device_mesh1_weights, *device_mesh2_weights;
     size_t *device_mesh1_nparticles, *device_mesh2_nparticles;
     size_t *device_mesh1_cumnparticles, *device_mesh2_cumnparticles;
-    FLOAT *device_counts;
+    FLOAT *block_counts, *final_counts;
 
     // CUDA timing events
     cudaEvent_t start, stop;
@@ -375,13 +383,6 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     copy_mesh_to_device(list_mesh[0], &device_mesh1_nparticles, &device_mesh1_cumnparticles, &device_mesh1_spositions, &device_mesh1_positions, &device_mesh1_weights);
     copy_mesh_to_device(list_mesh[1], &device_mesh2_nparticles, &device_mesh2_cumnparticles, &device_mesh2_spositions, &device_mesh2_positions, &device_mesh2_weights);
 
-    CUDA_CHECK(cudaMalloc((void **)&device_counts, battrs.size * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemcpy(device_counts, counts, battrs.size * sizeof(FLOAT), cudaMemcpyHostToDevice));
-
-    // Create CUDA events for timing
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
-
     int this_nblocks = nblocks;
     int this_nthreads_per_block = nthreads_per_block;
     if (nthreads_per_block <= 0) {
@@ -389,23 +390,39 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
             &this_nblocks,
             &this_nthreads_per_block,
             count2_kernel,
-            battrs.size * sizeof(FLOAT),
+            0,
             0
         );
     }
     log_message(LOG_LEVEL_INFO, "Running counts with %d blocks and %d threads per block.\n", this_nblocks, this_nthreads_per_block);
 
+
+    // allocate histogram arrays
+    CUDA_CHECK(cudaMalloc((void **)&block_counts, this_nblocks * battrs.size * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMalloc(&final_counts,  battrs.size * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemset(final_counts, 0, battrs.size * sizeof(FLOAT)));
+
+    // Create CUDA events for timing
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+
     CUDA_CHECK(cudaEventRecord(start, 0));
-    count2_kernel<<<this_nblocks, this_nthreads_per_block, battrs.size * sizeof(FLOAT)>>>(device_counts, list_mesh[0].total_nparticles, device_mesh1_spositions, device_mesh1_positions, device_mesh1_weights, device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_positions, device_mesh2_weights);
+    count2_kernel<<<this_nblocks, this_nthreads_per_block>>>(block_counts, list_mesh[0].total_nparticles, device_mesh1_spositions, device_mesh1_positions, device_mesh1_weights, device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_positions, device_mesh2_weights);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    reduce_kernel<<<this_nblocks, this_nthreads_per_block>>>(block_counts, this_nblocks, final_counts, battrs.size);
+    
     CUDA_CHECK(cudaEventRecord(stop, 0));
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaEventElapsedTime(&elapsed_time, start, stop));
     log_message(LOG_LEVEL_INFO, "Time elapsed: %3.1f ms.\n", elapsed_time);
 
     // Copy histograms back to host
-    CUDA_CHECK(cudaMemcpy(counts, device_counts, battrs.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(counts, final_counts, battrs.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
 
     // Free GPU memory
+    CUDA_CHECK(cudaFree(block_counts));
+    CUDA_CHECK(cudaFree(final_counts));
+
     free_mesh_from_device(device_mesh1_nparticles, device_mesh1_cumnparticles, device_mesh1_spositions, device_mesh1_positions, device_mesh1_weights);
     free_mesh_from_device(device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_positions, device_mesh2_weights);
 

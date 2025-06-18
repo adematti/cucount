@@ -101,7 +101,7 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
             FLOAT theta_max = acos(mattrs->smax);
             int nside1 = 5 * (int)(M_PI / theta_max);
             size_t nparticles = sum_nparticles / n_nparticles;
-            int nside2 = (int)(sqrt(0.25 * nparticles / fsky));
+            int nside2 = MIN((int)(sqrt(0.25 * nparticles / fsky)), 2048);  // cap to avoid blowing up the memory
             mattrs->meshsize[0] = (size_t) MAX(MIN(nside1, nside2), 1);
             mattrs->meshsize[1] = 2 * mattrs->meshsize[0];
         }
@@ -111,7 +111,7 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
         mattrs->boxcenter[1] = (phi_max + phi_min) / 2.;
         size_t meshsize = mattrs->meshsize[0] * mattrs->meshsize[1];
         FLOAT pixel_resolution = sqrt(4 * M_PI / meshsize) / DTORAD;
-        log_message(LOG_LEVEL_INFO, "There will be %d pixels in total.\n", meshsize);
+        log_message(LOG_LEVEL_INFO, "Mesh size is %d = %d x %d.\n", meshsize, mattrs->meshsize[0], mattrs->meshsize[1]);
         log_message(LOG_LEVEL_INFO, "Pixel resolution is %.4lf deg.\n", pixel_resolution);
     }
 }

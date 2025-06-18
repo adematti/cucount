@@ -181,7 +181,7 @@ def test_thetacut():
     TwoPointWeight = namedtuple('TwoPointWeight', ['sep', 'weight'])
 
     edges = np.linspace(0., 100, 11)
-    size = int(5e7)
+    size = int(1e3)
     boxsize = (100,) * 3
 
     list_options = [{'ells': (0, 2)}]
@@ -262,7 +262,7 @@ def test_thetacut():
             weight_attrs['correction'] = correction
         weight_attrs.pop('normalization', None)
 
-        #poles_ref, sep_ref = ref_theta_corr(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
+        poles_ref, sep_ref = ref_theta_corr(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
 
         itemsize = np.dtype('f8' if dtype is None else dtype).itemsize
         tol = {'atol': 1e-8, 'rtol': 1e-2} if itemsize <= 4 else {'atol': 1e-8, 'rtol': 1e-5}
