@@ -46,7 +46,7 @@ static FLOAT wrap_angle(FLOAT phi) {
 }
 
 
-static size_t angle_to_cell(const size_t *meshsize, const FLOAT cth, const FLOAT phi) {
+static size_t angular_to_cell(const MeshAttrs mattrs, const FLOAT cth, const FLOAT phi) {
     // Returns the pixel index for coordinates cth (cos(theta)) and phi (azimuthal angle)
 
     // Validate input
@@ -56,11 +56,22 @@ static size_t angle_to_cell(const size_t *meshsize, const FLOAT cth, const FLOAT
     }
 
     // Compute pixel indices
-    int icth = (cth == 1) ? (meshsize[0] - 1) : (int)(0.5 * (1 + cth) * meshsize[0]);
-    int iphi = (int)(0.5 * wrap_angle(phi) / M_PI * meshsize[1]);
+    int icth = (cth == 1) ? (mattrs.meshsize[0] - 1) : (int)(0.5 * (1 + cth) * mattrs.meshsize[0]);
+    int iphi = (int)(0.5 * wrap_angle(phi) / M_PI * mattrs.meshsize[1]);
 
     // Return combined pixel index
-    return iphi + icth * meshsize[1];
+    return iphi + icth * mattrs.meshsize[1];
+}
+
+
+static size_t cartesian_to_cell(const MeshAttrs mattrs, const FLOAT* position) {
+    size_t index = 0;
+    for (size_t axis = 0; axis < NDIM; axis++) {
+        index *= mattrs.meshsize[axis];
+        FLOAT offset = mattrs.boxcenter[axis] - mattrs.boxsize[axis] / 2;
+        index += (position[axis] - offset) / mattrs.boxsize[axis];
+    }
+    return index;
 }
 
 
@@ -114,6 +125,54 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
         log_message(LOG_LEVEL_INFO, "Mesh size is %d = %d x %d.\n", meshsize, mattrs->meshsize[0], mattrs->meshsize[1]);
         log_message(LOG_LEVEL_INFO, "Pixel resolution is %.4lf deg.\n", pixel_resolution);
     }
+
+    if (mattrs->type == MESH_CARTESIAN) {
+        FLOAT min[NDIM], max[NDIM];
+
+        // Loop through particle positions
+        size_t sum_nparticles = 0, n_nparticles = 0;
+        for (size_t imesh=0; imesh<MAX_NMESH; imesh++) {
+            const Particles particles = list_particles[imesh];
+            if (particles.size == 0) continue;
+            sum_nparticles += particles.size;
+            n_nparticles += 1;
+            for (size_t i = 0; i < particles.size; i++) {
+                const FLOAT *position = &(particles.positions[NDIM * i]);
+
+                for (size_t axis = 0; axis < NDIM; axis ++) {
+                    if (i == 0) {
+                        min[axis] = position[axis];
+                        max[axis] = position[axis];
+                    }
+                    if (position[axis] < min[axis]) min[axis] = position[axis];
+                    if (position[axis] > max[axis]) max[axis] = position[axis];
+                }
+
+            }
+        }
+
+        FLOAT volume = 1.;
+        for (size_t axis = 0; axis < NDIM; axis ++) {
+            mattrs->boxsize[axis] = 1.001 * (max[axis] - min[axis]);
+            mattrs->boxcenter[axis] = (max[axis] + min[axis]) / 2.;
+            volume *= mattrs->boxsize[axis];
+        }
+        log_message(LOG_LEVEL_INFO, "Enclosing volume is %.4f [%.4f %.4f] x [%.4f %.4f] x [%.4f %.4f].\n", volume, min[0], max[0], min[1], max[1], min[2], max[2]);
+
+        size_t meshsize = 1;
+        if (mattrs->meshsize[0] == 0) {
+            int nside1 = (int) (16.0 * pow(volume, 1 / 3) / mattrs->smax);
+            int nside2 = (int) pow(0.5 * sum_nparticles / n_nparticles, 1. / 3.);
+            for (size_t axis = 0; axis < NDIM; axis ++) {
+                mattrs->meshsize[axis] = (size_t) MAX(MIN(nside1, nside2), 1);
+                meshsize *= mattrs->meshsize[axis];
+            }
+        }
+        FLOAT voxel_resolution = volume / meshsize;
+        log_message(LOG_LEVEL_INFO, "Mesh size is %d = %d x %d x %d.\n", meshsize, mattrs->meshsize[0], mattrs->meshsize[1], mattrs->meshsize[2]);
+        log_message(LOG_LEVEL_INFO, "Voxel resolution is %.4lf.\n", voxel_resolution);
+    }
+
 }
 
 
@@ -134,7 +193,14 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
                 const FLOAT *position = &(particles.positions[NDIM * i]);
                 FLOAT cth, phi, r;
                 cartesian_to_sphere(position, &r, &cth, &phi);
-                index[i] = angle_to_cell(mattrs.meshsize, cth, phi);
+                index[i] = angular_to_cell(mattrs, cth, phi);
+            }
+        }
+        if (mattrs.type == MESH_CARTESIAN) {
+            mesh.size = mattrs.meshsize[0] * mattrs.meshsize[1];
+            for (size_t i = 0; i < particles.size; i++) {
+                const FLOAT *position = &(particles.positions[NDIM * i]);
+                index[i] = cartesian_to_cell(mattrs, position);
             }
         }
         //log_message(LOG_LEVEL_INFO, "Min max %d %d %d %d %d.\n", idxmin, idxmax, mattrs.meshsize[0], mattrs.meshsize[1], mesh.size);

@@ -85,6 +85,15 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
 
 }
 
+__device__ void set_cartesian_bounds(FLOAT *sposition, int *bounds) {
+    for (size_t axis = 0; axis < NDIM; axis++) {
+        FLOAT offset = device_mattrs.boxcenter[axis] - device_mattrs.boxsize[axis] / 2;
+        index = (position[axis] - offset) / device_mattrs.boxsize[axis];
+        int delta = (int) device_mattrs.smax / device_mattrs.boxsize[axis] * device_mattrs.meshize[axis] - 1;
+        bounds[2 * axis] = MAX(index - delta, 0);
+        bounds[2 * axis + 1] = MIN(index + delta, device_mattrs.meshize[axis] + 1);
+    }
+}
 
 __device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
     for (size_t i = 0; i < NDIM; i++) add[i] = position1[i] + position2[i];
@@ -277,8 +286,8 @@ __global__ void count2_kernel(FLOAT *block_counts, size_t nparticles1, FLOAT *me
         FLOAT *position1 = &(mesh1_positions[NDIM * ii]);
         FLOAT *sposition1 = &(mesh1_spositions[NDIM * ii]);
         FLOAT weight1 = mesh1_weights[ii];
+        int bounds[2 * NDIM];
         if (device_mattrs.type == MESH_ANGULAR) {
-            int bounds[4];
             set_angular_bounds(sposition1, bounds);
             //printf("%d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3]);
 
@@ -297,6 +306,29 @@ __global__ void count2_kernel(FLOAT *block_counts, size_t nparticles1, FLOAT *me
                             continue;
                         }
                         add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj]);
+                    }
+                }
+            }
+        }
+        if (device_mattrs.type == MESH_CARTESIAN) {
+            set_cartesian_bounds(position1, bounds);
+            //printf("%d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3]);
+            for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
+                int ix_n = ix * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
+                for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
+                    int iy_n = iy * device_mattrs.meshsize[2];
+                    for (int iz_n = bounds[4]; iz <= bounds[5]; iz++) {
+                        int icell = ix_n + ix_n + iz_n;
+                        int np2 = mesh2_nparticles[icell];
+                        FLOAT *positions2 = &(mesh2_positions[NDIM * mesh2_cumnparticles[icell]]);
+                        FLOAT *spositions2 = &(mesh2_spositions[NDIM * mesh2_cumnparticles[icell]]);
+                        FLOAT *weights2 = &(mesh2_weights[mesh2_cumnparticles[icell]]);
+                        for (size_t jj = 0; jj < np2; jj++) {
+                            if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
+                                continue;
+                            }
+                            add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj]);
+                        }
                     }
                 }
             }
@@ -410,7 +442,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     count2_kernel<<<this_nblocks, this_nthreads_per_block>>>(block_counts, list_mesh[0].total_nparticles, device_mesh1_spositions, device_mesh1_positions, device_mesh1_weights, device_mesh2_nparticles, device_mesh2_cumnparticles, device_mesh2_spositions, device_mesh2_positions, device_mesh2_weights);
     CUDA_CHECK(cudaDeviceSynchronize());
     reduce_kernel<<<this_nblocks, this_nthreads_per_block>>>(block_counts, this_nblocks, final_counts, battrs.size);
-    
+
     CUDA_CHECK(cudaEventRecord(stop, 0));
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaEventElapsedTime(&elapsed_time, start, stop));
