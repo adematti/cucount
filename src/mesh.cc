@@ -69,7 +69,7 @@ static size_t cartesian_to_cell(const MeshAttrs mattrs, const FLOAT* position) {
     for (size_t axis = 0; axis < NDIM; axis++) {
         index *= mattrs.meshsize[axis];
         FLOAT offset = mattrs.boxcenter[axis] - mattrs.boxsize[axis] / 2;
-        index += (position[axis] - offset) / mattrs.boxsize[axis];
+        index += (int) ((position[axis] - offset) * mattrs.meshsize[axis] / mattrs.boxsize[axis]);
     }
     return index;
 }
@@ -85,24 +85,23 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
         for (size_t imesh=0; imesh<MAX_NMESH; imesh++) {
             const Particles particles = list_particles[imesh];
             if (particles.size == 0) continue;
-            sum_nparticles += particles.size;
-            n_nparticles += 1;
             for (size_t i = 0; i < particles.size; i++) {
                 const FLOAT *position = &(particles.positions[NDIM * i]);
                 FLOAT cth, phi, r;
                 cartesian_to_sphere(position, &r, &cth, &phi);
                 //if (i < 10) log_message(LOG_LEVEL_INFO, "Position %.3f %.3f %.3f.\n", position[0], position[1], position[2]);
 
-                if (i == 0) {
+                if ((sum_nparticles == 0) && (i == 0)) {
                     cth_min = cth_max = cth;
                     phi_min = phi_max = phi;
                 }
-
                 if (cth < cth_min) cth_min = cth;
                 if (cth > cth_max) cth_max = cth;
                 if (phi < phi_min) phi_min = phi;
                 if (phi > phi_max) phi_max = phi;
             }
+            sum_nparticles += particles.size;
+            n_nparticles += 1;
         }
 
         FLOAT fsky = (cth_max - cth_min) * (phi_max - phi_min) / (4 * M_PI);
@@ -134,21 +133,20 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
         for (size_t imesh=0; imesh<MAX_NMESH; imesh++) {
             const Particles particles = list_particles[imesh];
             if (particles.size == 0) continue;
-            sum_nparticles += particles.size;
-            n_nparticles += 1;
             for (size_t i = 0; i < particles.size; i++) {
                 const FLOAT *position = &(particles.positions[NDIM * i]);
 
-                for (size_t axis = 0; axis < NDIM; axis ++) {
-                    if (i == 0) {
+                for (size_t axis = 0; axis < NDIM; axis++) {
+                    if ((sum_nparticles == 0) && (i == 0)) {
                         min[axis] = position[axis];
                         max[axis] = position[axis];
                     }
                     if (position[axis] < min[axis]) min[axis] = position[axis];
                     if (position[axis] > max[axis]) max[axis] = position[axis];
                 }
-
             }
+            sum_nparticles += particles.size;
+            n_nparticles += 1;
         }
 
         FLOAT volume = 1.;
@@ -161,7 +159,7 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
 
         size_t meshsize = 1;
         if (mattrs->meshsize[0] == 0) {
-            int nside1 = (int) (16.0 * pow(volume, 1 / 3) / mattrs->smax);
+            int nside1 = (int) (16.0 * pow(volume, 1. / 3.) / mattrs->smax);
             int nside2 = (int) pow(0.5 * sum_nparticles / n_nparticles, 1. / 3.);
             for (size_t axis = 0; axis < NDIM; axis ++) {
                 mattrs->meshsize[axis] = (size_t) MAX(MIN(nside1, nside2), 1);
@@ -197,7 +195,8 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
             }
         }
         if (mattrs.type == MESH_CARTESIAN) {
-            mesh.size = mattrs.meshsize[0] * mattrs.meshsize[1];
+            mesh.size = 1;
+            for (size_t axis = 0; axis < NDIM; axis++) mesh.size *= mattrs.meshsize[axis];
             for (size_t i = 0; i < particles.size; i++) {
                 const FLOAT *position = &(particles.positions[NDIM * i]);
                 index[i] = cartesian_to_cell(mattrs, position);
@@ -207,7 +206,7 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         for (size_t i = 0; i < particles.size; i++) {
             const FLOAT *position = &(particles.positions[NDIM * i]);
             FLOAT r = cartesian_distance(position);
-            for (size_t axis=0; axis < NDIM; axis++) spositions[NDIM * i + axis] = position[axis] / r;
+            for (size_t axis = 0; axis < NDIM; axis++) spositions[NDIM * i + axis] = position[axis] / r;
         }
 
         // Allocate memory for box variables
@@ -250,7 +249,6 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
             mesh.weights[offset] = particles.weights[i];
             mesh.nparticles[idx]++;
         }
-
         free(index);
         free(spositions);
     }

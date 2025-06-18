@@ -76,36 +76,31 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
     bounds[1] = (int)(0.5 * (1 + cth_max) * device_mattrs.meshsize[0]);
     if (bounds[0] < 0) bounds[0] = 0;
     if (bounds[1] >= device_mattrs.meshsize[0]) bounds[1] = device_mattrs.meshsize[0] - 1;
-    /*
-    bounds[0] = 0;
-    bounds[1] = device_mattrs.meshsize[0] - 1;
-    bounds[2] = 0;
-    bounds[3] = device_mattrs.meshsize[1] - 1;
-    */
-
 }
 
-__device__ void set_cartesian_bounds(FLOAT *sposition, int *bounds) {
+__device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
     for (size_t axis = 0; axis < NDIM; axis++) {
         FLOAT offset = device_mattrs.boxcenter[axis] - device_mattrs.boxsize[axis] / 2;
-        index = (position[axis] - offset) / device_mattrs.boxsize[axis];
-        int delta = (int) device_mattrs.smax / device_mattrs.boxsize[axis] * device_mattrs.meshize[axis] - 1;
+        int index = (int) ((position[axis] - offset) * device_mattrs.meshsize[axis] / device_mattrs.boxsize[axis]);
+        int delta = (int) (device_mattrs.smax / device_mattrs.boxsize[axis] * device_mattrs.meshsize[axis]) + 1;
         bounds[2 * axis] = MAX(index - delta, 0);
-        bounds[2 * axis + 1] = MIN(index + delta, device_mattrs.meshize[axis] + 1);
+        bounds[2 * axis + 1] = MIN(index + delta, device_mattrs.meshsize[axis] - 1);
+        //bounds[2 * axis] = 0;
+        //bounds[2 * axis + 1] = device_mattrs.meshsize[axis] - 1;
     }
 }
 
 __device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
-    for (size_t i = 0; i < NDIM; i++) add[i] = position1[i] + position2[i];
+    for (size_t axis = 0; axis < NDIM; axis++) add[axis] = position1[axis] + position2[axis];
 }
 
 __device__ inline void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2) {
-    for (size_t i = 0; i < NDIM; i++) diff[i] = position1[i] - position2[i];
+    for (size_t axis = 0; axis < NDIM; axis++) diff[axis] = position1[axis] - position2[axis];
 }
 
 __device__ inline FLOAT dot(const FLOAT *position1, const FLOAT *position2) {
     FLOAT d = 0.;
-    for (size_t i = 0; i < NDIM; i++) d += position1[i] * position2[i];
+    for (size_t axis = 0; axis < NDIM; axis++) d += position1[axis] * position2[axis];
     return d;
 }
 
@@ -223,7 +218,6 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
         };
     }
 
-    size_t size = 1;
     for (i = 0; i < device_battrs.ndim; i++) {
         var = device_battrs.var[i];
         FLOAT value = 0;
@@ -237,26 +231,24 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
             value = mu;
         }
         if ((var == VAR_S) || (var == VAR_THETA) || (var == VAR_MU)) {
-            ibin *= device_battrs.shape[i];
-            size *= device_battrs.shape[i];
-            ibin += (int) (floor((value - device_battrs.min[i]) / device_battrs.step[i]));
+            int ibin_loc = (int) (floor((value - device_battrs.min[i]) / device_battrs.step[i]));
+            if ((ibin_loc >= 0) && (ibin_loc < device_battrs.shape[i])) ibin = ibin * device_battrs.shape[i] + ibin_loc;
+            else return;
         }
         else {
             break;
         }
     }
-    if ((ibin >= 0) && (ibin < size)) {
-        FLOAT weight = weight1 * weight2;
-        if (i == device_battrs.ndim) {
-            atomicAdd(&(counts[ibin]), weight);
-        }
-        if (var == VAR_POLE) {
-            FLOAT legendre_cache[MAX_POLE + 1];
-            set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
-            for (int ill = 0; ill < device_battrs.shape[i]; ill++) {
-                size_t ell = ill * ellstep + ellmin;
-                atomicAdd(&(counts[ibin * device_battrs.shape[i] + ill]), weight * (2 * ell + 1) * legendre_cache[ell]);
-            }
+    FLOAT weight = weight1 * weight2;
+    if (i == device_battrs.ndim) {
+        atomicAdd(&(counts[ibin]), weight);
+    }
+    if (var == VAR_POLE) {
+        FLOAT legendre_cache[MAX_POLE + 1];
+        set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
+        for (int ill = 0; ill < device_battrs.shape[i]; ill++) {
+            size_t ell = ill * ellstep + ellmin;
+            atomicAdd(&(counts[ibin * device_battrs.shape[i] + ill]), weight * (2 * ell + 1) * legendre_cache[ell]);
         }
     }
 }
@@ -317,8 +309,8 @@ __global__ void count2_kernel(FLOAT *block_counts, size_t nparticles1, FLOAT *me
                 int ix_n = ix * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
                 for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
                     int iy_n = iy * device_mattrs.meshsize[2];
-                    for (int iz_n = bounds[4]; iz <= bounds[5]; iz++) {
-                        int icell = ix_n + ix_n + iz_n;
+                    for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
+                        int icell = ix_n + iy_n + iz;
                         int np2 = mesh2_nparticles[icell];
                         FLOAT *positions2 = &(mesh2_positions[NDIM * mesh2_cumnparticles[icell]]);
                         FLOAT *spositions2 = &(mesh2_spositions[NDIM * mesh2_cumnparticles[icell]]);
