@@ -173,7 +173,6 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
 
 }
 
-
 // Function to set the mesh
 void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs) {
 
@@ -245,7 +244,7 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
                 mesh.positions[offset + axis] = position[axis];
                 mesh.spositions[offset + axis] = sposition[axis];
             }
-            offset = (mesh.cumnparticles[idx] + mesh.nparticles[idx]);
+            offset = mesh.cumnparticles[idx] + mesh.nparticles[idx];
             mesh.weights[offset] = particles.weights[i];
             mesh.nparticles[idx]++;
         }
