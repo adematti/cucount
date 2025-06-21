@@ -230,15 +230,21 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
     // Create a numpy array to store the results
     py::array_t<FLOAT> counts(battrs.shape());
 
-    if ((cbattrs.var[0] == VAR_THETA) || (csattrs.var[0] == VAR_THETA)) {
+    if (csattrs.var[0] == VAR_THETA) {
         cmattrs.type = MESH_ANGULAR;
-        if (csattrs.var[0] == VAR_THETA) cmattrs.smax = cos(csattrs.max[0] * DTORAD);
-        else cmattrs.smax = cos(cbattrs.max[0] * DTORAD);
+        cmattrs.smax = cos(csattrs.max[0] * DTORAD);
     }
-    if ((cbattrs.var[0] == VAR_S) || (csattrs.var[0] == VAR_S)) {
+    else if (csattrs.var[0] == VAR_S) {
         cmattrs.type = MESH_CARTESIAN;
-        if (csattrs.var[0] == VAR_S) cmattrs.smax = csattrs.max[0];
-        else cmattrs.smax = cbattrs.max[0];
+        cmattrs.smax = csattrs.max[0];
+    }
+    else if (cbattrs.var[0] == VAR_THETA) {
+        cmattrs.type = MESH_ANGULAR;
+        cmattrs.smax = cos(cbattrs.max[0] * DTORAD);
+    }
+    else if (cbattrs.var[0] == VAR_S) {
+        cmattrs.type = MESH_CARTESIAN;
+        cmattrs.smax = cbattrs.max[0];
     }
     set_mesh_attrs(list_particles, &cmattrs);
     set_mesh(list_particles, list_mesh, cmattrs);

@@ -420,7 +420,6 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     }
     log_message(LOG_LEVEL_INFO, "Running counts with %d blocks and %d threads per block.\n", this_nblocks, this_nthreads_per_block);
 
-
     // allocate histogram arrays
     CUDA_CHECK(cudaMalloc((void **)&block_counts, this_nblocks * battrs.size * sizeof(FLOAT)));
     CUDA_CHECK(cudaMalloc(&final_counts,  battrs.size * sizeof(FLOAT)));
