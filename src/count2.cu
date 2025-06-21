@@ -339,37 +339,34 @@ __global__ void count2_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
     } while (0)
 
 
-static void copy_mesh_to_device(Mesh &mesh, Mesh &device_mesh) {
-    // Allocate memory for the struct itself on the device
-    CUDA_CHECK(cudaMalloc((void**) &device_mesh, sizeof(Mesh)));
-    // Copy the struct itself to the device
+static void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh) {
+    CUDA_CHECK(cudaMalloc((void**) device_mesh, sizeof(Mesh)));
     CUDA_CHECK(cudaMemcpy(device_mesh, &mesh, sizeof(Mesh), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc((void **) &(device_mesh.nparticles), mesh.size * sizeof(size_t)));
-    CUDA_CHECK(cudaMemcpy(device_mesh.nparticles, mesh.nparticles, mesh.size * sizeof(size_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc((void **) &(device_mesh->nparticles), mesh.size * sizeof(size_t)));
+    CUDA_CHECK(cudaMemcpy(device_mesh->nparticles, mesh.nparticles, mesh.size * sizeof(size_t), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc((void **) &(device_mesh.cumnparticles), mesh.size * sizeof(size_t)));
-    CUDA_CHECK(cudaMemcpy(device_mesh.cumnparticles, mesh.cumnparticles, mesh.size * sizeof(size_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc((void **) &(device_mesh->cumnparticles), mesh.size * sizeof(size_t)));
+    CUDA_CHECK(cudaMemcpy(device_mesh->cumnparticles, mesh.cumnparticles, mesh.size * sizeof(size_t), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc((void **) &(device_mesh.spositions), NDIM * mesh.total_nparticles * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemcpy(device_mesh.spositions, mesh.spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc((void **) &(device_mesh->spositions), NDIM * mesh.total_nparticles * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemcpy(device_mesh->spositions, mesh.spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc((void **) &(device_mesh.positions), NDIM * mesh.total_nparticles * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemcpy(device_mesh.positions, mesh.positions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc((void **) &(device_mesh->positions), NDIM * mesh.total_nparticles * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemcpy(device_mesh->positions, mesh.positions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc((void **) &(device_mesh.weights), mesh.total_nparticles * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemcpy(device_mesh.weights, mesh.weights, mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc((void **) &(device_mesh->weights), mesh.total_nparticles * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemcpy(device_mesh->weights, mesh.weights, mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
 }
 
 
-static void free_mesh_from_device(Mesh &device_mesh) {
+static void free_mesh_from_device(Mesh *device_mesh) {
     // Free GPU memory
-    CUDA_CHECK(cudaFree(device_mesh.nparticles));
-    CUDA_CHECK(cudaFree(device_mesh.cumnparticles));
-    CUDA_CHECK(cudaFree(device_mesh.spositions));
-    CUDA_CHECK(cudaFree(device_mesh.positions));
-    CUDA_CHECK(cudaFree(device_mesh.weights));
-    CUDA_CHECK(cudaFree(&device_mesh));
+    CUDA_CHECK(cudaFree(device_mesh->nparticles));
+    CUDA_CHECK(cudaFree(device_mesh->cumnparticles));
+    CUDA_CHECK(cudaFree(device_mesh->spositions));
+    CUDA_CHECK(cudaFree(device_mesh->positions));
+    CUDA_CHECK(cudaFree(device_mesh->weights));
 }
 
 
@@ -405,8 +402,8 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaMemcpyToSymbol(device_battrs, &battrs, sizeof(BinAttrs)));
 
     // Allocate GPU memory and copy data
-    copy_mesh_to_device(list_mesh[0], device_mesh1);
-    copy_mesh_to_device(list_mesh[1], device_mesh2);
+    copy_mesh_to_device(list_mesh[0], &device_mesh1);
+    copy_mesh_to_device(list_mesh[1], &device_mesh2);
 
     int this_nblocks = nblocks;
     int this_nthreads_per_block = nthreads_per_block;
@@ -447,8 +444,8 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaFree(block_counts));
     CUDA_CHECK(cudaFree(final_counts));
 
-    free_mesh_from_device(device_mesh1);
-    free_mesh_from_device(device_mesh2);
+    free_mesh_from_device(&device_mesh1);
+    free_mesh_from_device(&device_mesh2);
 
     // Destroy CUDA events
     CUDA_CHECK(cudaEventDestroy(start));
