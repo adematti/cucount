@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdio.h>
 #include <cuda.h>
 #include "common.h"
 
@@ -34,7 +35,7 @@ void copy_particles_to_device(Particles particles, Particles *device_particles, 
         CUDA_CHECK(cudaMalloc((void **) &(device_particles->positions), NDIM * particles.size * sizeof(FLOAT)));
         CUDA_CHECK(cudaMemcpy(device_particles->positions, particles.positions, NDIM * particles.size * sizeof(FLOAT), cudaMemcpyHostToDevice));
 
-        CUDA_CHECK(cudaMalloc((void **) &(device_particles->weights), mesh.total_nparticles * sizeof(FLOAT)));
+        CUDA_CHECK(cudaMalloc((void **) &(device_particles->weights), particles.size * sizeof(FLOAT)));
         CUDA_CHECK(cudaMemcpy(device_particles->weights, particles.weights, particles.size * sizeof(FLOAT), cudaMemcpyHostToDevice));
     }
 }
@@ -88,17 +89,3 @@ void free_device_mesh(Mesh *mesh) {
 // Global variables for block and thread configuration
 int nblocks = 0;
 int nthreads_per_block = 0;
-
-// Function to determine block and thread configuration
-void configure_cuda_kernel(void (*kernel)(void)) {
-    if (nthreads_per_block <= 0) {
-        cudaOccupancyMaxPotentialBlockSize(
-            &nblocks,
-            &nthreads_per_block,
-            kernel,
-            0,
-            0
-        );
-    }
-    log_message(LOG_LEVEL_INFO, "Configured kernel with %d blocks and %d threads per block.\n", nblocks, nthreads_per_block);
-}

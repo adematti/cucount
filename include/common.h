@@ -28,9 +28,13 @@ typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
 typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
 typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT} LOS_TYPE;
 
-
 extern int nblocks, nthreads_per_block;
-void configure_cuda_kernel(void (*kernel)(void));
+
+
+#define atomicAddSizet(address, val)                            \
+    (sizeof(size_t) == 4 ?                                      \
+        atomicAdd((unsigned int*)(address), (unsigned int)(val)) \
+      : atomicAdd((unsigned long long*)(address), (unsigned long long)(val)))
 
 
 // Helper function for error checking
@@ -93,8 +97,15 @@ typedef struct {
 
 
 void* my_calloc(size_t num, size_t size);
+
 void* my_malloc(size_t size);
+
+void copy_particles_to_device(Particles particles, Particles *device_particles, bool struct_only);
+
+void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, bool struct_only);
+
 void free_device_particles(Particles *particles);
+
 void free_device_mesh(Mesh *mesh);
 
 #endif //_CUCOUNT_COMMON_

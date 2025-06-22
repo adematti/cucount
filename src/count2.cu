@@ -5,9 +5,9 @@
 #include "common.h"
 #include "count2.h"
 
-__device__ __constant__ MeshAttrs device_mattrs; // [0] = cth, [1] = phi
-__device__ __constant__ SelectionAttrs device_sattrs; // [0] = min, [1] = max
-__device__ __constant__ BinAttrs device_battrs;
+__device__ __constant__ static MeshAttrs device_mattrs; // [0] = cth, [1] = phi
+__device__ __constant__ static SelectionAttrs device_sattrs; // [0] = min, [1] = max
+__device__ __constant__ static BinAttrs device_battrs;
 
 
 __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
@@ -363,9 +363,6 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     // Copy only struct to the device (arrays are assumed already on the device)
     copy_mesh_to_device(list_mesh[0], &device_mesh1, 1);
     copy_mesh_to_device(list_mesh[1], &device_mesh2, 1);
-
-    // Configure kernel
-    configure_cuda_kernel(count2_kernel);
 
     // allocate histogram arrays
     CUDA_CHECK(cudaMalloc((void **)&block_counts, nblocks * battrs.size * sizeof(FLOAT)));
