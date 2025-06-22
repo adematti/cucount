@@ -217,8 +217,10 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
     // Convert Python inputs to C objects
     Particles list_particles[MAX_NMESH];
     Mesh list_mesh[MAX_NMESH];
-    list_particles[0] = particles1.data();
-    list_particles[1] = particles2.data();
+    // In this function Particles and Mesh struct live on the host (CPU)
+    // but their arrays (positions, weights, etc.) live on the device (GPU)
+    copy_particles_to_device(particles1.data(), &list_particles[0], 0);
+    copy_particles_to_device(particles2.data(), &list_particles[1], 0);
     SelectionAttrs csattrs = sattrs.data();
     BinAttrs cbattrs = battrs.data();
     MeshAttrs cmattrs;
@@ -255,8 +257,10 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
     count2(counts_ptr, list_mesh, cmattrs, csattrs, cbattrs, 0, 0);
 
     // Free allocated memory
-    free_mesh(&(list_mesh[0]));
-    free_mesh(&(list_mesh[1]));
+    for (size_t i = 0; i < 2; i++) {
+        free_device_mesh(&(list_mesh[i]));
+        free_device_particles(&(list_particles[i]));
+    }
     // Return the numpy array
     return counts;
 }

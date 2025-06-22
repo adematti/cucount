@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <cuda.h>
 
 #ifndef _CUCOUNT_COMMON_
 #define _CUCOUNT_COMMON_
@@ -26,6 +27,22 @@ void log_message(LogLevel level, const char *format, ...);
 typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
 typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
 typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT} LOS_TYPE;
+
+
+extern int nblocks, nthreads_per_block;
+void configure_cuda_kernel(void (*kernel)(void));
+
+
+// Helper function for error checking
+#define CUDA_CHECK(call)                                                      \
+    do {                                                                      \
+        cudaError_t err = call;                                               \
+        if (err != cudaSuccess) {                                             \
+            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__,  \
+                    cudaGetErrorString(err));                                 \
+            exit(EXIT_FAILURE);                                               \
+        }                                                                     \
+    } while (0)
 
 
 typedef struct {
@@ -74,7 +91,10 @@ typedef struct {
     MESH_TYPE type;
 } MeshAttrs;
 
+
 void* my_calloc(size_t num, size_t size);
 void* my_malloc(size_t size);
+void free_device_particles(Particles *particles);
+void free_device_mesh(Mesh *mesh);
 
 #endif //_CUCOUNT_COMMON_
