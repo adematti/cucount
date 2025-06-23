@@ -62,7 +62,7 @@ typedef struct {
 
 // Particles
 typedef struct {
-    size_t size=0;
+    size_t size;
     FLOAT *spositions;  // positions on the sphere
     FLOAT *positions;
     FLOAT *weights;
@@ -92,7 +92,7 @@ typedef struct {
     FLOAT boxsize[NDIM];
     FLOAT boxcenter[NDIM];
     FLOAT smax;
-    MESH_TYPE type;
+    int type;
 } MeshAttrs;
 
 
@@ -100,9 +100,9 @@ void* my_calloc(size_t num, size_t size);
 
 void* my_malloc(size_t size);
 
-void copy_particles_to_device(Particles particles, Particles *device_particles, bool struct_only);
+void copy_particles_to_device(Particles particles, Particles *device_particles, int mode);
 
-void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, bool struct_only);
+void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, int mode);
 
 void free_device_particles(Particles *particles);
 

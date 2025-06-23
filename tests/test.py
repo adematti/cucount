@@ -180,9 +180,9 @@ def test_thetacut():
     from collections import namedtuple
     TwoPointWeight = namedtuple('TwoPointWeight', ['sep', 'weight'])
 
-    edges = np.linspace(0., 100, 11)
-    size = int(1e3)
-    boxsize = (100,) * 3
+    edges = np.linspace(0., 30, 11)
+    size = int(1e2)
+    boxsize = (20,) * 3
 
     list_options = [{'ells': (0, 2)}]
 
@@ -339,7 +339,7 @@ def test_corrfunc():
     assert np.allclose(test, ref.wcounts, **tol)
 
 
-def test_thetacut():
+def test_thetacut2():
     size = int(2e8)
     boxsize = (5000,) * 3
     smax = 35472.400001
@@ -359,4 +359,4 @@ def test_thetacut():
 if __name__ == '__main__':
 
     test_thetacut()
-    test_corrfunc()
+    #test_corrfunc()

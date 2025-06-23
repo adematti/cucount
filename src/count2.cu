@@ -5,9 +5,9 @@
 #include "common.h"
 #include "count2.h"
 
-__device__ __constant__ static MeshAttrs device_mattrs; // [0] = cth, [1] = phi
-__device__ __constant__ static SelectionAttrs device_sattrs; // [0] = min, [1] = max
-__device__ __constant__ static BinAttrs device_battrs;
+__device__ __constant__ MeshAttrs device_mattrs;
+__device__ __constant__ SelectionAttrs device_sattrs;
+__device__ __constant__ BinAttrs device_battrs;
 
 
 __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
@@ -76,6 +76,11 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
     bounds[1] = (int)(0.5 * (1 + cth_max) * device_mattrs.meshsize[0]);
     if (bounds[0] < 0) bounds[0] = 0;
     if (bounds[1] >= device_mattrs.meshsize[0]) bounds[1] = device_mattrs.meshsize[0] - 1;
+
+    bounds[0] = 0;
+    bounds[1] = device_mattrs.meshsize[0] - 1;
+    bounds[2] = 0;
+    bounds[3] = device_mattrs.meshsize[1] - 1;
 }
 
 __device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
@@ -260,17 +265,13 @@ __global__ void count2_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
 
     // Initialize local histogram
     FLOAT *local_counts = &block_counts[blockIdx.x * device_battrs.size];
-
     // Zero initialize histogram for this block
     for (int i = tid; i < device_battrs.size; i += blockDim.x) local_counts[i] = 0;
 
     __syncthreads();
-
     // Global thread index
     size_t stride = gridDim.x * blockDim.x;
     size_t gid = tid + blockIdx.x * blockDim.x;
-
-    //printf("%d %d  ", device_battrs.ndim, device_battrs.var[1]);
 
     // Process particles
     for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
@@ -278,10 +279,10 @@ __global__ void count2_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
         FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
         FLOAT weight1 = mesh1.weights[ii];
         int bounds[2 * NDIM];
-        if (device_mattrs.type == MESH_ANGULAR) {
+        //printf("%d ", device_mattrs.type);
+        int dtype = device_mattrs.type;
+        if (dtype == MESH_ANGULAR) {
             set_angular_bounds(sposition1, bounds);
-            //printf("%d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3]);
-
             for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
                 int icth_n = icth * device_mattrs.meshsize[1];
                 for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
@@ -301,7 +302,7 @@ __global__ void count2_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
                 }
             }
         }
-        if (device_mattrs.type == MESH_CARTESIAN) {
+        else if (dtype == MESH_CARTESIAN) {
             set_cartesian_bounds(position1, bounds);
             //printf("%d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3]);
             for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
@@ -342,7 +343,9 @@ __global__ void reduce_kernel(const FLOAT *block_counts, int nblocks, FLOAT *fin
 }
 
 
-void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, const BinAttrs battrs, const int nblocks, const int nthreads_per_block) {
+void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, const BinAttrs battrs) {
+
+    if ((nblocks <= 0) || (nthreads_per_block <= 0)) cudaOccupancyMaxPotentialBlockSize(&nblocks, &nthreads_per_block, count2_kernel, 0, 0);
 
     // Device pointers
     Mesh device_mesh1, device_mesh2; // Device struct pointer

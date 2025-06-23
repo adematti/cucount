@@ -24,10 +24,17 @@ void* my_malloc(size_t size) {
     return ptr;
 }
 
-void copy_particles_to_device(Particles particles, Particles *device_particles, bool struct_only) {
-    CUDA_CHECK(cudaMalloc((void**) device_particles, sizeof(Particles)));
-    CUDA_CHECK(cudaMemcpy(device_particles, &particles, sizeof(Particles), cudaMemcpyHostToDevice));
-    if (struct_only) {
+void copy_particles_to_device(Particles particles, Particles *device_particles, int mode) {
+    // mode == 0: copy C struct and arrays to device
+    // mode == 1: copy C struct only to device
+    // mode == 2: copy arrays only to device
+    if (mode == 2) {
+        device_particles->size = particles.size;
+    } else {
+        CUDA_CHECK(cudaMalloc((void**) device_particles, sizeof(Particles)));
+        CUDA_CHECK(cudaMemcpy(device_particles, &particles, sizeof(Particles), cudaMemcpyHostToDevice));
+    }
+    if (mode == 1) {
         device_particles->positions = particles.positions;
         device_particles->weights = particles.weights;
     }
@@ -41,10 +48,15 @@ void copy_particles_to_device(Particles particles, Particles *device_particles, 
 }
 
 
-void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, bool struct_only) {
-    CUDA_CHECK(cudaMalloc((void**) device_mesh, sizeof(Mesh)));
-    CUDA_CHECK(cudaMemcpy(device_mesh, &mesh, sizeof(Mesh), cudaMemcpyHostToDevice));
-    if (struct_only) {
+void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, int mode) {
+    if (mode == 2) {
+        device_mesh->size = mesh.size;
+        device_mesh->total_nparticles = mesh.total_nparticles;
+    } else {
+        CUDA_CHECK(cudaMalloc((void**) device_mesh, sizeof(Mesh)));
+        CUDA_CHECK(cudaMemcpy(device_mesh, &mesh, sizeof(Mesh), cudaMemcpyHostToDevice));
+    }
+    if (mode == 1) {
         device_mesh->nparticles = mesh.nparticles;
         device_mesh->cumnparticles = mesh.cumnparticles;
         device_mesh->spositions = mesh.spositions;
