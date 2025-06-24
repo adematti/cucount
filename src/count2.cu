@@ -76,11 +76,6 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
     bounds[1] = (int)(0.5 * (1 + cth_max) * device_mattrs.meshsize[0]);
     if (bounds[0] < 0) bounds[0] = 0;
     if (bounds[1] >= device_mattrs.meshsize[0]) bounds[1] = device_mattrs.meshsize[0] - 1;
-
-    bounds[0] = 0;
-    bounds[1] = device_mattrs.meshsize[0] - 1;
-    bounds[2] = 0;
-    bounds[3] = device_mattrs.meshsize[1] - 1;
 }
 
 __device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
@@ -171,8 +166,8 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
     FLOAT s = DEFAULT_VALUE;
     FLOAT mu = DEFAULT_VALUE;
     FLOAT mu2 = DEFAULT_VALUE;
-    int los = LOS_NONE;
-    int var = VAR_NONE;
+    LOS_TYPE los = LOS_NONE;
+    VAR_TYPE var = VAR_NONE;
     size_t ellmin, ellmax, ellstep;
 
     bool REQUIRED_S = 0, REQUIRED_MU = 0, REQUIRED_MU2 = 0;
@@ -212,7 +207,7 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
         }
         else {
             FLOAT vlos[NDIM];
-            addition(vlos, sposition1, sposition2);
+            addition(vlos, position1, position2);
             d = dot(diff, vlos);
             if (REQUIRED_MU) mu = d / sqrt(dot(vlos, vlos)) / s;
             else mu2 = d * d / dot(vlos, vlos) / s2;
@@ -258,8 +253,7 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
     }
 }
 
-
-__global__ void count2_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
+__global__ void count2_angular_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
 
     size_t tid = threadIdx.x;
 
@@ -279,20 +273,60 @@ __global__ void count2_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
         FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
         FLOAT weight1 = mesh1.weights[ii];
         int bounds[2 * NDIM];
-        //printf("%d ", device_mattrs.type);
-        int dtype = device_mattrs.type;
-        if (dtype == MESH_ANGULAR) {
-            set_angular_bounds(sposition1, bounds);
-            for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
-                int icth_n = icth * device_mattrs.meshsize[1];
-                for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
-                    int iphi_true = (iphi + device_mattrs.meshsize[1]) % device_mattrs.meshsize[1];
-                    int icell = iphi_true + icth_n;
+        set_angular_bounds(sposition1, bounds);
+        for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
+            int icth_n = icth * device_mattrs.meshsize[1];
+            for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
+                int iphi_true = (iphi + device_mattrs.meshsize[1]) % device_mattrs.meshsize[1];
+                int icell = iphi_true + icth_n;
+                int np2 = mesh2.nparticles[icell];
+                FLOAT *positions2 = &(mesh2.positions[NDIM * mesh2.cumnparticles[icell]]);
+                FLOAT *spositions2 = &(mesh2.spositions[NDIM * mesh2.cumnparticles[icell]]);
+                FLOAT *weights2 = &(mesh2.weights[mesh2.cumnparticles[icell]]);
+
+                for (size_t jj = 0; jj < np2; jj++) {
+                    if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
+                        continue;
+                    }
+                    add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj]);
+                }
+            }
+        }
+    }
+}
+
+__global__ void count2_cartesian_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
+
+    size_t tid = threadIdx.x;
+
+    // Initialize local histogram
+    FLOAT *local_counts = &block_counts[blockIdx.x * device_battrs.size];
+    // Zero initialize histogram for this block
+    for (int i = tid; i < device_battrs.size; i += blockDim.x) local_counts[i] = 0;
+
+    __syncthreads();
+    // Global thread index
+    size_t stride = gridDim.x * blockDim.x;
+    size_t gid = tid + blockIdx.x * blockDim.x;
+
+    // Process particles
+    for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
+        FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
+        FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
+        FLOAT weight1 = mesh1.weights[ii];
+        int bounds[2 * NDIM];
+        set_cartesian_bounds(position1, bounds);
+        //printf("%d %d %d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
+        for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
+            int ix_n = ix * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
+            for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
+                int iy_n = iy * device_mattrs.meshsize[2];
+                for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
+                    int icell = ix_n + iy_n + iz;
                     int np2 = mesh2.nparticles[icell];
                     FLOAT *positions2 = &(mesh2.positions[NDIM * mesh2.cumnparticles[icell]]);
                     FLOAT *spositions2 = &(mesh2.spositions[NDIM * mesh2.cumnparticles[icell]]);
                     FLOAT *weights2 = &(mesh2.weights[mesh2.cumnparticles[icell]]);
-
                     for (size_t jj = 0; jj < np2; jj++) {
                         if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
                             continue;
@@ -302,32 +336,8 @@ __global__ void count2_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
                 }
             }
         }
-        else if (dtype == MESH_CARTESIAN) {
-            set_cartesian_bounds(position1, bounds);
-            //printf("%d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3]);
-            for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
-                int ix_n = ix * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
-                for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
-                    int iy_n = iy * device_mattrs.meshsize[2];
-                    for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
-                        int icell = ix_n + iy_n + iz;
-                        int np2 = mesh2.nparticles[icell];
-                        FLOAT *positions2 = &(mesh2.positions[NDIM * mesh2.cumnparticles[icell]]);
-                        FLOAT *spositions2 = &(mesh2.spositions[NDIM * mesh2.cumnparticles[icell]]);
-                        FLOAT *weights2 = &(mesh2.weights[mesh2.cumnparticles[icell]]);
-                        for (size_t jj = 0; jj < np2; jj++) {
-                            if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
-                                continue;
-                            }
-                            add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj]);
-                        }
-                    }
-                }
-            }
-        }
     }
 }
-
 
 
 __global__ void reduce_kernel(const FLOAT *block_counts, int nblocks, FLOAT *final_counts, size_t size)
@@ -345,10 +355,9 @@ __global__ void reduce_kernel(const FLOAT *block_counts, int nblocks, FLOAT *fin
 
 void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, const BinAttrs battrs) {
 
-    if ((nblocks <= 0) || (nthreads_per_block <= 0)) cudaOccupancyMaxPotentialBlockSize(&nblocks, &nthreads_per_block, count2_kernel, 0, 0);
+    cudaOccupancyMaxPotentialBlockSize(&nblocks, &nthreads_per_block, count2_cartesian_kernel, 0, 0);
 
     // Device pointers
-    Mesh device_mesh1, device_mesh2; // Device struct pointer
     FLOAT *block_counts, *final_counts;
 
     // CUDA timing events
@@ -363,10 +372,6 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaMemcpyToSymbol(device_sattrs, &sattrs, sizeof(SelectionAttrs)));
     CUDA_CHECK(cudaMemcpyToSymbol(device_battrs, &battrs, sizeof(BinAttrs)));
 
-    // Copy only struct to the device (arrays are assumed already on the device)
-    copy_mesh_to_device(list_mesh[0], &device_mesh1, 1);
-    copy_mesh_to_device(list_mesh[1], &device_mesh2, 1);
-
     // allocate histogram arrays
     CUDA_CHECK(cudaMalloc((void **)&block_counts, nblocks * battrs.size * sizeof(FLOAT)));
     CUDA_CHECK(cudaMalloc(&final_counts,  battrs.size * sizeof(FLOAT)));
@@ -377,7 +382,10 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaEventCreate(&stop));
 
     CUDA_CHECK(cudaEventRecord(start, 0));
-    count2_kernel<<<nblocks, nthreads_per_block>>>(block_counts, device_mesh1, device_mesh2);
+
+    if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block>>>(block_counts, list_mesh[0], list_mesh[1]);
+    else count2_cartesian_kernel<<<nblocks, nthreads_per_block>>>(block_counts, list_mesh[0], list_mesh[1]);
+
     CUDA_CHECK(cudaDeviceSynchronize());
     reduce_kernel<<<nblocks, nthreads_per_block>>>(block_counts, nblocks, final_counts, battrs.size);
 

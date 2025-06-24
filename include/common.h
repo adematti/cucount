@@ -70,8 +70,8 @@ typedef struct {
 
 
 typedef struct {
-    int var[MAX_NBIN];
-    int los[MAX_NBIN];
+    VAR_TYPE var[MAX_NBIN];
+    LOS_TYPE los[MAX_NBIN];
     FLOAT min[MAX_NBIN], max[MAX_NBIN], step[MAX_NBIN];
     size_t shape[MAX_NBIN];
     size_t size;
@@ -80,7 +80,7 @@ typedef struct {
 
 
 typedef struct {
-    int var[MAX_NBIN];
+    VAR_TYPE var[MAX_NBIN];
     FLOAT min[MAX_NBIN], max[MAX_NBIN];
     FLOAT smin[MAX_NBIN], smax[MAX_NBIN];
     size_t ndim;
@@ -92,7 +92,7 @@ typedef struct {
     FLOAT boxsize[NDIM];
     FLOAT boxcenter[NDIM];
     FLOAT smax;
-    int type;
+    MESH_TYPE type;
 } MeshAttrs;
 
 
@@ -107,5 +107,15 @@ void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, int mode);
 void free_device_particles(Particles *particles);
 
 void free_device_mesh(Mesh *mesh);
+
+
+void copy_particles_to_host(Particles particles, Particles *host_particles, int mode);
+
+void copy_mesh_to_host(Mesh mesh, Mesh *host_mesh, int mode);
+
+void free_host_particles(Particles *particles);
+
+void free_host_mesh(Mesh *mesh);
+
 
 #endif //_CUCOUNT_COMMON_

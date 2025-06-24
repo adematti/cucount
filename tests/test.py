@@ -309,6 +309,7 @@ def test_thetacut():
             return count2(particles1, particles2, battrs=battrs, sattrs=sattrs)
 
         test = run()
+        exit()
         print(test)
         print(poles_ref.T)
 
@@ -317,25 +318,31 @@ def test_thetacut():
 
 def test_corrfunc():
     import time
-    edges = (np.linspace(1., 101, 101), np.linspace(-1., 1., 101))
-    size = int(10e6)
+    edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
+    size = int(3e7)
     boxsize = (5000,) * 3
+
     data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=0, seed=42)
     positions1, weights1 = np.column_stack(data1[:3]), data1[3]
     positions2, weights2 = np.column_stack(data2[:3]), data2[3]
 
+    #p = np.concatenate([positions1, positions2], axis=0)
+    #print(p.min(axis=0), p.argmin(axis=0))
+    #print(p.max(axis=0))
+    t0 = time.time()
     particles1 = Particles(positions1, weights1)
     particles2 = Particles(positions2, weights2)
     los = 'midpoint'
     battrs = BinAttrs(**{'s': (edges[0][0], edges[0][-1], edges[0][1] - edges[0][0]), 'mu': (edges[1][0], edges[1][-1] + 1e-4, edges[1][1] - edges[1][0], los)})
     test = count2(particles1, particles2, battrs=battrs)
+    print('cucount', time.time() - t0)
 
     from pycorr import TwoPointCounter
     t0 = time.time()
     ref = TwoPointCounter('smu', edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los, position_type='pos', nthreads=1, gpu=True)
     print('Corrfunc', time.time() - t0)
     tol = {'atol': 1e-8, 'rtol': 1e-5}
-    #print(test - ref.wcounts)
+    #print(test.ravel())
     assert np.allclose(test, ref.wcounts, **tol)
 
 
@@ -358,5 +365,5 @@ def test_thetacut2():
 
 if __name__ == '__main__':
 
-    test_thetacut()
-    #test_corrfunc()
+    #test_thetacut()
+    test_corrfunc()

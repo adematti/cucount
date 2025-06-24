@@ -48,6 +48,29 @@ void copy_particles_to_device(Particles particles, Particles *device_particles, 
 }
 
 
+void copy_particles_to_host(Particles particles, Particles *host_particles, int mode) {
+    // mode == 0: copy C struct and arrays to host
+    // mode == 1: copy C struct only to host
+    // mode == 2: copy arrays only to host
+    if (mode == 2) {
+        host_particles->size = particles.size;
+    } else {
+        CUDA_CHECK(cudaMemcpy(host_particles, &particles, sizeof(Particles), cudaMemcpyDeviceToHost));
+    }
+    if (mode == 1) {
+        host_particles->positions = particles.positions;
+        host_particles->weights = particles.weights;
+    }
+    else {
+        host_particles->positions = (FLOAT*) my_malloc(NDIM * particles.size * sizeof(FLOAT));
+        CUDA_CHECK(cudaMemcpy(host_particles->positions, particles.positions, NDIM * particles.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+
+        host_particles->weights = (FLOAT*) my_malloc(particles.size * sizeof(FLOAT));
+        CUDA_CHECK(cudaMemcpy(host_particles->weights, particles.weights, particles.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+    }
+}
+
+
 void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, int mode) {
     if (mode == 2) {
         device_mesh->size = mesh.size;
@@ -82,6 +105,39 @@ void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, int mode) {
 }
 
 
+void copy_mesh_to_host(Mesh mesh, Mesh *host_mesh, int mode) {
+    if (mode == 2) {
+        host_mesh->size = mesh.size;
+        host_mesh->total_nparticles = mesh.total_nparticles;
+    } else {
+        CUDA_CHECK(cudaMemcpy(host_mesh, &mesh, sizeof(Mesh), cudaMemcpyDeviceToHost));
+    }
+    if (mode == 1) {
+        host_mesh->nparticles = mesh.nparticles;
+        host_mesh->cumnparticles = mesh.cumnparticles;
+        host_mesh->spositions = mesh.spositions;
+        host_mesh->positions = mesh.positions;
+        host_mesh->weights = mesh.weights;
+    }
+    else {
+        host_mesh->nparticles = (size_t*) my_malloc(mesh.size * sizeof(size_t));
+        CUDA_CHECK(cudaMemcpy(host_mesh->nparticles, mesh.nparticles, mesh.size * sizeof(size_t), cudaMemcpyDeviceToHost));
+
+        host_mesh->cumnparticles = (size_t*) my_malloc(mesh.size * sizeof(size_t));
+        CUDA_CHECK(cudaMemcpy(host_mesh->cumnparticles, mesh.cumnparticles, mesh.size * sizeof(size_t), cudaMemcpyDeviceToHost));
+
+        host_mesh->spositions = (FLOAT*) my_malloc(NDIM * mesh.total_nparticles * sizeof(FLOAT));
+        CUDA_CHECK(cudaMemcpy(host_mesh->spositions, mesh.spositions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+
+        host_mesh->positions = (FLOAT*) my_malloc(NDIM * mesh.total_nparticles * sizeof(FLOAT));
+        CUDA_CHECK(cudaMemcpy(host_mesh->positions, mesh.positions, NDIM * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+
+        host_mesh->weights = (FLOAT*) my_malloc(mesh.total_nparticles * sizeof(FLOAT));
+        CUDA_CHECK(cudaMemcpy(host_mesh->weights, mesh.weights, mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+    }
+}
+
+
 void free_device_particles(Particles *particles) {
     // Free GPU memory
     CUDA_CHECK(cudaFree(particles->positions));
@@ -95,6 +151,22 @@ void free_device_mesh(Mesh *mesh) {
     CUDA_CHECK(cudaFree(mesh->spositions));
     CUDA_CHECK(cudaFree(mesh->positions));
     CUDA_CHECK(cudaFree(mesh->weights));
+}
+
+
+void free_host_particles(Particles *particles) {
+    // Free GPU memory
+    free(particles->positions);
+    free(particles->weights);
+}
+
+void free_host_mesh(Mesh *mesh) {
+    // Free GPU memory
+    free(mesh->nparticles);
+    free(mesh->cumnparticles);
+    free(mesh->spositions);
+    free(mesh->positions);
+    free(mesh->weights);
 }
 
 
