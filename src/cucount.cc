@@ -135,6 +135,7 @@ struct BinAttrs_py {
         std::vector<size_t> sizes;
         for (size_t i = 0; i < var.size(); i++) {
             size_t s = static_cast<size_t>((max[i] - min[i]) / step[i]);
+            if (var[i] == VAR_K) s += 1;  // k-values, not edges
             if (var[i] == VAR_POLE) s += 1;  // poles, not edges
             sizes.push_back(s);
         }

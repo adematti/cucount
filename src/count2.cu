@@ -288,10 +288,11 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
         set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
         for (int ill = 0; ill < device_battrs.shape[i]; ill++) {
             size_t ell = ill * ellstep + ellmin;
-            FLOAT weight_legendre = weight * (2 * ell + 1) * legendre_cache[ell];
-            for (int ibin = 0; ibin < device_battrs.shape[i]; ibin++) {
-                FLOAT k = ibin * device_battrs.step + device_battrs.min;
-                atomicAdd(&(counts[ibin * device_battrs.shape[i] + ill]), weight_legendre * get_bessel(ell, k * s));
+            FLOAT weight_legendre = pow(-1, ell / 2) * weight * (2 * ell + 1) * legendre_cache[ell];
+            for (int ik = 0; ik < device_battrs.shape[i]; ik++) {
+                FLOAT k = ik * device_battrs.step[i] + device_battrs.min[i];
+                size_t ibin_loc = (ibin * device_battrs.shape[i] + ik) * device_battrs.shape[i + 1] + ill;
+                atomicAdd(&(counts[ibin_loc]), weight_legendre * get_bessel(ell, k * s));
             }
         }
     }

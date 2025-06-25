@@ -131,7 +131,7 @@ def get_weight(xyz1, xyz2, weights1, weights2, n_bitwise_weights=0, twopoint_wei
     return weight
 
 
-def ref_theta_corr(edges, data1, data2=None, boxsize=None, los='midpoint', ells=(0, 2, 4), autocorr=False, selection_attrs=None, **kwargs):
+def ref_theta_correlation(edges, data1, data2=None, boxsize=None, los='midpoint', ells=(0, 2, 4), autocorr=False, selection_attrs=None, **kwargs):
     if data2 is None: data2 = data1
     counts = np.zeros(len(edges) - 1, dtype='f8')
     sep = np.zeros(len(edges) - 1, dtype='f8')
@@ -175,6 +175,39 @@ def ref_theta_corr(edges, data1, data2=None, boxsize=None, los='midpoint', ells=
                 poles[ill][ind] += weight * (2 * ell + 1) * legendre[ill](mu)
     return np.asarray(poles), sep / counts
 
+def ref_theta_spectrum(modes, data1, data2=None, boxsize=None, los='midpoint', ells=(0, 2, 4), autocorr=False, selection_attrs=None, **kwargs):
+    if data2 is None: data2 = data1
+    poles = [np.zeros_like(modes, dtype='c16') for ell in ells]
+    legendre = [special.legendre(ell) for ell in ells]
+    selection_attrs = dict(selection_attrs or {})
+    theta_limits = selection_attrs.get('theta', None)
+    rp_limits = selection_attrs.get('rp', None)
+    npairs = 0
+    for i1, xyzw1 in enumerate(zip(*data1)):
+        for i2, xyzw2 in enumerate(zip(*data2)):
+            if autocorr and i2 == i1: continue
+            xyz1, xyz2 = xyzw1[:3], xyzw2[:3]
+            if theta_limits is not None:
+                theta = np.rad2deg(np.arccos(min(dotproduct_normalized(xyz1, xyz2), 1)))  # min to avoid rounding errors
+                if theta < theta_limits[0] or theta >= theta_limits[1]: continue
+            dxyz = diff(xyz1, xyz2)
+            dist = norm(dxyz)
+            npairs += 1
+            if dist > 0:
+                if los == 'midpoint': mu = dotproduct_normalized(dxyz, midpoint(xyz1, xyz2))
+                elif los == 'endpoint': mu = dotproduct_normalized(dxyz, xyz2)
+                elif los == 'firstpoint': mu = dotproduct_normalized(dxyz, xyz1)
+            else:
+                mu = 0.
+            if rp_limits is not None:
+                rp2 = (1. - mu**2) * dist**2
+                if rp2 < rp_limits[0]**2 or rp2 >= rp_limits[1]**2: continue
+            weights1, weights2 = xyzw1[3:], xyzw2[3:]
+            weight = get_weight(xyz1, xyz2, weights1, weights2, **kwargs)
+            for ill, ell in enumerate(ells):
+                poles[ill] += (-1j)**ell * weight * (2 * ell + 1) * legendre[ill](mu) * special.spherical_jn(ell, modes * dist)
+    return np.asarray(poles)
+
 
 def test_thetacut():
     from collections import namedtuple
@@ -184,7 +217,7 @@ def test_thetacut():
     size = int(1e2)
     boxsize = (20,) * 3
 
-    list_options = [{'ells': (0, 2)}]
+    list_options = [{'space': 'spectrum', 'ells': (0, 2)}]
 
     for options in list_options:
         options = options.copy()
@@ -204,6 +237,7 @@ def test_thetacut():
         dtype = options.pop('dtype', None)
         ells = options.get('ells', (0,))
         los = options.get('los')
+        space = options.pop('space', 'correlation')
 
         ref_options = options.copy()
         weight_attrs = ref_options.pop('weight_attrs', {}).copy()
@@ -262,7 +296,11 @@ def test_thetacut():
             weight_attrs['correction'] = correction
         weight_attrs.pop('normalization', None)
 
-        poles_ref, sep_ref = ref_theta_corr(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
+        sep_ref = None
+        if space == 'correlation':
+            poles_ref, sep_ref = ref_theta_correlation(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
+        else:
+            poles_ref = ref_theta_spectrum(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
 
         itemsize = np.dtype('f8' if dtype is None else dtype).itemsize
         tol = {'atol': 1e-8, 'rtol': 1e-2} if itemsize <= 4 else {'atol': 1e-8, 'rtol': 1e-5}
@@ -303,20 +341,22 @@ def test_thetacut():
             print(positions1.shape)
             particles1 = Particles(positions1, weights1)
             particles2 = Particles(positions2, weights2)
-            battrs = BinAttrs(**{'s': (edges[0], edges[-1], edges[1] - edges[0]), 'pole': (0, ells[-1] + 1, 2, los)})
+            if space == 'correlation':
+                battrs = BinAttrs(**{'s': (edges[0], edges[-1], edges[1] - edges[0]), 'pole': (0, ells[-1] + 1, 2, los)})
+            else:
+                print(edges.shape)
+                battrs = BinAttrs(**{'k': (edges[0], edges[-1], edges[1] - edges[0]), 'pole': (0, ells[-1] + 1, 2, los)})
             for var in selection_attrs:
                 sattrs = SelectionAttrs(**{var: (selection_attrs[var][0], selection_attrs[var][1])})
             return count2(particles1, particles2, battrs=battrs, sattrs=sattrs)
 
         test = run()
-        exit()
         print(test)
         print(poles_ref.T)
-
         assert np.allclose(test.T, poles_ref, **tol)
 
 
-def test_corrfunc():
+def test_corrfunc_smu():
     import time
     edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
     size = int(3e7)
@@ -326,9 +366,6 @@ def test_corrfunc():
     positions1, weights1 = np.column_stack(data1[:3]), data1[3]
     positions2, weights2 = np.column_stack(data2[:3]), data2[3]
 
-    #p = np.concatenate([positions1, positions2], axis=0)
-    #print(p.min(axis=0), p.argmin(axis=0))
-    #print(p.max(axis=0))
     t0 = time.time()
     particles1 = Particles(positions1, weights1)
     particles2 = Particles(positions2, weights2)
@@ -344,23 +381,6 @@ def test_corrfunc():
     tol = {'atol': 1e-8, 'rtol': 1e-5}
     #print(test.ravel())
     assert np.allclose(test, ref.wcounts, **tol)
-
-
-def test_thetacut2():
-    size = int(2e8)
-    boxsize = (5000,) * 3
-    smax = 35472.400001
-    los = 'firstpoint'
-    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=0, seed=42)
-    positions1, weights1 = np.column_stack(data1[:3]), data1[3]
-    #positions2, weights2 = np.column_stack(data2[:3]), data2[3]
-    particles1 = Particles(positions1, weights1)
-    #particles2 = Particles(positions2, weights2)
-    particles2 = Particles(positions1, weights1)
-    print(particles1.size)
-    battrs = BinAttrs(s=(0., smax, 0.1), pole=(0, 5, 2, los))
-    sattrs = SelectionAttrs(theta=(0., 0.05))
-    counts = count2(particles1, particles2, battrs=battrs, sattrs=sattrs)
 
 
 if __name__ == '__main__':
