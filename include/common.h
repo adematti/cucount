@@ -74,7 +74,7 @@ typedef struct {
     LOS_TYPE los[MAX_NBIN];
     FLOAT min[MAX_NBIN], max[MAX_NBIN], step[MAX_NBIN];
     FLOAT *array[MAX_NBIN];
-    size_t shape[MAX_NBIN];
+    size_t shape[MAX_NBIN], asize[MAX_NBIN];
     size_t size;
     size_t ndim;
 } BinAttrs;

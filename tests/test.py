@@ -359,7 +359,7 @@ def test_thetacut():
 def test_corrfunc_smu():
     import time
     edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
-    size = int(3e7)
+    size = int(1e7)
     boxsize = (5000,) * 3
 
     data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=0, seed=42)
@@ -385,5 +385,5 @@ def test_corrfunc_smu():
 
 if __name__ == '__main__':
 
-    test_thetacut()
-    #test_corrfunc()
+    #test_thetacut()
+    test_corrfunc_smu()

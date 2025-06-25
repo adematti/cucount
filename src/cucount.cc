@@ -116,7 +116,7 @@ struct BinAttrs_py {
                 array.push_back(py::array_t<FLOAT>(edges.attr("copy")()));
             } else if (py::isinstance<py::tuple>(item.second)) {
                 auto tuple = py::cast<py::tuple>(item.second);
-                if ((tuple.size() == 3) && !los_required) {
+                if ((tuple.size() == 3) && (!los_required)) {
                     // Case: {key: (FLOAT, FLOAT, FLOAT)}
                     min.push_back(py::cast<FLOAT>(tuple[0]));
                     max.push_back(py::cast<FLOAT>(tuple[1]));
@@ -124,8 +124,10 @@ struct BinAttrs_py {
                     los.push_back(LOS_NONE);
                     std::vector<FLOAT> barray;
                     for (FLOAT value = min.back(); value <= max.back(); value += step.back()) barray.push_back(value);
-                    array.push_back(py::array_t<FLOAT> py_array(barray.size(), barray.data()));
-                else if ((tuple.size() == 4) && los_required) {
+                    py::array_t<FLOAT> py_array(barray.size(), barray.data());
+                    array.push_back(py_array);
+                }
+                else if ((tuple.size() == 4) && (los_required)) {
                     // Case: {key: (FLOAT, FLOAT, FLOAT, string)}
                     min.push_back(py::cast<FLOAT>(tuple[0]));
                     max.push_back(py::cast<FLOAT>(tuple[1]));
@@ -133,9 +135,9 @@ struct BinAttrs_py {
                     los.push_back(string_to_los_type(py::cast<std::string>(tuple[3])));
                     std::vector<FLOAT> barray;
                     for (FLOAT value = min.back(); value <= max.back(); value += step.back()) barray.push_back(value);
-                    array.push_back(py::array_t<FLOAT> py_array(barray.size(), barray.data()));
-                }
-                } else if (tuple.size() == 2 && los_required) {
+                    py::array_t<FLOAT> py_array(barray.size(), barray.data());
+                    array.push_back(py_array);
+                } else if (tuple.size() == 2 && (los_required)) {
                     // Case: {key: (numpy array, string)}
                     auto array = py::cast<py::array_t<FLOAT>>(tuple[0]);
                     min.push_back(array.at(0));
@@ -148,33 +150,32 @@ struct BinAttrs_py {
             } else {
                 throw std::invalid_argument("Invalid value type (expected tuple or array) for key: " + var_name);
             }
+            if (step.back() == 0.) throw std::invalid_argument("Invalid step = 0. for key: " + var_name);
+            // Sort variables to ensure VAR_POLE is last
+            std::vector<size_t> indices(var.size());
+            size_t current_index = 0;
+            for (size_t i = 0; i < var.size(); i++) {
+                if (var[i] == VAR_POLE) {
+                    indices[var.size() - 1] = i;
+                }
+                else if (var[i] == VAR_K) {
+                    if (var.size() < 2) throw std::invalid_argument("k must be always used with pole");
+                    indices[var.size() - 2] = i;
+                }
+                else {
+                    indices[current_index] = i;
+                    current_index += 1;
+                }
+            }
+    
+            // Reorder all attributes based on the sorted indices
+            reorder(var, indices);
+            reorder(min, indices);
+            reorder(max, indices);
+            reorder(step, indices);
+            reorder(los, indices);
+            reorder(array, indices);
         }
-        if (step.back() == 0.) throw std::invalid_argument("Invalid step = 0. for key: " + var_name);
-        // Sort variables to ensure VAR_POLE is last
-        std::vector<size_t> indices(var.size());
-        size_t current_index = 0;
-        for (size_t i = 0; i < var.size(); i++) {
-            if (var[i] == VAR_POLE) {
-                indices[var.size() - 1] = i;
-            }
-            else if (var[i] == VAR_K) {
-                if (var.size() < 2) throw std::invalid_argument("k must be always used with pole");
-                indices[var.size() - 2] = i;
-            }
-            else {
-                indices[current_index] = i;
-                current_index += 1;
-            }
-        }
-
-        // Reorder all attributes based on the sorted indices
-        reorder(var, indices);
-        reorder(min, indices);
-        reorder(max, indices);
-        reorder(step, indices);
-        reorder(los, indices);
-        reorder(array, indices);
-
     }
 
     // Method to get the number of bins for each variable
@@ -201,7 +202,7 @@ struct BinAttrs_py {
         return var.size();
     }
 
-    BinAttrs data() const {
+    BinAttrs data() {
         BinAttrs battrs;
         auto sizes = shape();
         battrs.ndim = ndim();
@@ -212,10 +213,13 @@ struct BinAttrs_py {
             battrs.max[i] = max[i];
             battrs.los[i] = los[i];
             battrs.shape[i] = sizes[i];
+            battrs.asize[i] = array[i].shape(0);
             battrs.array[i] = array[i].mutable_data();
             battrs.step[i] = step[i];
-            if (is_linear(battrs.array[i], sizes[i], step)) battrs.array[i] = NULL;
-            else battrs.step[i] = 0.;
+            if (is_linear(battrs.array[i], sizes[i], step[i])) {
+                battrs.asize[i] = 0;
+                battrs.array[i] = NULL;
+            }
         }
         return battrs;
     }
@@ -272,7 +276,7 @@ struct SelectionAttrs_py {
 
 
 py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
-               const BinAttrs_py& battrs, const SelectionAttrs_py& sattrs = SelectionAttrs_py()) {
+               BinAttrs_py& battrs, const SelectionAttrs_py& sattrs = SelectionAttrs_py()) {
     // Convert Python inputs to C objects
     Particles list_particles[MAX_NMESH];
     for (size_t imesh=0; imesh < MAX_NMESH; imesh++) list_particles[imesh].size = 0;

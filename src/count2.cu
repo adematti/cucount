@@ -264,10 +264,10 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         }
         if ((var == VAR_S) || (var == VAR_THETA) || (var == VAR_MU)) {
             int ibin_loc = 0;
-            if (battrs.step[i] == 0.) {
-                if ((value >= battrs.array[battrs.size[i] - 1]) || (value < battrs.array[0])) return;
-                for (ibin_loc = battrs.size[i] - 1; ibin_loc >= 0; ibin_loc--) {
-                    if (value >= battrs.array[ibin_loc]) break;
+            if (battrs.asize[i] > 0) {
+                if ((value >= battrs.array[i][battrs.asize[i] - 1]) || (value < battrs.array[i][0])) return;
+                for (ibin_loc = battrs.asize[i] - 1; ibin_loc >= 0; ibin_loc--) {
+                    if (value >= battrs.array[i][ibin_loc]) break;
                 }
             }
             else {
@@ -298,7 +298,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         for (int ill = 0; ill < battrs.shape[i]; ill++) {
             size_t ell = ill * ellstep + ellmin;
             FLOAT weight_legendre = pow(-1, ell / 2) * weight * (2 * ell + 1) * legendre_cache[ell];
-            for (int ik = 0; ik < battrs.shape[i]; ik++) {
+            for (int ik = 0; ik < battrs.asize[i]; ik++) {
                 FLOAT k = 0.;
                 if (battrs.step[i] == 0) k = battrs.array[i][ik];
                 else k = ik * battrs.step[i] + battrs.min[i];
@@ -409,7 +409,7 @@ __global__ void reduce_kernel(const FLOAT *block_counts, int nblocks, FLOAT *fin
 }
 
 
-void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, const BinAttrs battrs) {
+void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, BinAttrs battrs) {
 
     cudaOccupancyMaxPotentialBlockSize(&nblocks, &nthreads_per_block, count2_cartesian_kernel, 0, 0);
 
@@ -428,11 +428,11 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaMemcpyToSymbol(device_sattrs, &sattrs, sizeof(SelectionAttrs)));
     //CUDA_CHECK(cudaMemcpyToSymbol(device_battrs, &battrs, sizeof(BinAttrs)));
     BinAttrs device_battrs = battrs;
-    for (size_t i = 0; i < MAX_NBIN; i++) {
-        if (battrs.step[i] == 0.) {
+    for (size_t i = 0; i < battrs.ndim; i++) {
+        if (battrs.asize[i] > 0) {
             FLOAT *array;
-            CUDA_CHECK(cudaMalloc(&array,  battrs.shape[i] * sizeof(FLOAT)));
-            CUDA_CHECK(cudaMemset(array, battrs.array[i], battrs.shape[i] * sizeof(FLOAT)));
+            CUDA_CHECK(cudaMalloc((void **) &array, battrs.asize[i] * sizeof(FLOAT)));
+            CUDA_CHECK(cudaMemcpy(array, battrs.array[i], battrs.asize[i] * sizeof(FLOAT), cudaMemcpyHostToDevice));
             device_battrs.array[i] = array;
         }
     }
@@ -447,7 +447,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaEventCreate(&stop));
     CUDA_CHECK(cudaEventRecord(start, 0));
 
-    if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block>>>(block_counts, list_mesh[0], list_mesh[1]);
+    if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
     else count2_cartesian_kernel<<<nblocks, nthreads_per_block>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
 
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -465,8 +465,8 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaFree(block_counts));
     CUDA_CHECK(cudaFree(final_counts));
 
-    for (size_t i = 0; i < MAX_NBIN; i++) {
-        if (battrs.step[i] == 0.) CUDA_CHECK(cudaFree(device_battrs.array[i]));
+    for (size_t i = 0; i < battrs.ndim; i++) {
+        if (battrs.asize[i] > 0) CUDA_CHECK(cudaFree(device_battrs.array[i]));
     }
 
     // Destroy CUDA events
