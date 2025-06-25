@@ -7,7 +7,7 @@
 
 __device__ __constant__ MeshAttrs device_mattrs;
 __device__ __constant__ SelectionAttrs device_sattrs;
-__device__ __constant__ BinAttrs device_battrs;
+//__device__ __constant__ BinAttrs device_battrs;
 
 
 __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
@@ -189,7 +189,7 @@ __device__ FLOAT get_bessel(int ell, FLOAT x) {
 }
 
 
-__device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2, FLOAT weight1, FLOAT weight2) {
+__device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2, FLOAT weight1, FLOAT weight2, BinAttrs battrs) {
     int ibin = 0;
     FLOAT diff[NDIM];
     difference(diff, position2, position1);
@@ -204,21 +204,21 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
 
     bool REQUIRED_S = 0, REQUIRED_MU = 0, REQUIRED_MU2 = 0;
     size_t i = 0;
-    for (i = 0; i < device_battrs.ndim; i++) {
-        var = device_battrs.var[i];
+    for (i = 0; i < battrs.ndim; i++) {
+        var = battrs.var[i];
         if ((var == VAR_S) | (var == VAR_K)) {
             REQUIRED_S = 1;
         }
         if (var == VAR_MU) {
-            los = device_battrs.los[i];
+            los = battrs.los[i];
             REQUIRED_MU = 1;
         }
         if (var == VAR_POLE) {
-            los = device_battrs.los[i];
+            los = battrs.los[i];
             REQUIRED_MU2 = 1;
-            ellmin = (size_t) device_battrs.min[i];
-            ellmax = (size_t) device_battrs.max[i];
-            ellstep = (size_t) device_battrs.step[i];
+            ellmin = (size_t) battrs.min[i];
+            ellmax = (size_t) battrs.max[i];
+            ellstep = (size_t) battrs.step[i];
             if (!((ellmin % 2 == 0) && (ellstep % 2 == 0))) REQUIRED_MU = 1;
         }
     }
@@ -250,8 +250,8 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
         };
     }
 
-    for (i = 0; i < device_battrs.ndim; i++) {
-        var = device_battrs.var[i];
+    for (i = 0; i < battrs.ndim; i++) {
+        var = battrs.var[i];
         FLOAT value = 0;
         if (var == VAR_S) {
             value = s;
@@ -263,8 +263,17 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
             value = mu;
         }
         if ((var == VAR_S) || (var == VAR_THETA) || (var == VAR_MU)) {
-            int ibin_loc = (int) (floor((value - device_battrs.min[i]) / device_battrs.step[i]));
-            if ((ibin_loc >= 0) && (ibin_loc < device_battrs.shape[i])) ibin = ibin * device_battrs.shape[i] + ibin_loc;
+            int ibin_loc = 0;
+            if (battrs.step[i] == 0.) {
+                if ((value >= battrs.array[battrs.size[i] - 1]) || (value < battrs.array[0])) return;
+                for (ibin_loc = battrs.size[i] - 1; ibin_loc >= 0; ibin_loc--) {
+                    if (value >= battrs.array[ibin_loc]) break;
+                }
+            }
+            else {
+                ibin_loc = (int) (floor((value - battrs.min[i]) / battrs.step[i]));
+            }
+            if ((ibin_loc >= 0) && (ibin_loc < battrs.shape[i])) ibin = ibin * battrs.shape[i] + ibin_loc;
             else return;
         }
         else {
@@ -272,40 +281,42 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
         }
     }
     FLOAT weight = weight1 * weight2;
-    if (i == device_battrs.ndim) {
+    if (i == battrs.ndim) {
         atomicAdd(&(counts[ibin]), weight);
     }
-    if ((i == device_battrs.ndim - 1) && (var == VAR_POLE)) {
+    if ((i == battrs.ndim - 1) && (var == VAR_POLE)) {
         FLOAT legendre_cache[MAX_POLE + 1];
         set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
-        for (int ill = 0; ill < device_battrs.shape[i]; ill++) {
+        for (int ill = 0; ill < battrs.shape[i]; ill++) {
             size_t ell = ill * ellstep + ellmin;
-            atomicAdd(&(counts[ibin * device_battrs.shape[i] + ill]), weight * (2 * ell + 1) * legendre_cache[ell]);
+            atomicAdd(&(counts[ibin * battrs.shape[i] + ill]), weight * (2 * ell + 1) * legendre_cache[ell]);
         }
     }
-    else if ((i == device_battrs.ndim - 2) && (device_battrs.var[i] == VAR_K) && (device_battrs.var[i + 1] == VAR_POLE)) {
+    else if ((i == battrs.ndim - 2) && (battrs.var[i] == VAR_K) && (battrs.var[i + 1] == VAR_POLE)) {
         FLOAT legendre_cache[MAX_POLE + 1];
         set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
-        for (int ill = 0; ill < device_battrs.shape[i]; ill++) {
+        for (int ill = 0; ill < battrs.shape[i]; ill++) {
             size_t ell = ill * ellstep + ellmin;
             FLOAT weight_legendre = pow(-1, ell / 2) * weight * (2 * ell + 1) * legendre_cache[ell];
-            for (int ik = 0; ik < device_battrs.shape[i]; ik++) {
-                FLOAT k = ik * device_battrs.step[i] + device_battrs.min[i];
-                size_t ibin_loc = (ibin * device_battrs.shape[i] + ik) * device_battrs.shape[i + 1] + ill;
+            for (int ik = 0; ik < battrs.shape[i]; ik++) {
+                FLOAT k = 0.;
+                if (battrs.step[i] == 0) k = battrs.array[i][ik];
+                else k = ik * battrs.step[i] + battrs.min[i];
+                size_t ibin_loc = (ibin * battrs.shape[i] + ik) * battrs.shape[i + 1] + ill;
                 atomicAdd(&(counts[ibin_loc]), weight_legendre * get_bessel(ell, k * s));
             }
         }
     }
 }
 
-__global__ void count2_angular_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
+__global__ void count2_angular_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2, BinAttrs battrs) {
 
     size_t tid = threadIdx.x;
 
     // Initialize local histogram
-    FLOAT *local_counts = &block_counts[blockIdx.x * device_battrs.size];
+    FLOAT *local_counts = &block_counts[blockIdx.x * battrs.size];
     // Zero initialize histogram for this block
-    for (int i = tid; i < device_battrs.size; i += blockDim.x) local_counts[i] = 0;
+    for (int i = tid; i < battrs.size; i += blockDim.x) local_counts[i] = 0;
 
     __syncthreads();
     // Global thread index
@@ -333,21 +344,21 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh
                     if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
                         continue;
                     }
-                    add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj]);
+                    add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj], battrs);
                 }
             }
         }
     }
 }
 
-__global__ void count2_cartesian_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2) {
+__global__ void count2_cartesian_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2, BinAttrs battrs) {
 
     size_t tid = threadIdx.x;
 
     // Initialize local histogram
-    FLOAT *local_counts = &block_counts[blockIdx.x * device_battrs.size];
+    FLOAT *local_counts = &block_counts[blockIdx.x * battrs.size];
     // Zero initialize histogram for this block
-    for (int i = tid; i < device_battrs.size; i += blockDim.x) local_counts[i] = 0;
+    for (int i = tid; i < battrs.size; i += blockDim.x) local_counts[i] = 0;
 
     __syncthreads();
     // Global thread index
@@ -376,7 +387,7 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, Mesh mesh1, Mesh me
                         if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
                             continue;
                         }
-                        add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj]);
+                        add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj], battrs);
                     }
                 }
             }
@@ -415,7 +426,16 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     // Copy constants to device
     CUDA_CHECK(cudaMemcpyToSymbol(device_mattrs, &mattrs, sizeof(MeshAttrs)));
     CUDA_CHECK(cudaMemcpyToSymbol(device_sattrs, &sattrs, sizeof(SelectionAttrs)));
-    CUDA_CHECK(cudaMemcpyToSymbol(device_battrs, &battrs, sizeof(BinAttrs)));
+    //CUDA_CHECK(cudaMemcpyToSymbol(device_battrs, &battrs, sizeof(BinAttrs)));
+    BinAttrs device_battrs = battrs;
+    for (size_t i = 0; i < MAX_NBIN; i++) {
+        if (battrs.step[i] == 0.) {
+            FLOAT *array;
+            CUDA_CHECK(cudaMalloc(&array,  battrs.shape[i] * sizeof(FLOAT)));
+            CUDA_CHECK(cudaMemset(array, battrs.array[i], battrs.shape[i] * sizeof(FLOAT)));
+            device_battrs.array[i] = array;
+        }
+    }
 
     // allocate histogram arrays
     CUDA_CHECK(cudaMalloc((void **)&block_counts, nblocks * battrs.size * sizeof(FLOAT)));
@@ -425,11 +445,10 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     // Create CUDA events for timing
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
-
     CUDA_CHECK(cudaEventRecord(start, 0));
 
     if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block>>>(block_counts, list_mesh[0], list_mesh[1]);
-    else count2_cartesian_kernel<<<nblocks, nthreads_per_block>>>(block_counts, list_mesh[0], list_mesh[1]);
+    else count2_cartesian_kernel<<<nblocks, nthreads_per_block>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
 
     CUDA_CHECK(cudaDeviceSynchronize());
     reduce_kernel<<<nblocks, nthreads_per_block>>>(block_counts, nblocks, final_counts, battrs.size);
@@ -445,6 +464,10 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     // Free GPU memory
     CUDA_CHECK(cudaFree(block_counts));
     CUDA_CHECK(cudaFree(final_counts));
+
+    for (size_t i = 0; i < MAX_NBIN; i++) {
+        if (battrs.step[i] == 0.) CUDA_CHECK(cudaFree(device_battrs.array[i]));
+    }
 
     // Destroy CUDA events
     CUDA_CHECK(cudaEventDestroy(start));

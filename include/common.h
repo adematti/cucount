@@ -73,6 +73,7 @@ typedef struct {
     VAR_TYPE var[MAX_NBIN];
     LOS_TYPE los[MAX_NBIN];
     FLOAT min[MAX_NBIN], max[MAX_NBIN], step[MAX_NBIN];
+    FLOAT *array[MAX_NBIN];
     size_t shape[MAX_NBIN];
     size_t size;
     size_t ndim;

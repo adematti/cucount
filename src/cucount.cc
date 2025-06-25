@@ -76,10 +76,24 @@ void reorder(std::vector<T>& vec, const std::vector<size_t>& indices) {
 }
 
 
+
+// Function to test if battrs.array[i] increases linearly
+bool is_linear(const FLOAT *array, const size_t size, FLOAT step) {
+    for (size_t i = 1; i < size; i++) {
+        FLOAT expected_value = array[i - 1] + step;
+        if (std::abs(array[i] - expected_value) > 1e-6 * step) { // Allow small numerical tolerance
+            return false;
+        }
+    }
+    return true;
+}
+
+
 struct BinAttrs_py {
     std::vector<FLOAT> min, max, step;
     std::vector<VAR_TYPE> var;
     std::vector<LOS_TYPE> los;
+    std::vector<py::array_t<FLOAT>> array; // New member: list of arrays for each bin
 
     // Constructor that takes a Python dictionary
     BinAttrs_py(const py::kwargs& kwargs) {
@@ -89,21 +103,53 @@ struct BinAttrs_py {
             // Parse the values
             VAR_TYPE v = string_to_var_type(var_name);
             var.push_back(v);
-            if ((v == VAR_MU) || (v == VAR_POLE)) {
-                auto range_tuple = py::cast<std::tuple<FLOAT, FLOAT, FLOAT, std::string>>(item.second);
-                min.push_back(std::get<0>(range_tuple));
-                max.push_back(std::get<1>(range_tuple));
-                step.push_back(std::get<2>(range_tuple));
-                los.push_back(string_to_los_type(std::get<3>(range_tuple)));
-            }
-            else {
-                auto range_tuple = py::cast<std::tuple<FLOAT, FLOAT, FLOAT>>(item.second);
-                min.push_back(std::get<0>(range_tuple));
-                max.push_back(std::get<1>(range_tuple));
-                step.push_back(std::get<2>(range_tuple));
+            bool los_required = ((v == VAR_MU) || (v == VAR_POLE));
+
+            // Handle different types of values
+            if ((py::isinstance<py::array>(item.second)) && los_required) {
+                // Case: {key: numpy array}
+                auto edges = py::cast<py::array_t<FLOAT>>(item.second);
+                min.push_back(edges.at(0));
+                max.push_back(edges.at(edges.size() - 1));
+                step.push_back((max.back() - min.back()) / (edges.size() - 1));
                 los.push_back(LOS_NONE);
+                array.push_back(py::array_t<FLOAT>(edges.attr("copy")()));
+            } else if (py::isinstance<py::tuple>(item.second)) {
+                auto tuple = py::cast<py::tuple>(item.second);
+                if ((tuple.size() == 3) && !los_required) {
+                    // Case: {key: (FLOAT, FLOAT, FLOAT)}
+                    min.push_back(py::cast<FLOAT>(tuple[0]));
+                    max.push_back(py::cast<FLOAT>(tuple[1]));
+                    step.push_back(py::cast<FLOAT>(tuple[2]));
+                    los.push_back(LOS_NONE);
+                    std::vector<FLOAT> barray;
+                    for (FLOAT value = min.back(); value <= max.back(); value += step.back()) barray.push_back(value);
+                    array.push_back(py::array_t<FLOAT> py_array(barray.size(), barray.data()));
+                else if ((tuple.size() == 4) && los_required) {
+                    // Case: {key: (FLOAT, FLOAT, FLOAT, string)}
+                    min.push_back(py::cast<FLOAT>(tuple[0]));
+                    max.push_back(py::cast<FLOAT>(tuple[1]));
+                    step.push_back(py::cast<FLOAT>(tuple[2]));
+                    los.push_back(string_to_los_type(py::cast<std::string>(tuple[3])));
+                    std::vector<FLOAT> barray;
+                    for (FLOAT value = min.back(); value <= max.back(); value += step.back()) barray.push_back(value);
+                    array.push_back(py::array_t<FLOAT> py_array(barray.size(), barray.data()));
+                }
+                } else if (tuple.size() == 2 && los_required) {
+                    // Case: {key: (numpy array, string)}
+                    auto array = py::cast<py::array_t<FLOAT>>(tuple[0]);
+                    min.push_back(array.at(0));
+                    max.push_back(array.at(array.size() - 1));
+                    step.push_back((max.back() - min.back()) / (array.size() - 1));
+                    los.push_back(string_to_los_type(py::cast<std::string>(tuple[1])));
+                } else {
+                    throw std::invalid_argument("Invalid tuple format for key: " + var_name);
+                }
+            } else {
+                throw std::invalid_argument("Invalid value type (expected tuple or array) for key: " + var_name);
             }
         }
+        if (step.back() == 0.) throw std::invalid_argument("Invalid step = 0. for key: " + var_name);
         // Sort variables to ensure VAR_POLE is last
         std::vector<size_t> indices(var.size());
         size_t current_index = 0;
@@ -127,6 +173,7 @@ struct BinAttrs_py {
         reorder(max, indices);
         reorder(step, indices);
         reorder(los, indices);
+        reorder(array, indices);
 
     }
 
@@ -134,7 +181,7 @@ struct BinAttrs_py {
     std::vector<size_t> shape() const {
         std::vector<size_t> sizes;
         for (size_t i = 0; i < var.size(); i++) {
-            size_t s = static_cast<size_t>((max[i] - min[i]) / step[i]);
+            size_t s = array[i].shape(0) - 1;
             if (var[i] == VAR_K) s += 1;  // k-values, not edges
             if (var[i] == VAR_POLE) s += 1;  // poles, not edges
             sizes.push_back(s);
@@ -163,9 +210,12 @@ struct BinAttrs_py {
             battrs.var[i] = var[i];
             battrs.min[i] = min[i];
             battrs.max[i] = max[i];
-            battrs.step[i] = step[i];
             battrs.los[i] = los[i];
             battrs.shape[i] = sizes[i];
+            battrs.array[i] = array[i].mutable_data();
+            battrs.step[i] = step[i];
+            if (is_linear(battrs.array[i], sizes[i], step)) battrs.array[i] = NULL;
+            else battrs.step[i] = 0.;
         }
         return battrs;
     }
