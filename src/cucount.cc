@@ -253,14 +253,12 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
     set_mesh_attrs(list_particles, &cmattrs);
     set_mesh(list_particles, list_mesh, cmattrs);
     // Free allocated memory
+    for (size_t i = 0; i < 2; i++) free_device_particles(&(list_particles[i]));
     // Perform the computation
     auto counts_ptr = counts.mutable_data(); // Get a pointer to the array's data
     count2(counts_ptr, list_mesh, cmattrs, csattrs, cbattrs);
     // Free allocated memory
-    for (size_t i = 0; i < 2; i++) {
-        free_device_particles(&(list_particles[i]));
-        free_device_mesh(&(list_mesh[i]));
-    }
+    for (size_t i = 0; i < 2; i++) free_device_mesh(&(list_mesh[i]));
     // Return the numpy array
     return counts;
 }

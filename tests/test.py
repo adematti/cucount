@@ -365,5 +365,5 @@ def test_thetacut2():
 
 if __name__ == '__main__':
 
-    #test_thetacut()
-    test_corrfunc()
+    test_thetacut()
+    #test_corrfunc()
