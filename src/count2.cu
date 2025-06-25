@@ -118,7 +118,7 @@ __device__ inline bool is_selected(FLOAT *sposition1, FLOAT *sposition2, FLOAT *
 }
 
 
-__device__ inline void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2) {
+__device__ void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2) {
     if ((ellmin % 2 == 0) && (ellstep % 2 == 0)) {
         for (int ell = ellmin; ell < ellmax; ell+=ellstep) {
             if (ell == 0) {
@@ -152,6 +152,38 @@ __device__ inline void set_legendre(FLOAT *legendre_cache, int ellmin, int ellma
         legendre_cache[1] = mu; // P_1(mu) = mu
         for (int ell = 2; ell < ellmax; ell++) {
             legendre_cache[ell] = ((2.0 * ell - 1.0) * mu * legendre_cache[ell - 1] - (ell - 1.0) * legendre_cache[ell - 2]) / ell;
+        }
+    }
+}
+
+
+#define BESSEL_XMIN 0.00001
+
+
+__device__ FLOAT get_bessel(int ell, FLOAT x) {
+    if (x < BESSEL_XMIN) {
+        switch (ell) {
+            case 0:
+                return 1. - x * x / 6. + x * x * x * x / 120.;
+            case 2:
+                return x * x / 15. - x * x * x * x / 210.;
+            case 4:
+                return x * x * x * x / 945.;
+            default:
+                return 0.0;  // optionally handle unsupported ℓ values
+        }
+    } else {
+        FLOAT x2 = x * x;
+        switch (ell) {
+            case 0:
+                return sin(x) / x;
+            case 2:
+                return (3.0 / (x2) - 1.0) * sin(x) / x - 3.0 * cos(x) / (x2);
+            case 4:
+                return (105.0 / (x2 * x2) - 45.0 / x2 + 1.0) * sin(x) / x
+                     - (105.0 / (x2 * x) - 10.0 / x) * cos(x);
+            default:
+                return 0.0;
         }
     }
 }
@@ -243,12 +275,24 @@ __device__ void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, 
     if (i == device_battrs.ndim) {
         atomicAdd(&(counts[ibin]), weight);
     }
-    if (var == VAR_POLE) {
+    if ((i == device_battrs.ndim - 1) && (var == VAR_POLE)) {
         FLOAT legendre_cache[MAX_POLE + 1];
         set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
         for (int ill = 0; ill < device_battrs.shape[i]; ill++) {
             size_t ell = ill * ellstep + ellmin;
             atomicAdd(&(counts[ibin * device_battrs.shape[i] + ill]), weight * (2 * ell + 1) * legendre_cache[ell]);
+        }
+    }
+    else if ((i == device_battrs.ndim - 2) && (device_battrs.var[i] == VAR_K) && (device_battrs.var[i + 1] == VAR_POLE)) {
+        FLOAT legendre_cache[MAX_POLE + 1];
+        set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
+        for (int ill = 0; ill < device_battrs.shape[i]; ill++) {
+            size_t ell = ill * ellstep + ellmin;
+            FLOAT weight_legendre = weight * (2 * ell + 1) * legendre_cache[ell];
+            for (int ibin = 0; ibin < device_battrs.shape[i]; ibin++) {
+                FLOAT k = ibin * device_battrs.step + device_battrs.min;
+                atomicAdd(&(counts[ibin * device_battrs.shape[i] + ill]), weight_legendre * get_bessel(ell, k * s));
+            }
         }
     }
 }

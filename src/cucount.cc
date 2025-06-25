@@ -106,12 +106,20 @@ struct BinAttrs_py {
         }
         // Sort variables to ensure VAR_POLE is last
         std::vector<size_t> indices(var.size());
-        std::iota(indices.begin(), indices.end(), 0); // Initialize indices: [0, 1, 2, ...]
-
-        // Sort indices based on whether the variable is VAR_POLE
-        std::sort(indices.begin(), indices.end(), [&](size_t i, size_t j) {
-            return var[i] != VAR_POLE && var[j] == VAR_POLE;
-        });
+        size_t current_index = 0;
+        for (size_t i = 0; i < var.size(); i++) {
+            if (var[i] == VAR_POLE) {
+                indices[var.size() - 1] = i;
+            }
+            else if (var[i] == VAR_K) {
+                if (var.size() < 2) throw std::invalid_argument("k must be always used with pole");
+                indices[var.size() - 2] = i;
+            }
+            else {
+                indices[current_index] = i;
+                current_index += 1;
+            }
+        }
 
         // Reorder all attributes based on the sorted indices
         reorder(var, indices);
