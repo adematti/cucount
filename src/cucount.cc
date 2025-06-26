@@ -106,7 +106,7 @@ struct BinAttrs_py {
             bool los_required = ((v == VAR_MU) || (v == VAR_POLE));
 
             // Handle different types of values
-            if ((py::isinstance<py::array>(item.second)) && los_required) {
+            if ((py::isinstance<py::array>(item.second)) && (!los_required)) {
                 // Case: {key: numpy array}
                 auto edges = py::cast<py::array_t<FLOAT>>(item.second);
                 min.push_back(edges.at(0));
@@ -151,31 +151,30 @@ struct BinAttrs_py {
                 throw std::invalid_argument("Invalid value type (expected tuple or array) for key: " + var_name);
             }
             if (step.back() == 0.) throw std::invalid_argument("Invalid step = 0. for key: " + var_name);
-            // Sort variables to ensure VAR_POLE is last
-            std::vector<size_t> indices(var.size());
-            size_t current_index = 0;
-            for (size_t i = 0; i < var.size(); i++) {
-                if (var[i] == VAR_POLE) {
-                    indices[var.size() - 1] = i;
-                }
-                else if (var[i] == VAR_K) {
-                    if (var.size() < 2) throw std::invalid_argument("k must be always used with pole");
-                    indices[var.size() - 2] = i;
-                }
-                else {
-                    indices[current_index] = i;
-                    current_index += 1;
-                }
-            }
-    
-            // Reorder all attributes based on the sorted indices
-            reorder(var, indices);
-            reorder(min, indices);
-            reorder(max, indices);
-            reorder(step, indices);
-            reorder(los, indices);
-            reorder(array, indices);
         }
+        // Sort variables to ensure VAR_POLE is last
+        std::vector<size_t> indices(var.size());
+        size_t current_index = 0;
+        for (size_t i = 0; i < var.size(); i++) {
+            if (var[i] == VAR_POLE) {
+                indices[var.size() - 1] = i;
+            }
+            else if (var[i] == VAR_K) {
+                if (var.size() < 2) throw std::invalid_argument("k must be always used with pole");
+                indices[var.size() - 2] = i;
+            }
+            else {
+                indices[current_index] = i;
+                current_index += 1;
+            }
+        }
+        // Reorder all attributes based on the sorted indices
+        reorder(var, indices);
+        reorder(min, indices);
+        reorder(max, indices);
+        reorder(step, indices);
+        reorder(los, indices);
+        reorder(array, indices);
     }
 
     // Method to get the number of bins for each variable

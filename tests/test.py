@@ -214,10 +214,13 @@ def test_thetacut():
     TwoPointWeight = namedtuple('TwoPointWeight', ['sep', 'weight'])
 
     edges = np.linspace(0., 30, 11)
+    #edges = np.array([0.2, 0.3, 0.5, 1.])
     size = int(1e2)
     boxsize = (20,) * 3
 
-    list_options = [{'space': 'spectrum', 'ells': (0, 2)}]
+    list_options = []
+    list_options.append({'space': 'spectrum', 'ells': (0, 2)})
+    list_options.append({'space': 'correlation', 'ells': (0, 2)})
 
     for options in list_options:
         options = options.copy()
@@ -342,10 +345,9 @@ def test_thetacut():
             particles1 = Particles(positions1, weights1)
             particles2 = Particles(positions2, weights2)
             if space == 'correlation':
-                battrs = BinAttrs(**{'s': (edges[0], edges[-1], edges[1] - edges[0]), 'pole': (0, ells[-1] + 1, 2, los)})
+                battrs = BinAttrs(**{'s': edges, 'pole': (0, ells[-1] + 1, 2, los)})
             else:
-                print(edges.shape)
-                battrs = BinAttrs(**{'k': (edges[0], edges[-1], edges[1] - edges[0]), 'pole': (0, ells[-1] + 1, 2, los)})
+                battrs = BinAttrs(**{'k': edges, 'pole': (0, ells[-1] + 1, 2, los)})
             for var in selection_attrs:
                 sattrs = SelectionAttrs(**{var: (selection_attrs[var][0], selection_attrs[var][1])})
             return count2(particles1, particles2, battrs=battrs, sattrs=sattrs)
@@ -385,5 +387,5 @@ def test_corrfunc_smu():
 
 if __name__ == '__main__':
 
-    #test_thetacut()
-    test_corrfunc_smu()
+    test_thetacut()
+    #test_corrfunc_smu()

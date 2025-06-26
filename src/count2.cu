@@ -298,7 +298,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         for (int ill = 0; ill < battrs.shape[i]; ill++) {
             size_t ell = ill * ellstep + ellmin;
             FLOAT weight_legendre = pow(-1, ell / 2) * weight * (2 * ell + 1) * legendre_cache[ell];
-            for (int ik = 0; ik < battrs.asize[i]; ik++) {
+            for (int ik = 0; ik < battrs.shape[i]; ik++) {
                 FLOAT k = 0.;
                 if (battrs.step[i] == 0) k = battrs.array[i][ik];
                 else k = ik * battrs.step[i] + battrs.min[i];
