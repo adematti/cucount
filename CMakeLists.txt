@@ -4,6 +4,7 @@ project(cucount LANGUAGES CUDA CXX)
 set(PYBIND11_FINDPYTHON ON)
 find_package(pybind11 CONFIG REQUIRED)
 set(CMAKE_CUDA_ARCHITECTURES 80)  # or "80-real" for full PTX
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 
 enable_language(CUDA)
 # Add the CUDA source file

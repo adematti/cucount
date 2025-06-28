@@ -4,11 +4,7 @@ from scipy import special
 import sys
 sys.path.insert(0, '../build')
 
-try:
-    from cucount import count2, Particles, BinAttrs, SelectionAttrs
-except ImportError:
-    raise
-
+from cucountlib.cucount import count2, Particles, BinAttrs, SelectionAttrs
 
 @np.vectorize
 def spherical_bessel(x, ell=0):
