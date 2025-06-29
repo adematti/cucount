@@ -218,7 +218,8 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             REQUIRED_MU2 = 1;
             ellmin = (size_t) battrs.min[i];
             ellmax = (size_t) battrs.max[i];
-            ellstep = (size_t) battrs.step[i];
+            if (battrs.asize[i] == 0) ellstep = (size_t) battrs.step[i];
+            else ellstep = 1;
             if (!((ellmin % 2 == 0) && (ellstep % 2 == 0))) REQUIRED_MU = 1;
         }
     }
@@ -288,7 +289,9 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         FLOAT legendre_cache[MAX_POLE + 1];
         set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
         for (int ill = 0; ill < battrs.shape[i]; ill++) {
-            size_t ell = ill * ellstep + ellmin;
+            size_t ell;
+            if (battrs.asize[i] > 0) ell = (size_t) battrs.array[i][ill];
+             else ell = ill * ellstep + ellmin;
             atomicAdd(&(counts[ibin * battrs.shape[i] + ill]), weight * (2 * ell + 1) * legendre_cache[ell]);
         }
     }
@@ -296,11 +299,13 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         FLOAT legendre_cache[MAX_POLE + 1];
         set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
         for (int ill = 0; ill < battrs.shape[i]; ill++) {
-            size_t ell = ill * ellstep + ellmin;
+            size_t ell;
+            if (battrs.asize[i] > 0) ell = (size_t) battrs.array[i][ill];
+            else ell = ill * ellstep + ellmin;
             FLOAT weight_legendre = pow(-1, ell / 2) * weight * (2 * ell + 1) * legendre_cache[ell];
             for (int ik = 0; ik < battrs.shape[i]; ik++) {
                 FLOAT k = 0.;
-                if (battrs.step[i] == 0) k = battrs.array[i][ik];
+                if (battrs.asize[i] > 0) k = battrs.array[i][ik];
                 else k = ik * battrs.step[i] + battrs.min[i];
                 size_t ibin_loc = (ibin * battrs.shape[i] + ik) * battrs.shape[i + 1] + ill;
                 atomicAdd(&(counts[ibin_loc]), weight_legendre * get_bessel(ell, k * s));
