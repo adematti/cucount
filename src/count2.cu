@@ -120,7 +120,7 @@ __device__ inline bool is_selected(FLOAT *sposition1, FLOAT *sposition2, FLOAT *
 
 __device__ void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2) {
     if ((ellmin % 2 == 0) && (ellstep % 2 == 0)) {
-        for (int ell = ellmin; ell < ellmax; ell+=ellstep) {
+        for (int ell = ellmin; ell <= ellmax; ell+=ellstep) {
             if (ell == 0) {
                 legendre_cache[ell] = 1.;
             }
@@ -150,7 +150,7 @@ __device__ void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int 
     else {
         legendre_cache[0] = 1.0; // P_0(mu) = 1
         legendre_cache[1] = mu; // P_1(mu) = mu
-        for (int ell = 2; ell < ellmax; ell++) {
+        for (int ell = 2; ell <= ellmax; ell++) {
             legendre_cache[ell] = ((2.0 * ell - 1.0) * mu * legendre_cache[ell - 1] - (ell - 1.0) * legendre_cache[ell - 2]) / ell;
         }
     }

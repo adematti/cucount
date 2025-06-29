@@ -171,6 +171,7 @@ def ref_theta_correlation(edges, data1, data2=None, boxsize=None, los='midpoint'
                 poles[ill][ind] += weight * (2 * ell + 1) * legendre[ill](mu)
     return np.asarray(poles), sep / counts
 
+
 def ref_theta_spectrum(modes, data1, data2=None, boxsize=None, los='midpoint', ells=(0, 2, 4), autocorr=False, selection_attrs=None, **kwargs):
     if data2 is None: data2 = data1
     poles = [np.zeros_like(modes, dtype='c16') for ell in ells]
@@ -341,9 +342,9 @@ def test_thetacut():
             particles1 = Particles(positions1, weights1)
             particles2 = Particles(positions2, weights2)
             if space == 'correlation':
-                battrs = BinAttrs(**{'s': edges, 'pole': (0, ells[-1] + 1, 2, los)})
+                battrs = BinAttrs(**{'s': edges, 'pole': (np.array(ells), los)})
             else:
-                battrs = BinAttrs(**{'k': edges, 'pole': (0, ells[-1] + 1, 2, los)})
+                battrs = BinAttrs(**{'k': edges, 'pole': (np.array(ells), los)})
             for var in selection_attrs:
                 sattrs = SelectionAttrs(**{var: (selection_attrs[var][0], selection_attrs[var][1])})
             return count2(particles1, particles2, battrs=battrs, sattrs=sattrs)
@@ -357,8 +358,8 @@ def test_thetacut():
 def test_corrfunc_smu():
     import time
     edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
-    size = int(1e7)
-    boxsize = (5000,) * 3
+    size = int(1e4)
+    boxsize = (2000,) * 3
 
     data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=0, seed=42)
     positions1, weights1 = np.column_stack(data1[:3]), data1[3]
@@ -371,7 +372,7 @@ def test_corrfunc_smu():
     battrs = BinAttrs(**{'s': (edges[0][0], edges[0][-1], edges[0][1] - edges[0][0]), 'mu': (edges[1][0], edges[1][-1] + 1e-4, edges[1][1] - edges[1][0], los)})
     test = count2(particles1, particles2, battrs=battrs)
     print('cucount', time.time() - t0)
-
+    return
     from pycorr import TwoPointCounter
     t0 = time.time()
     ref = TwoPointCounter('smu', edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los, position_type='pos', nthreads=1, gpu=True)

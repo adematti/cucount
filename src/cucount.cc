@@ -137,13 +137,14 @@ struct BinAttrs_py {
                     for (FLOAT value = min.back(); value <= max.back(); value += step.back()) barray.push_back(value);
                     py::array_t<FLOAT> py_array(barray.size(), barray.data());
                     array.push_back(py_array);
-                } else if (tuple.size() == 2 && (los_required)) {
+                } else if ((tuple.size() == 2) && (los_required)) {
                     // Case: {key: (numpy array, string)}
-                    auto array = py::cast<py::array_t<FLOAT>>(tuple[0]);
-                    min.push_back(array.at(0));
-                    max.push_back(array.at(array.size() - 1));
-                    step.push_back((max.back() - min.back()) / (array.size() - 1));
+                    auto edges = py::cast<py::array_t<FLOAT>>(tuple[0]);
+                    min.push_back(edges.at(0));
+                    max.push_back(edges.at(edges.size() - 1));
+                    step.push_back((max.back() - min.back()) / (edges.size() - 1));
                     los.push_back(string_to_los_type(py::cast<std::string>(tuple[1])));
+                    array.push_back(py::array_t<FLOAT>(edges.attr("copy")()));
                 } else {
                     throw std::invalid_argument("Invalid tuple format for key: " + var_name);
                 }
