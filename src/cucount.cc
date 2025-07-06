@@ -267,6 +267,7 @@ struct SelectionAttrs_py {
             if (var[i] == VAR_THETA) {
                 sattrs.smin[i] = cos(max[i] * DTORAD);
                 sattrs.smax[i] = cos(min[i] * DTORAD);
+                if (min[i] <= 0.) sattrs.smax[i] = 2.;  // margin for numerical approximation
             }
 
         }

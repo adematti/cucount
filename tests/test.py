@@ -356,10 +356,11 @@ def test_thetacut():
 
 
 def test_corrfunc_smu():
+    import os
     import time
     edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
-    size = int(1e4)
-    boxsize = (2000,) * 3
+    size = int(1e7)
+    boxsize = (3000,) * 3
 
     data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=0, seed=42)
     positions1, weights1 = np.column_stack(data1[:3]), data1[3]
@@ -369,10 +370,10 @@ def test_corrfunc_smu():
     particles1 = Particles(positions1, weights1)
     particles2 = Particles(positions2, weights2)
     los = 'midpoint'
-    battrs = BinAttrs(**{'s': (edges[0][0], edges[0][-1], edges[0][1] - edges[0][0]), 'mu': (edges[1][0], edges[1][-1] + 1e-4, edges[1][1] - edges[1][0], los)})
+    battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
     test = count2(particles1, particles2, battrs=battrs)
     print('cucount', time.time() - t0)
-    return
+
     from pycorr import TwoPointCounter
     t0 = time.time()
     ref = TwoPointCounter('smu', edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los, position_type='pos', nthreads=1, gpu=True)
@@ -384,5 +385,5 @@ def test_corrfunc_smu():
 
 if __name__ == '__main__':
 
-    test_thetacut()
-    #test_corrfunc_smu()
+    #test_thetacut()
+    test_corrfunc_smu()
