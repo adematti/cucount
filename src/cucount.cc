@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+
 #include "mesh.h"
 #include "count2.h"
 #include "common.h"
@@ -27,6 +28,16 @@ struct Particles_py {
         // Ensure weights are C-contiguous
         if (!is_contiguous(weights)) {
             this->weights = py::array_t<FLOAT>(weights.attr("copy")());
+        }
+
+        // Check that positions and weights have the same length
+        size_t npositions = this->positions.shape(0);
+        size_t nweights = this->weights.shape(0);
+        if (npositions != nweights) {
+            throw std::invalid_argument(
+                "Particles_py: positions and weights must have the same length, but got positions.shape(0) = " +
+                std::to_string(npositions) + " and weights.shape(0) = " + std::to_string(nweights)
+            );
         }
     }
 
@@ -142,7 +153,9 @@ struct BinAttrs_py {
                     auto edges = py::cast<py::array_t<FLOAT>>(tuple[0]);
                     min.push_back(edges.at(0));
                     max.push_back(edges.at(edges.size() - 1));
-                    step.push_back((max.back() - min.back()) / (edges.size() - 1));
+                    FLOAT diff = max.back() - min.back();
+                    if (diff == 0.) step.push_back(2.); // in case ells = [0] or (0, 0, 1)
+                    else step.push_back((max.back() - min.back()) / (edges.size() - 1));
                     los.push_back(string_to_los_type(py::cast<std::string>(tuple[1])));
                     array.push_back(py::array_t<FLOAT>(edges.attr("copy")()));
                 } else {
@@ -314,6 +327,7 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
         cmattrs.type = MESH_CARTESIAN;
         cmattrs.smax = cbattrs.max[0];
     }
+    //return counts;
     set_mesh_attrs(list_particles, &cmattrs);
     set_mesh(list_particles, list_mesh, cmattrs);
     // Free allocated memory
