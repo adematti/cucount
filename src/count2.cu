@@ -291,7 +291,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         for (int ill = 0; ill < battrs.shape[i]; ill++) {
             size_t ell;
             if (battrs.asize[i] > 0) ell = (size_t) battrs.array[i][ill];
-             else ell = ill * ellstep + ellmin;
+            else ell = ill * ellstep + ellmin;
             atomicAdd(&(counts[ibin * battrs.shape[i] + ill]), weight * (2 * ell + 1) * legendre_cache[ell]);
         }
     }
