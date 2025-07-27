@@ -9,6 +9,7 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 enable_language(CUDA)
 # Add the CUDA source file
 pybind11_add_module(cucount src/cucount.cc src/common.cu src/logger.cc src/mesh.cu src/count2.cu)
+pybind11_add_module(ffi_cucount src/ffi_cucount.cc src/cucount.cc src/common.cu src/logger.cc src/mesh.cu src/count2.cu)
 
 target_include_directories(cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 

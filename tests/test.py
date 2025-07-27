@@ -1,10 +1,8 @@
 import numpy as np
 from scipy import special
 
-import sys
-sys.path.insert(0, '../build')
+from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs
 
-from cucountlib.cucount import count2, Particles, BinAttrs, SelectionAttrs
 
 @np.vectorize
 def spherical_bessel(x, ell=0):

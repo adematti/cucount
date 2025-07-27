@@ -4,6 +4,7 @@
 #include "mesh.h"
 #include "count2.h"
 #include "common.h"
+#include "cucount.h"
 
 namespace py = pybind11;
 
@@ -366,7 +367,7 @@ PYBIND11_MODULE(cucount, m) {
         .def_readwrite("min", &SelectionAttrs_py::min)
         .def_readwrite("max", &SelectionAttrs_py::max);
 
-    m.def("count2", &count2_py, "Perform 2-pt counts on the GPU and return a numpy array",
+    m.def("count2", &count2_py, "Take particle positions and weights (numpy arrays), perform 2-pt counts on the GPU and return a numpy array",
         py::arg("particles1"),
         py::arg("particles2"),
         py::arg("battrs"),
