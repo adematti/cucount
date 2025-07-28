@@ -381,7 +381,41 @@ def test_corrfunc_smu():
     assert np.allclose(test, ref.wcounts, **tol)
 
 
+def test_ffi():
+    from functools import partial
+    import jax
+    jax.distributed.initialize()
+    from jax import numpy as jnp
+    from cucountlib.cucount import BinAttrs, SelectionAttrs
+    from cucountlib import ffi_cucount
+    #jax.ffi.register_ffi_target("rms_norm", ffi_cucount.rms_norm(), platform="cpu")
+    jax.ffi.register_ffi_target("rms_norm_cuda", ffi_cucount.rms_norm_cuda(), platform="CUDA")
+
+    edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
+    los = 'midpoint'
+    battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+    sattrs = SelectionAttrs(theta=(0., 0.5))
+
+    from jax.experimental.shard_map import shard_map
+    from jax.sharding import Mesh, PartitionSpec as P
+
+    sharding_mesh = jax.make_mesh((2,), ('x',))
+
+    def f(x, battrs=None, sattrs=SelectionAttrs()):
+        ffi_cucount.set_attrs(battrs, sattrs=sattrs)
+        call = jax.ffi.ffi_call("rms_norm_cuda", jax.ShapeDtypeStruct(x.shape, x.dtype))
+        return call(x)
+
+    # Test that this gives the same result as our reference implementation
+    x = jnp.linspace(-0.5, 0.5, 32)
+    fs = shard_map(partial(f, battrs=battrs, sattrs=sattrs), mesh=sharding_mesh, in_specs=P(*sharding_mesh.axis_names), out_specs=P(*sharding_mesh.axis_names))
+    r = fs(x)
+    print(r.sum())
+    jax.distributed.shutdown()
+
+
 if __name__ == '__main__':
 
-    #test_thetacut()
-    test_corrfunc_smu()
+    test_thetacut()
+    #test_corrfunc_smu()
+    #test_ffi()
