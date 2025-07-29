@@ -6,6 +6,18 @@
 
 ---
 
+## 📦 Installation
+
+You can install `cucount` directly via pip:
+
+```bash
+pip install git+https://github.com/adematti/cucount.git
+```
+
+The JAX API (through FFI) will be built automatically if the `jax.ffi` library is found during installation.
+
+---
+
 ## 🧮 NumPy API
 
 Use the NumPy API if you're not using JAX. All data stays on the **host (CPU)** and is internally transferred to the GPU.
@@ -126,6 +138,12 @@ counts = count2_parallel(particles1, particles2)
 
 - [JAX FFI documentation](https://docs.jax.dev/en/latest/ffi.html)
 - [shard\_map usage guide](https://docs.jax.dev/en/latest/notebooks/shard_map.html)
+
+---
+
+## 🙏 Acknowledgment
+
+Special thanks to **François Lanusse** for valuable advice on Python–JAX bindings.
 
 ---
 
