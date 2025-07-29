@@ -92,7 +92,7 @@ py::capsule EncapsulateFfiCall(T *fn) {
 // Bind the function and structs to Python
 PYBIND11_MODULE(ffi_cucount, m) {
     // Register classes first!
-    py::class_<BinAttrs_py>(m, "BinAttrs")
+    py::class_<BinAttrs_py>(m, "BinAttrs", py::module_local())
         .def(py::init<py::kwargs>()) // Accept Python kwargs
         .def_property_readonly("shape", &BinAttrs_py::shape)
         .def_property_readonly("size", &BinAttrs_py::size)
@@ -102,7 +102,7 @@ PYBIND11_MODULE(ffi_cucount, m) {
         .def_readwrite("max", &BinAttrs_py::max)
         .def_readwrite("step", &BinAttrs_py::step);
 
-    py::class_<SelectionAttrs_py>(m, "SelectionAttrs")
+    py::class_<SelectionAttrs_py>(m, "SelectionAttrs", py::module_local())
         .def(py::init<py::kwargs>()) // Accept Python kwargs
         .def_property_readonly("ndim", &SelectionAttrs_py::ndim)
         .def_readwrite("var", &SelectionAttrs_py::var)

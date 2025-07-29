@@ -2,10 +2,6 @@ import numpy as np
 from scipy import special
 
 #from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs
-from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs
-from jax import config
-config.update('jax_enable_x64', True)
-
 
 @np.vectorize
 def spherical_bessel(x, ell=0):
@@ -385,41 +381,47 @@ def test_corrfunc_smu():
     assert np.allclose(test, ref.wcounts, **tol)
 
 
-def test_ffi():
-    from functools import partial
+def test_jax():
+    los = 'midpoint'
+    edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
+    size = int(1e6)
+    boxsize = (3000,) * 3
+    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=0, seed=42)
+    positions1, weights1 = np.column_stack(data1[:3]), data1[3]
+    positions2, weights2 = np.column_stack(data2[:3]), data2[3]
+
+    def count_numpy():
+        from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs
+        particles1 = Particles(positions1, weights1)
+        particles2 = Particles(positions2, weights2)
+        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+        return count2(particles1, particles2, battrs=battrs)
+
     import jax
     jax.distributed.initialize()
-    from jax import numpy as jnp
-    from cucountlib.cucount import BinAttrs, SelectionAttrs
-    from cucountlib import ffi_cucount
-    #jax.ffi.register_ffi_target("rms_norm", ffi_cucount.rms_norm(), platform="cpu")
-    jax.ffi.register_ffi_target("rms_norm_cuda", ffi_cucount.rms_norm_cuda(), platform="CUDA")
-
-    edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
-    los = 'midpoint'
-    battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-    sattrs = SelectionAttrs(theta=(0., 0.5))
-
+    from jax import config
+    config.update('jax_enable_x64', True)
+    
     from jax.experimental.shard_map import shard_map
     from jax.sharding import Mesh, PartitionSpec as P
+    
+    def count_jax():
+        sharding_mesh = jax.make_mesh((len(jax.devices()),), ('x',))
+        from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs, setup_logging
+        #setup_logging("error")
+        particles1 = Particles(positions1, weights1)
+        particles2 = Particles(positions2, weights2)
+        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+        return shard_map(lambda *particles: jax.lax.psum(count2(*particles, battrs=battrs), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))(particles1, particles2)
 
-    sharding_mesh = jax.make_mesh((2,), ('x',))
-
-    def f(x, battrs=None, sattrs=SelectionAttrs()):
-        ffi_cucount.set_attrs(battrs, sattrs=sattrs)
-        call = jax.ffi.ffi_call("rms_norm_cuda", jax.ShapeDtypeStruct(x.shape, x.dtype))
-        return call(x)
-
-    # Test that this gives the same result as our reference implementation
-    x = jnp.linspace(-0.5, 0.5, 32)
-    fs = shard_map(partial(f, battrs=battrs, sattrs=sattrs), mesh=sharding_mesh, in_specs=P(*sharding_mesh.axis_names), out_specs=P(*sharding_mesh.axis_names))
-    r = fs(x)
-    print(r.sum())
+    res_jax = count_jax()
+    res_numpy = count_numpy()
+    assert np.allclose(res_jax, res_numpy)
     jax.distributed.shutdown()
 
 
 if __name__ == '__main__':
 
-    test_thetacut()
+    #test_thetacut()
     #test_corrfunc_smu()
-    #test_ffi()
+    test_jax()
