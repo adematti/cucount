@@ -150,7 +150,7 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs, DeviceMe
         if (particles.size == 0) continue;
         FLOAT *device_block_extent = (FLOAT*) my_device_malloc(nblocks * 2 * NDIM * sizeof(FLOAT), buffer);
         find_extent_kernel<<<nblocks, nthreads_per_block, nthreads_per_block * 2 * NDIM * sizeof(FLOAT), stream>>>(device_block_extent, particles, *mattrs);
-        CUDA_CHECK(cudaDeviceSynchronize(stream));
+        //CUDA_CHECK(cudaDeviceSynchronize());
         FLOAT *block_extent = (FLOAT*) my_malloc(nblocks * 2 * NDIM * sizeof(FLOAT));
         cudaMemcpyAsync(block_extent, device_block_extent, nblocks * 2 * NDIM * sizeof(FLOAT), cudaMemcpyDeviceToHost, stream);
         for (size_t i = 0; i < nblocks; i++) {
@@ -316,25 +316,25 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         for (size_t axis = 0; axis < NDIM; axis++) mesh.size *= mattrs.meshsize[axis];
         // Allocate memory for mesh variables
         mesh.total_nparticles = particles.size;
-        size_t *index = (size_t*) mmy_device_malloc(particles.size * sizeof(size_t), buffer);
+        size_t *index = (size_t*) my_device_malloc(particles.size * sizeof(size_t), buffer);
         mesh.nparticles = (size_t*) my_device_malloc(mesh.size * sizeof(size_t), buffer);
         CUDA_CHECK(cudaMemset(mesh.nparticles, 0, mesh.size * sizeof(size_t)));
         mesh.cumnparticles = (size_t*) my_device_malloc(mesh.size * sizeof(size_t), buffer);
         CUDA_CHECK(cudaMemset(mesh.cumnparticles, 0, mesh.size * sizeof(size_t)));
-        mesh.positions = (FLOAT*)  my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
-        mesh.spositions = (FLOAT*)  my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
-        mesh.weights = (FLOAT*)  my_device_malloc(particles.size * sizeof(FLOAT), buffer);
+        mesh.positions = (FLOAT*) my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
+        mesh.spositions = (FLOAT*) my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
+        mesh.weights = (FLOAT*) my_device_malloc(particles.size * sizeof(FLOAT), buffer);
 
         // Assign particle positions to boxes
         count_particles_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(mattrs, particles, index, mesh);
-        CUDA_CHECK(cudaDeviceSynchronize(stream));
+        CUDA_CHECK(cudaDeviceSynchronize());
         thrust::device_ptr<size_t> d_nparticles(mesh.nparticles);
         thrust::device_ptr<size_t> d_cumnparticles(mesh.cumnparticles);
         thrust::exclusive_scan(d_nparticles, d_nparticles + mesh.size, d_cumnparticles);
         cudaMemset(mesh.nparticles, 0, mesh.size * sizeof(size_t));  // reset
-        CUDA_CHECK(cudaDeviceSynchronize(stream));
+        CUDA_CHECK(cudaDeviceSynchronize());
         fill_particles_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(particles, index, mesh);
-        CUDA_CHECK(cudaDeviceSynchronize(stream));
+        CUDA_CHECK(cudaDeviceSynchronize());
         my_device_free(index, buffer);
     }
     log_message(LOG_LEVEL_INFO, "Mesh variables successfully set.\n");

@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+#include <pybind11/stl.h>  // for std::vector conversion
 
 #include "mesh.h"
 #include "count2.h"
@@ -7,24 +8,6 @@
 #include "cucount.h"
 
 namespace py = pybind11;
-
-
-// Set the global logging level from a string
-void setup_logging(const std::string& level_str) {
-    std::string lvl = level_str;
-    std::transform(lvl.begin(), lvl.end(), lvl.begin(), ::tolower);
-    if (lvl == "debug") {
-        global_log_level = LOG_LEVEL_DEBUG;
-    } else if (lvl == "info") {
-        global_log_level = LOG_LEVEL_INFO;
-    } else if (lvl == "warn" || lvl == "warning") {
-        global_log_level = LOG_LEVEL_WARN;
-    } else if (lvl == "error") {
-        global_log_level = LOG_LEVEL_ERROR;
-    } else {
-        throw std::invalid_argument("Unknown log level: " + level_str);
-    }
-}
 
 
 static bool is_contiguous(py::array array) {
@@ -81,12 +64,12 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
 
     DeviceMemoryBuffer *membuffer = NULL;
     Particles list_particles[MAX_NMESH];
+    Mesh list_mesh[MAX_NMESH];
     for (size_t imesh=0; imesh < MAX_NMESH; imesh++) list_particles[imesh].size = 0;
     // In this function Particles and Mesh struct live on the host (CPU)
     // but their arrays (positions, weights, etc.) live on the device (GPU)
     copy_particles_to_device(particles1.data(), &list_particles[0], 2);
     copy_particles_to_device(particles2.data(), &list_particles[1], 2);
-    Mesh list_mesh[MAX_NMESH];
 
     SelectionAttrs sattrs = sattrs_py.data();
     BinAttrs battrs = battrs_py.data();
@@ -96,7 +79,7 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
     py::array_t<FLOAT> counts_py(battrs_py.shape());
     auto counts_ptr = counts_py.mutable_data(); // Get a pointer to the array's data
     // Array on the GPU
-    FLOAT *counts = my_device_malloc(battrs.size, membuffer);
+    FLOAT *counts = (FLOAT*) my_device_malloc(battrs.size * sizeof(FLOAT), membuffer);
     CUDA_CHECK(cudaMemset(counts, 0, battrs.size * sizeof(FLOAT)));
 
     // Create a default CUDA stream (or use 0 for the default stream)
@@ -111,8 +94,8 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
     // Perform the computation
     count2(counts, list_mesh, mattrs, sattrs, battrs, membuffer, stream);
 
-    CUDA_CHECK(cudaMemcpy(counts, counts_ptr, battrs.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
-    my_device_calloc(counts);
+    CUDA_CHECK(cudaMemcpy(counts_ptr, counts, battrs.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+    my_device_free(counts, membuffer);
 
     // Free allocated memory
     for (size_t i=0; i < 2; i++) free_device_mesh(&(list_mesh[i]));
@@ -155,6 +138,6 @@ PYBIND11_MODULE(cucount, m) {
     m.def("count2", &count2_py, "Take particle positions and weights (numpy arrays), perform 2-pt counts on the GPU and return a numpy array",
         py::arg("particles1"),
         py::arg("particles2"),
-        py::arg("battrs_py"),
-        py::arg("sattrs_py") = SelectionAttrs_py()); // Default value
+        py::arg("battrs"),
+        py::arg("sattrs") = SelectionAttrs_py()); // Default value
 }

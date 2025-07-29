@@ -38,7 +38,7 @@ void* my_device_malloc(size_t nbytes, DeviceMemoryBuffer* buffer) {
     } else {
         // Fallback to cudaMalloc
         void* ptr = NULL;
-        CUDA_CHECK(cudaMalloc(&ptr, nbytes));
+        CUDA_CHECK(cudaMalloc((void **)&ptr, nbytes));
         return ptr;
     }
 }

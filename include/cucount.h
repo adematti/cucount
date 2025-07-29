@@ -10,6 +10,24 @@
 namespace py = pybind11;
 
 
+// Set the global logging level from a string
+void setup_logging(const std::string& level_str) {
+    std::string lvl = level_str;
+    std::transform(lvl.begin(), lvl.end(), lvl.begin(), ::tolower);
+    if (lvl == "debug") {
+        global_log_level = LOG_LEVEL_DEBUG;
+    } else if (lvl == "info") {
+        global_log_level = LOG_LEVEL_INFO;
+    } else if (lvl == "warn" || lvl == "warning") {
+        global_log_level = LOG_LEVEL_WARN;
+    } else if (lvl == "error") {
+        global_log_level = LOG_LEVEL_ERROR;
+    } else {
+        throw std::invalid_argument("Unknown log level: " + level_str);
+    }
+}
+
+
 VAR_TYPE string_to_var_type(const std::string& var_name) {
     if (var_name == "") return VAR_NONE;
     if (var_name == "s") return VAR_S;
@@ -253,7 +271,7 @@ void prepare_mesh_attrs(MeshAttrs *mattrs, BinAttrs battrs, SelectionAttrs sattr
 
     if ((sattrs.ndim) && (sattrs.var[0] == VAR_THETA)) {
         mattrs->type = MESH_ANGULAR;
-        mattrs->smax = cos(sattrs->max[0] * DTORAD);
+        mattrs->smax = cos(sattrs.max[0] * DTORAD);
     }
     else if ((sattrs.ndim) && (sattrs.var[0] == VAR_S)) {
         mattrs->type = MESH_CARTESIAN;

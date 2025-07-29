@@ -416,15 +416,16 @@ __global__ void reduce_kernel(const FLOAT *block_counts, int nblocks, FLOAT *fin
 
 void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, BinAttrs battrs, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
 
+    // counts expected on the device already
     int nblocks, nthreads_per_block;
     CONFIGURE_KERNEL_LAUNCH(count2_cartesian_kernel, nblocks, nthreads_per_block, buffer);
 
     // CUDA timing events
     cudaEvent_t start, stop;
-    FLOAT elapsed_time;
+    float elapsed_time;
 
     // Initialize histograms
-    for (int i = 0; i < battrs.size; i++) counts[i] = 0;
+    //for (int i = 0; i < battrs.size; i++) counts[i] = 0;
 
     // Copy constants to device
     CUDA_CHECK(cudaMemcpyToSymbol(device_mattrs, &mattrs, sizeof(MeshAttrs)));
@@ -433,14 +434,14 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     BinAttrs device_battrs = battrs;
     for (size_t i = 0; i < battrs.ndim; i++) {
         if (battrs.asize[i] > 0) {
-            FLOAT *array = (FLOAT *) my_device_malloc(battrs.asize[i] * sizeof(FLOAT), buffer);
+            FLOAT *array = (FLOAT*) my_device_malloc(battrs.asize[i] * sizeof(FLOAT), buffer);
             CUDA_CHECK(cudaMemcpyAsync(array, battrs.array[i], battrs.asize[i] * sizeof(FLOAT), cudaMemcpyHostToDevice, stream));
             device_battrs.array[i] = array;
         }
     }
 
     // allocate histogram arrays
-    FLOAT *block_counts = (FLOAT *) my_device_malloc(nblocks * battrs.size * sizeof(FLOAT));
+    FLOAT *block_counts = (FLOAT*) my_device_malloc(nblocks * battrs.size * sizeof(FLOAT), buffer);
     //CUDA_CHECK(cudaMemset(block_counts, 0, nblocks * battrs.size * sizeof(FLOAT)));  // set to 0 in the kernel
 
     // Create CUDA events for timing

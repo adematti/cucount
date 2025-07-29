@@ -25,7 +25,7 @@ execute_process(
 if(XLA_RESULT EQUAL 0)
     message(STATUS "XLA include directory: ${XLA_DIR}")
 else()
-    message(STATUS "XLA include directory, skipping compilation of the JAX FFI module")
+    message(STATUS "XLA include directory not found")
 endif()
 
 # Set BUILD_FFI_CUCOUNT default: ON if XLA_RESULT is 0 (success), else OFF
@@ -40,6 +40,7 @@ else()
 endif()
 
 if(BUILD_FFI_CUCOUNT)
+    message(STATUS "Compilation of the JAX FFI module")
     pybind11_add_module(ffi_cucount src/ffi_cucount.cu src/common.cu src/logger.cc src/mesh.cu src/count2.cu)
     target_include_directories(ffi_cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
     target_include_directories(ffi_cucount PUBLIC ${XLA_DIR})

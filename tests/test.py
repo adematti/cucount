@@ -1,7 +1,10 @@
 import numpy as np
 from scipy import special
 
-from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs
+#from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs
+from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs
+from jax import config
+config.update('jax_enable_x64', True)
 
 
 @np.vectorize
@@ -295,10 +298,11 @@ def test_thetacut():
         weight_attrs.pop('normalization', None)
 
         sep_ref = None
-        if space == 'correlation':
-            poles_ref, sep_ref = ref_theta_correlation(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
-        else:
-            poles_ref = ref_theta_spectrum(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
+        if True:
+            if space == 'correlation':
+                poles_ref, sep_ref = ref_theta_correlation(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
+            else:
+                poles_ref = ref_theta_spectrum(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
 
         itemsize = np.dtype('f8' if dtype is None else dtype).itemsize
         tol = {'atol': 1e-8, 'rtol': 1e-2} if itemsize <= 4 else {'atol': 1e-8, 'rtol': 1e-5}

@@ -2,7 +2,7 @@ import jax
 from jax import numpy as jnp
 
 from cucountlib import ffi_cucount
-from cucountlib.cucount import BinAttrs, SelectionAttrs, setup_logging
+from cucountlib.ffi_cucount import BinAttrs, SelectionAttrs, setup_logging
 
 
 jax.ffi.register_ffi_target('count2', ffi_cucount.count2())
@@ -35,6 +35,7 @@ jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 def count2(*particles: Particles, battrs: BinAttrs, sattrs: SelectionAttrs=SelectionAttrs(), nblocks=256):
     assert len(particles) == 2
+    assert jax.config.read('jax_enable_x64'), 'for cucount you have to enable float64'
     ffi_cucount.set_attrs(battrs, sattrs=sattrs, nblocks=nblocks)
     dtype = jnp.float64
     bshape = tuple(battrs.shape)
@@ -51,7 +52,7 @@ def count2(*particles: Particles, battrs: BinAttrs, sattrs: SelectionAttrs=Selec
     size += sum(s + 1 for s in bshape)
     # Buffer for count2: bins
     size += nblocks * bsize
-    buffer_type = jax.ShapeDtypeStruct(size, dtype)
+    buffer_type = jax.ShapeDtypeStruct((size,), dtype)
     call = jax.ffi.ffi_call('count2', (res_type, buffer_type))
 
     def get(array):
