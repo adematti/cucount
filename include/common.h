@@ -28,8 +28,6 @@ typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
 typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
 typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT} LOS_TYPE;
 
-extern int nblocks, nthreads_per_block;
-
 
 #define atomicAddSizet(address, val)                            \
     (sizeof(size_t) == 4 ?                                      \
@@ -42,10 +40,17 @@ extern int nblocks, nthreads_per_block;
     do {                                                                      \
         cudaError_t err = call;                                               \
         if (err != cudaSuccess) {                                             \
-            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__,  \
+            log_message(LOG_LEVEL_ERROR, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__,  \
                     cudaGetErrorString(err));                                 \
             exit(EXIT_FAILURE);                                               \
         }                                                                     \
+    } while (0)
+
+#define CONFIGURE_KERNEL_LAUNCH(kernel, nblocks_var, nthreads_var, buffer) \
+    do { \
+        cudaOccupancyMaxPotentialBlockSize(&(nblocks_var), &(nthreads_var), kernel, 0, 0); \
+        if (buffer) nblocks_var = MIN(buffer->nblocks, nblocks_var); \
+        log_message(LOG_LEVEL_INFO, "Configured kernel with %d blocks and %d threads per block.\n", (nblocks_var), (nthreads_var)); \
     } while (0)
 
 
@@ -96,6 +101,19 @@ typedef struct {
     MESH_TYPE type;
 } MeshAttrs;
 
+
+// Device memory buffer struct
+struct DeviceMemoryBuffer {
+    void* ptr;
+    size_t size;
+    size_t offset;
+    int nblocks;
+};
+
+
+void* my_device_malloc(size_t nbytes, DeviceMemoryBuffer* buffer);
+
+void my_device_free(void* ptr, DeviceMemoryBuffer* buffer);
 
 void* my_calloc(size_t num, size_t size);
 

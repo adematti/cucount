@@ -242,4 +242,32 @@ struct SelectionAttrs_py {
     }
 };
 
+
+void prepare_mesh_attrs(MeshAttrs *mattrs, BinAttrs battrs, SelectionAttrs sattrs) {
+
+    for (size_t axis = 0; axis < NDIM; axis++) {
+        mattrs->meshsize[axis] = 0;
+        mattrs->boxsize[axis] = 0.;
+        mattrs->boxcenter[axis] = 0.;
+    }
+
+    if ((sattrs.ndim) && (sattrs.var[0] == VAR_THETA)) {
+        mattrs->type = MESH_ANGULAR;
+        mattrs->smax = cos(sattrs->max[0] * DTORAD);
+    }
+    else if ((sattrs.ndim) && (sattrs.var[0] == VAR_S)) {
+        mattrs->type = MESH_CARTESIAN;
+        mattrs->smax = sattrs.max[0];
+    }
+    else if (battrs.var[0] == VAR_THETA) {
+        mattrs->type = MESH_ANGULAR;
+        mattrs->smax = cos(battrs.max[0] * DTORAD);
+    }
+    else if (battrs.var[0] == VAR_S) {
+        mattrs->type = MESH_CARTESIAN;
+        mattrs->smax = battrs.max[0];
+    }
+
+}
+
 #endif

@@ -24,6 +24,36 @@ void* my_malloc(size_t size) {
     return ptr;
 }
 
+// C-compliant device malloc: returns pointer or NULL on error
+void* my_device_malloc(size_t nbytes, DeviceMemoryBuffer* buffer) {
+    if (buffer && buffer->size > 0) {
+        // Use pre-allocated buffer if enough space
+        if (buffer->offset + nbytes > buffer->size) {
+            log_message(LOG_LEVEL_ERROR, "DeviceMemoryBuffer: not enough space for allocation (%zu requested, %zu available)\n", nbytes, buffer->size - buffer->offset);
+            exit(EXIT_FAILURE);
+        }
+        char* p = (char*)buffer->ptr + buffer->offset;
+        buffer->offset += nbytes;
+        return (void*)p;
+    } else {
+        // Fallback to cudaMalloc
+        void* ptr = NULL;
+        CUDA_CHECK(cudaMalloc(&ptr, nbytes));
+        return ptr;
+    }
+}
+
+// Example: free fallback allocations (not buffer allocations)
+void my_device_free(void* ptr, DeviceMemoryBuffer* buffer) {
+    if (buffer && buffer->size > 0) {
+        // Only free if not part of the buffer
+        // Do nothing
+    }
+    else {
+        CUDA_CHECK(cudaFree(ptr));
+    }
+}
+
 void copy_particles_to_device(Particles particles, Particles *device_particles, int mode) {
     // mode == 0: copy C struct and arrays to device
     // mode == 1: copy C struct only to device
@@ -168,8 +198,3 @@ void free_host_mesh(Mesh *mesh) {
     free(mesh->positions);
     free(mesh->weights);
 }
-
-
-// Global variables for block and thread configuration
-int nblocks = 0;
-int nthreads_per_block = 0;

@@ -133,10 +133,10 @@ __global__ void find_extent_kernel(FLOAT *extent, Particles particles, const Mes
 }
 
 
-void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
+void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
 
-    cudaOccupancyMaxPotentialBlockSize(&nblocks, &nthreads_per_block, find_extent_kernel, 0, 0);
-    log_message(LOG_LEVEL_INFO, "Configured kernel with %d blocks and %d threads per block.\n", nblocks, nthreads_per_block);
+    int nblocks, nthreads_per_block;
+    CONFIGURE_KERNEL_LAUNCH(find_extent_kernel, nblocks, nthreads_per_block, buffer);
 
     size_t sum_nparticles = 0, n_nparticles = 0;
     FLOAT extent[2 * NDIM];
@@ -148,19 +148,18 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
     for (size_t imesh=0; imesh<MAX_NMESH; imesh++) {
         const Particles particles = list_particles[imesh];
         if (particles.size == 0) continue;
-        FLOAT *block_extent, *device_block_extent;
-        cudaMalloc((void **) &device_block_extent, nblocks * 2 * NDIM * sizeof(FLOAT));
-        find_extent_kernel<<<nblocks, nthreads_per_block, nthreads_per_block * 2 * NDIM * sizeof(FLOAT)>>>(device_block_extent, particles, *mattrs);
-        CUDA_CHECK(cudaDeviceSynchronize());
-        block_extent = (FLOAT*) my_malloc(nblocks * 2 * NDIM * sizeof(FLOAT));
-        cudaMemcpy(block_extent, device_block_extent, nblocks * 2 * NDIM * sizeof(FLOAT), cudaMemcpyDeviceToHost);
+        FLOAT *device_block_extent = (FLOAT*) my_device_malloc(nblocks * 2 * NDIM * sizeof(FLOAT), buffer);
+        find_extent_kernel<<<nblocks, nthreads_per_block, nthreads_per_block * 2 * NDIM * sizeof(FLOAT), stream>>>(device_block_extent, particles, *mattrs);
+        CUDA_CHECK(cudaDeviceSynchronize(stream));
+        FLOAT *block_extent = (FLOAT*) my_malloc(nblocks * 2 * NDIM * sizeof(FLOAT));
+        cudaMemcpyAsync(block_extent, device_block_extent, nblocks * 2 * NDIM * sizeof(FLOAT), cudaMemcpyDeviceToHost, stream);
         for (size_t i = 0; i < nblocks; i++) {
             for (size_t axis = 0; axis < NDIM; axis++) {
                 extent[2 * axis] = MIN(block_extent[2 * NDIM * i + 2 * axis], extent[2 * axis]);
                 extent[2 * axis + 1] = MAX(block_extent[2 * NDIM * i + 2 * axis + 1], extent[2 * axis + 1]);
             }
         }
-        CUDA_CHECK(cudaFree(device_block_extent));
+        my_device_free(device_block_extent, buffer);
         free(block_extent);
         sum_nparticles += particles.size;
         n_nparticles += 1;
@@ -211,6 +210,7 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs) {
         log_message(LOG_LEVEL_INFO, "Mesh size is %d = %d x %d x %d.\n", meshsize, mattrs->meshsize[0], mattrs->meshsize[1], mattrs->meshsize[2]);
         log_message(LOG_LEVEL_INFO, "Voxel resolution is %.4lf.\n", voxel_resolution);
     }
+
 }
 
 
@@ -303,9 +303,10 @@ __global__ void fill_particles_kernel(const Particles particles, const size_t *i
 
 
 
-void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs) {
+void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
 
-    if ((nblocks <= 0) || (nthreads_per_block <= 0)) cudaOccupancyMaxPotentialBlockSize(&nblocks, &nthreads_per_block, count_particles_kernel, 0, 0);
+    int nblocks, nthreads_per_block;
+    CONFIGURE_KERNEL_LAUNCH(count_particles_kernel, nblocks, nthreads_per_block, buffer);
 
     for (size_t imesh=0; imesh<MAX_NMESH; imesh++) {
         const Particles particles = list_particles[imesh];
@@ -313,29 +314,28 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         Mesh &mesh = list_mesh[imesh];
         mesh.size = 1;
         for (size_t axis = 0; axis < NDIM; axis++) mesh.size *= mattrs.meshsize[axis];
-        size_t *index;
         // Allocate memory for mesh variables
         mesh.total_nparticles = particles.size;
-        CUDA_CHECK(cudaMalloc((void **) &index, particles.size * sizeof(size_t)));
-        CUDA_CHECK(cudaMalloc((void**) &(mesh.nparticles), mesh.size * sizeof(size_t)));
+        size_t *index = (size_t*) mmy_device_malloc(particles.size * sizeof(size_t), buffer);
+        mesh.nparticles = (size_t*) my_device_malloc(mesh.size * sizeof(size_t), buffer);
         CUDA_CHECK(cudaMemset(mesh.nparticles, 0, mesh.size * sizeof(size_t)));
-        CUDA_CHECK(cudaMalloc((void**) &(mesh.cumnparticles), mesh.size * sizeof(size_t)));
+        mesh.cumnparticles = (size_t*) my_device_malloc(mesh.size * sizeof(size_t), buffer);
         CUDA_CHECK(cudaMemset(mesh.cumnparticles, 0, mesh.size * sizeof(size_t)));
-        CUDA_CHECK(cudaMalloc((void**) &(mesh.positions), NDIM * particles.size * sizeof(FLOAT)));
-        CUDA_CHECK(cudaMalloc((void**) &(mesh.spositions), NDIM * particles.size * sizeof(FLOAT)));
-        CUDA_CHECK(cudaMalloc((void**) &(mesh.weights), particles.size * sizeof(FLOAT)));
+        mesh.positions = (FLOAT*)  my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
+        mesh.spositions = (FLOAT*)  my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
+        mesh.weights = (FLOAT*)  my_device_malloc(particles.size * sizeof(FLOAT), buffer);
 
         // Assign particle positions to boxes
-        count_particles_kernel<<<nblocks, nthreads_per_block>>>(mattrs, particles, index, mesh);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        count_particles_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(mattrs, particles, index, mesh);
+        CUDA_CHECK(cudaDeviceSynchronize(stream));
         thrust::device_ptr<size_t> d_nparticles(mesh.nparticles);
         thrust::device_ptr<size_t> d_cumnparticles(mesh.cumnparticles);
         thrust::exclusive_scan(d_nparticles, d_nparticles + mesh.size, d_cumnparticles);
         cudaMemset(mesh.nparticles, 0, mesh.size * sizeof(size_t));  // reset
-        CUDA_CHECK(cudaDeviceSynchronize());
-        fill_particles_kernel<<<nblocks, nthreads_per_block>>>(particles, index, mesh);
-        CUDA_CHECK(cudaDeviceSynchronize());
-        CUDA_CHECK(cudaFree(index));
+        CUDA_CHECK(cudaDeviceSynchronize(stream));
+        fill_particles_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(particles, index, mesh);
+        CUDA_CHECK(cudaDeviceSynchronize(stream));
+        my_device_free(index, buffer);
     }
     log_message(LOG_LEVEL_INFO, "Mesh variables successfully set.\n");
 }

@@ -1,10 +1,11 @@
 import jax
+from jax import numpy as jnp
+
 from cucountlib import ffi_cucount
-from cucountlib.cucount import BinAttrs, SelectionAttrs
+from cucountlib.cucount import BinAttrs, SelectionAttrs, setup_logging
 
 
-for name, target in ffi_cucount.registrations().items():
-    jax.ffi.register_ffi_target(name, target)
+jax.ffi.register_ffi_target('count2', ffi_cucount.count2())
 
 
 from collections import namedtuple
@@ -29,5 +30,32 @@ class Particles(namedtuple('Particles', ['positions', 'weights'])):
         return self.positions.shape[0]
 
 
-def count2(particles1: Particles, particles2: Particles, battrs: BinAttrs, sattrs: SelectionAttrs=SelectionAttrs()):
-    pass
+jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
+
+
+def count2(*particles: Particles, battrs: BinAttrs, sattrs: SelectionAttrs=SelectionAttrs(), nblocks=256):
+    assert len(particles) == 2
+    ffi_cucount.set_attrs(battrs, sattrs=sattrs, nblocks=nblocks)
+    dtype = jnp.float64
+    bshape = tuple(battrs.shape)
+    bsize = battrs.size
+    res_type = jax.ShapeDtypeStruct(bshape, dtype)
+    ndim = particles[0].positions.shape[1]
+    # Estimate buffer size
+    size = 0
+    # Buffer for set_mesh_attrs
+    size += nblocks * 2 * ndim
+    # Buffer for mesh
+    size += (5 + 1 + 2 * ndim) * sum(particle.positions.shape[0] for particle in particles)
+    # Buffer for count2: bins
+    size += sum(s + 1 for s in bshape)
+    # Buffer for count2: bins
+    size += nblocks * bsize
+    buffer_type = jax.ShapeDtypeStruct(size, dtype)
+    call = jax.ffi.ffi_call('count2', (res_type, buffer_type))
+
+    def get(array):
+        return jnp.asarray(array, dtype=dtype)
+
+    args = sum(([particle.positions, particle.weights] for particle in particles), start=[])
+    return call(*map(get, args))[0]

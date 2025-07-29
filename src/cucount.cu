@@ -9,6 +9,24 @@
 namespace py = pybind11;
 
 
+// Set the global logging level from a string
+void setup_logging(const std::string& level_str) {
+    std::string lvl = level_str;
+    std::transform(lvl.begin(), lvl.end(), lvl.begin(), ::tolower);
+    if (lvl == "debug") {
+        global_log_level = LOG_LEVEL_DEBUG;
+    } else if (lvl == "info") {
+        global_log_level = LOG_LEVEL_INFO;
+    } else if (lvl == "warn" || lvl == "warning") {
+        global_log_level = LOG_LEVEL_WARN;
+    } else if (lvl == "error") {
+        global_log_level = LOG_LEVEL_ERROR;
+    } else {
+        throw std::invalid_argument("Unknown log level: " + level_str);
+    }
+}
+
+
 static bool is_contiguous(py::array array) {
     return array.flags() & py::array::c_style;
 }
@@ -59,8 +77,9 @@ struct Particles_py {
 
 
 py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
-               BinAttrs_py& battrs, const SelectionAttrs_py& sattrs = SelectionAttrs_py()) {
-    // Convert Python inputs to C objects
+               BinAttrs_py& battrs_py, const SelectionAttrs_py& sattrs_py = SelectionAttrs_py()) {
+
+    DeviceMemoryBuffer *membuffer = NULL;
     Particles list_particles[MAX_NMESH];
     for (size_t imesh=0; imesh < MAX_NMESH; imesh++) list_particles[imesh].size = 0;
     // In this function Particles and Mesh struct live on the host (CPU)
@@ -69,45 +88,40 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
     copy_particles_to_device(particles2.data(), &list_particles[1], 2);
     Mesh list_mesh[MAX_NMESH];
 
-    SelectionAttrs csattrs = sattrs.data();
-    BinAttrs cbattrs = battrs.data();
-    MeshAttrs cmattrs;
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        cmattrs.meshsize[axis] = 0;
-        cmattrs.boxsize[axis] = 0.;
-        cmattrs.boxcenter[axis] = 0.;
-    }
-    // Create a numpy array to store the results
-    py::array_t<FLOAT> counts(battrs.shape());
+    SelectionAttrs sattrs = sattrs_py.data();
+    BinAttrs battrs = battrs_py.data();
+    MeshAttrs mattrs;
 
-    if ((csattrs.ndim) && (csattrs.var[0] == VAR_THETA)) {
-        cmattrs.type = MESH_ANGULAR;
-        cmattrs.smax = cos(csattrs.max[0] * DTORAD);
-    }
-    else if ((csattrs.ndim) && (csattrs.var[0] == VAR_S)) {
-        cmattrs.type = MESH_CARTESIAN;
-        cmattrs.smax = csattrs.max[0];
-    }
-    else if (cbattrs.var[0] == VAR_THETA) {
-        cmattrs.type = MESH_ANGULAR;
-        cmattrs.smax = cos(cbattrs.max[0] * DTORAD);
-    }
-    else if (cbattrs.var[0] == VAR_S) {
-        cmattrs.type = MESH_CARTESIAN;
-        cmattrs.smax = cbattrs.max[0];
-    }
-    //return counts;
-    set_mesh_attrs(list_particles, &cmattrs);
-    set_mesh(list_particles, list_mesh, cmattrs);
+    // Create a numpy array to store the results
+    py::array_t<FLOAT> counts_py(battrs_py.shape());
+    auto counts_ptr = counts_py.mutable_data(); // Get a pointer to the array's data
+    // Array on the GPU
+    FLOAT *counts = my_device_malloc(battrs.size, membuffer);
+    CUDA_CHECK(cudaMemset(counts, 0, battrs.size * sizeof(FLOAT)));
+
+    // Create a default CUDA stream (or use 0 for the default stream)
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+
+    prepare_mesh_attrs(&mattrs, battrs, sattrs);
+    set_mesh_attrs(list_particles, &mattrs, membuffer, stream);
+    set_mesh(list_particles, list_mesh, mattrs, membuffer, stream);
     // Free allocated memory
     for (size_t i = 0; i < 2; i++) free_device_particles(&(list_particles[i]));
     // Perform the computation
-    auto counts_ptr = counts.mutable_data(); // Get a pointer to the array's data
-    count2(counts_ptr, list_mesh, cmattrs, csattrs, cbattrs);
+    count2(counts, list_mesh, mattrs, sattrs, battrs, membuffer, stream);
+
+    CUDA_CHECK(cudaMemcpy(counts, counts_ptr, battrs.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+    my_device_calloc(counts);
+
     // Free allocated memory
-    for (size_t i = 0; i < 2; i++) free_device_mesh(&(list_mesh[i]));
+    for (size_t i=0; i < 2; i++) free_device_mesh(&(list_mesh[i]));
+
+    // Destroy the stream
+    CUDA_CHECK(cudaStreamDestroy(stream));
+
     // Return the numpy array
-    return counts;
+    return counts_py;
 }
 
 
@@ -121,6 +135,7 @@ PYBIND11_MODULE(cucount, m) {
 
     py::class_<BinAttrs_py>(m, "BinAttrs")
         .def(py::init<py::kwargs>()) // Accept Python kwargs
+        .def_property_readonly("shape", &BinAttrs_py::shape)
         .def_property_readonly("size", &BinAttrs_py::size)
         .def_property_readonly("ndim", &BinAttrs_py::ndim)
         .def_readwrite("var", &BinAttrs_py::var)
@@ -135,9 +150,11 @@ PYBIND11_MODULE(cucount, m) {
         .def_readwrite("min", &SelectionAttrs_py::min)
         .def_readwrite("max", &SelectionAttrs_py::max);
 
+    m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
+
     m.def("count2", &count2_py, "Take particle positions and weights (numpy arrays), perform 2-pt counts on the GPU and return a numpy array",
         py::arg("particles1"),
         py::arg("particles2"),
-        py::arg("battrs"),
-        py::arg("sattrs") = SelectionAttrs_py()); // Default value
+        py::arg("battrs_py"),
+        py::arg("sattrs_py") = SelectionAttrs_py()); // Default value
 }

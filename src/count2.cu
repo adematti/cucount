@@ -414,16 +414,14 @@ __global__ void reduce_kernel(const FLOAT *block_counts, int nblocks, FLOAT *fin
 }
 
 
-void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, BinAttrs battrs) {
+void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, BinAttrs battrs, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
 
-    cudaOccupancyMaxPotentialBlockSize(&nblocks, &nthreads_per_block, count2_cartesian_kernel, 0, 0);
-
-    // Device pointers
-    FLOAT *block_counts, *final_counts;
+    int nblocks, nthreads_per_block;
+    CONFIGURE_KERNEL_LAUNCH(count2_cartesian_kernel, nblocks, nthreads_per_block, buffer);
 
     // CUDA timing events
     cudaEvent_t start, stop;
-    float elapsed_time;
+    FLOAT elapsed_time;
 
     // Initialize histograms
     for (int i = 0; i < battrs.size; i++) counts[i] = 0;
@@ -435,43 +433,37 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     BinAttrs device_battrs = battrs;
     for (size_t i = 0; i < battrs.ndim; i++) {
         if (battrs.asize[i] > 0) {
-            FLOAT *array;
-            CUDA_CHECK(cudaMalloc((void **) &array, battrs.asize[i] * sizeof(FLOAT)));
-            CUDA_CHECK(cudaMemcpy(array, battrs.array[i], battrs.asize[i] * sizeof(FLOAT), cudaMemcpyHostToDevice));
+            FLOAT *array = (FLOAT *) my_device_malloc(battrs.asize[i] * sizeof(FLOAT), buffer);
+            CUDA_CHECK(cudaMemcpyAsync(array, battrs.array[i], battrs.asize[i] * sizeof(FLOAT), cudaMemcpyHostToDevice, stream));
             device_battrs.array[i] = array;
         }
     }
 
     // allocate histogram arrays
-    CUDA_CHECK(cudaMalloc((void **)&block_counts, nblocks * battrs.size * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMalloc(&final_counts,  battrs.size * sizeof(FLOAT)));
-    CUDA_CHECK(cudaMemset(final_counts, 0, battrs.size * sizeof(FLOAT)));
+    FLOAT *block_counts = (FLOAT *) my_device_malloc(nblocks * battrs.size * sizeof(FLOAT));
+    //CUDA_CHECK(cudaMemset(block_counts, 0, nblocks * battrs.size * sizeof(FLOAT)));  // set to 0 in the kernel
 
     // Create CUDA events for timing
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
-    CUDA_CHECK(cudaEventRecord(start, 0));
+    CUDA_CHECK(cudaEventRecord(start, stream));
 
-    if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
-    else count2_cartesian_kernel<<<nblocks, nthreads_per_block>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
+    if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
+    else count2_cartesian_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
 
     CUDA_CHECK(cudaDeviceSynchronize());
-    reduce_kernel<<<nblocks, nthreads_per_block>>>(block_counts, nblocks, final_counts, battrs.size);
+    reduce_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, battrs.size);
 
-    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventRecord(stop, stream));
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaEventElapsedTime(&elapsed_time, start, stop));
     log_message(LOG_LEVEL_INFO, "Time elapsed: %3.1f ms.\n", elapsed_time);
 
-    // Copy histograms back to host
-    CUDA_CHECK(cudaMemcpy(counts, final_counts, battrs.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
-
     // Free GPU memory
-    CUDA_CHECK(cudaFree(block_counts));
-    CUDA_CHECK(cudaFree(final_counts));
+    my_device_free(block_counts, buffer);
 
     for (size_t i = 0; i < battrs.ndim; i++) {
-        if (battrs.asize[i] > 0) CUDA_CHECK(cudaFree(device_battrs.array[i]));
+        if (battrs.asize[i] > 0) my_device_free(device_battrs.array[i], buffer);
     }
 
     // Destroy CUDA events
