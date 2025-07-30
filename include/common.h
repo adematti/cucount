@@ -107,7 +107,8 @@ struct DeviceMemoryBuffer {
     void* ptr;
     size_t size;
     size_t offset;
-    int nblocks;
+    size_t nblocks;
+    size_t meshsize;
 };
 
 

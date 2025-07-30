@@ -33,21 +33,25 @@ class Particles(namedtuple('Particles', ['positions', 'weights'])):
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 
-def count2(*particles: Particles, battrs: BinAttrs, sattrs: SelectionAttrs=SelectionAttrs(), nblocks=256):
+def count2(*particles: Particles, battrs: BinAttrs, sattrs: SelectionAttrs=SelectionAttrs()):
     assert len(particles) == 2
     assert jax.config.read('jax_enable_x64'), 'for cucount you have to enable float64'
-    ffi_cucount.set_attrs(battrs, sattrs=sattrs, nblocks=nblocks)
+    ffi_cucount.set_attrs(battrs, sattrs=sattrs)
     dtype = jnp.float64
     bshape = tuple(battrs.shape)
     bsize = battrs.size
     res_type = jax.ShapeDtypeStruct(bshape, dtype)
     ndim = particles[0].positions.shape[1]
+    # Max values
+    nblocks = 256
+    meshsize = sum(particle.size + 100 for particle in particles)
     # Estimate buffer size
     size = 0
     # Buffer for set_mesh_attrs
     size += nblocks * 2 * ndim
     # Buffer for mesh
-    size += (5 + 1 + 2 * ndim) * sum(particle.size for particle in particles)
+    size += 2 * meshsize
+    size += (2 + 2 * ndim) * sum(particle.size for particle in particles)
     # Buffer for count2: bins
     size += sum(s + 1 for s in bshape)
     # Buffer for count2: bins

@@ -166,6 +166,8 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs, DeviceMe
         n_nparticles += 1;
     }
 
+    size_t nparticles = sum_nparticles / n_nparticles;
+
     if (mattrs->type == MESH_ANGULAR) {
         FLOAT fsky = (extent[1] - extent[0]) * (extent[3] - extent[2]) / (4 * M_PI);
         log_message(LOG_LEVEL_INFO, "Enclosing fractional area is %.4f [%.4f %.4f] x [%.4f %.4f].\n", fsky, extent[0], extent[1], extent[2], extent[3]);
@@ -173,8 +175,8 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs, DeviceMe
         if (mattrs->meshsize[0] * mattrs->meshsize[1] == 0) {
             FLOAT theta_max = acos(mattrs->smax);
             int nside1 = 5 * (int)(M_PI / theta_max);
-            size_t nparticles = sum_nparticles / n_nparticles;
             int nside2 = MIN((int)(sqrt(0.25 * nparticles / fsky)), 2048);  // cap to avoid blowing up the memory
+            if ((buffer) && (buffer->size > 0)) nside2 = MIN(nside2, (int)(sqrt(0.5 * buffer->meshsize)));
             mattrs->meshsize[0] = (size_t) MAX(MIN(nside1, nside2), 1);
             mattrs->meshsize[1] = 2 * mattrs->meshsize[0];
         }
@@ -201,7 +203,9 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs, DeviceMe
         size_t meshsize = 1;
         if (mattrs->meshsize[0] == 0) {
             int nside1 = (int) (16.0 * pow(volume, 1. / 3.) / mattrs->smax);
-            int nside2 = (int) pow(0.5 * sum_nparticles / n_nparticles, 1. / 3.);
+            // This imposes total mesh.size < mean(particles.size)
+            int nside2 = (int) pow(0.5 * nparticles, 1. / 3.);
+            if ((buffer) && (buffer->size > 0)) nside2 = MIN(nside2, (int)(pow(buffer->meshsize, 1. / 3.)));
             for (size_t axis = 0; axis < NDIM; axis ++) {
                 mattrs->meshsize[axis] = (size_t) MAX(MIN(nside1, nside2), 1);
                 meshsize *= mattrs->meshsize[axis];

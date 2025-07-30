@@ -16,21 +16,19 @@ namespace ffi = xla::ffi;
 
 static BinAttrs battrs;
 static SelectionAttrs sattrs;
-static DeviceMemoryBuffer membuffer;
 
 
-void set_attrs_py(BinAttrs_py& battrs_py, const SelectionAttrs_py& sattrs_py = SelectionAttrs_py(), const int nblocks = 256) {
+void set_attrs_py(BinAttrs_py& battrs_py, const SelectionAttrs_py& sattrs_py = SelectionAttrs_py()) {
     battrs = battrs_py.data();
     sattrs = sattrs_py.data();
-    membuffer.nblocks = nblocks;
 }
 
 
-void set_mem_buffer(ffi::ResultBuffer<ffi::F64> buffer) {
-    membuffer.ptr = (void *) buffer->typed_data();
-    membuffer.size = buffer->dimensions().front() * 8 / sizeof(char);
+void set_mem_buffer(DeviceMemoryBuffer *membuffer, ffi::ResultBuffer<ffi::F64> buffer) {
+    membuffer->ptr = (void *) buffer->typed_data();
+    membuffer->size = buffer->dimensions().front() * 8 / sizeof(char);
     //CUDA_CHECK(cudaMemset(membuffer.ptr, 0, membuffer.size));
-    membuffer.offset = 0;
+    membuffer->offset = 0;
 }
 
 
@@ -57,13 +55,16 @@ ffi::Error count2Impl(cudaStream_t stream,
     for (size_t imesh=0; imesh < MAX_NMESH; imesh++) list_particles[imesh].size = 0;
     list_particles[0] = get_ffi_particles(positions1, weights1);
     list_particles[1] = get_ffi_particles(positions2, weights2);
-    set_mem_buffer(buffer);
+    DeviceMemoryBuffer *membuffer;
+    set_mem_buffer(membuffer, buffer);
+    membuffer->nblocks = 256;
+    membuffer->meshsize = (list_particles[0].size + list_particles[1].size) / 2;
     MeshAttrs mattrs;
     prepare_mesh_attrs(&mattrs, battrs, sattrs);
-    set_mesh_attrs(list_particles, &mattrs, &membuffer, stream);
-    set_mesh(list_particles, list_mesh, mattrs, &membuffer, stream);
+    set_mesh_attrs(list_particles, &mattrs, membuffer, stream);
+    set_mesh(list_particles, list_mesh, mattrs, membuffer, stream);
     // Perform the computation
-    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, &membuffer, stream);
+    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, membuffer, stream);
 
     cudaError_t last_error = cudaGetLastError();
     if (last_error != cudaSuccess) {
@@ -120,8 +121,7 @@ PYBIND11_MODULE(ffi_cucount, m) {
 
     m.def("set_attrs", &set_attrs_py, "Set attributes",
         py::arg("battrs"),
-        py::arg("sattrs") = SelectionAttrs_py(), // Default value
-        py::arg("nblocks") = 256); // Default value
+        py::arg("sattrs") = SelectionAttrs_py()); // Default value
 
     m.def("count2", []() { return EncapsulateFfiCall(count2ffi); });
 }
