@@ -26,8 +26,9 @@ void* my_malloc(size_t size) {
 
 // C-compliant device malloc: returns pointer or NULL on error
 void* my_device_malloc(size_t nbytes, DeviceMemoryBuffer* buffer) {
-    if (buffer && buffer->size > 0) {
+    if ((buffer) && (buffer->size > 0)) {
         // Use pre-allocated buffer if enough space
+        // printf("nbytes, size = %zu, %zu, %zu %zu\n", nbytes, buffer->offset, buffer->offset + nbytes, buffer->size);
         if (buffer->offset + nbytes > buffer->size) {
             log_message(LOG_LEVEL_ERROR, "DeviceMemoryBuffer: not enough space for allocation (%zu requested, %zu available)\n", nbytes, buffer->size - buffer->offset);
             exit(EXIT_FAILURE);
@@ -45,7 +46,7 @@ void* my_device_malloc(size_t nbytes, DeviceMemoryBuffer* buffer) {
 
 // Example: free fallback allocations (not buffer allocations)
 void my_device_free(void* ptr, DeviceMemoryBuffer* buffer) {
-    if (buffer && buffer->size > 0) {
+    if ((buffer) && (buffer->size > 0)) {
         // Only free if not part of the buffer
         // Do nothing
     }

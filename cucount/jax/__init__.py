@@ -54,9 +54,5 @@ def count2(*particles: Particles, battrs: BinAttrs, sattrs: SelectionAttrs=Selec
     size += nblocks * bsize
     buffer_type = jax.ShapeDtypeStruct((size,), dtype)
     call = jax.ffi.ffi_call('count2', (res_type, buffer_type))
-
-    def get(array):
-        return jnp.asarray(array, dtype=dtype)
-
     args = sum(([particle.positions, particle.weights] for particle in particles), start=[])
-    return call(*map(get, args))[0]
+    return call(*args)[0]

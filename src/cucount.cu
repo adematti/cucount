@@ -80,7 +80,6 @@ py::array_t<FLOAT> count2_py(Particles_py& particles1, Particles_py& particles2,
     auto counts_ptr = counts_py.mutable_data(); // Get a pointer to the array's data
     // Array on the GPU
     FLOAT *counts = (FLOAT*) my_device_malloc(battrs.size * sizeof(FLOAT), membuffer);
-    CUDA_CHECK(cudaMemset(counts, 0, battrs.size * sizeof(FLOAT)));
 
     // Create a default CUDA stream (or use 0 for the default stream)
     cudaStream_t stream;

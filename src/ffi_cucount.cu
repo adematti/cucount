@@ -26,6 +26,13 @@ void set_attrs_py(BinAttrs_py& battrs_py, const SelectionAttrs_py& sattrs_py = S
 }
 
 
+void set_mem_buffer(ffi::ResultBuffer<ffi::F64> buffer) {
+    membuffer.ptr = (void *) buffer->typed_data();
+    membuffer.size = buffer->dimensions().front() * 8 / sizeof(char);
+    CUDA_CHECK(cudaMemset(membuffer.ptr, 0, membuffer.size));
+    membuffer.offset = 0;
+}
+
 
 Particles get_ffi_particles(ffi::Buffer<ffi::F64> positions, ffi::Buffer<ffi::F64> weights) {
     Particles particles;
@@ -50,13 +57,13 @@ ffi::Error count2Impl(cudaStream_t stream,
     for (size_t imesh=0; imesh < MAX_NMESH; imesh++) list_particles[imesh].size = 0;
     list_particles[0] = get_ffi_particles(positions1, weights1);
     list_particles[1] = get_ffi_particles(positions2, weights2);
-    membuffer.ptr = (void *) buffer->untyped_data();
+    set_mem_buffer(buffer);
     MeshAttrs mattrs;
     prepare_mesh_attrs(&mattrs, battrs, sattrs);
     set_mesh_attrs(list_particles, &mattrs, &membuffer, stream);
     set_mesh(list_particles, list_mesh, mattrs, &membuffer, stream);
     // Perform the computation
-    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, &membuffer, stream);
+    //count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, &membuffer, stream);
 
     cudaError_t last_error = cudaGetLastError();
     if (last_error != cudaSuccess) {

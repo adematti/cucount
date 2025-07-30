@@ -425,7 +425,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     float elapsed_time;
 
     // Initialize histograms
-    //for (int i = 0; i < battrs.size; i++) counts[i] = 0;
+    CUDA_CHECK(cudaMemset(counts, 0, battrs.size * sizeof(FLOAT)));
 
     // Copy constants to device
     CUDA_CHECK(cudaMemcpyToSymbol(device_mattrs, &mattrs, sizeof(MeshAttrs)));
@@ -434,6 +434,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     BinAttrs device_battrs = battrs;
     for (size_t i = 0; i < battrs.ndim; i++) {
         if (battrs.asize[i] > 0) {
+            // printf("ALLOCATING bin %d with size %d\n", i, battrs.asize[i]);
             FLOAT *array = (FLOAT*) my_device_malloc(battrs.asize[i] * sizeof(FLOAT), buffer);
             CUDA_CHECK(cudaMemcpyAsync(array, battrs.array[i], battrs.asize[i] * sizeof(FLOAT), cudaMemcpyHostToDevice, stream));
             device_battrs.array[i] = array;
@@ -441,6 +442,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     }
 
     // allocate histogram arrays
+    // printf("ALLOCATING histogram\n");
     FLOAT *block_counts = (FLOAT*) my_device_malloc(nblocks * battrs.size * sizeof(FLOAT), buffer);
     //CUDA_CHECK(cudaMemset(block_counts, 0, nblocks * battrs.size * sizeof(FLOAT)));  // set to 0 in the kernel
 

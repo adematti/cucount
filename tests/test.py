@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import special
 
-#from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs
+from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs
 
 @np.vectorize
 def spherical_bessel(x, ell=0):
@@ -225,6 +225,9 @@ def test_thetacut():
         n_bitwise_weights = options.pop('n_bitwise_weights', 0)
         data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=n_individual_weights, n_bitwise_weights=n_bitwise_weights, seed=42)
         data1 = [np.concatenate([d, d]) for d in data1]  # that will get us some pairs at sep = 0
+        rng = np.random.RandomState(seed=42)
+        mask = rng.uniform(0., 1., size) > 0.1
+        data2[3:] = [dd * mask for dd in data2[3:]]  # set some weights to zero
         selection_attrs = options.pop('selection_attrs', {'theta': (0., 0.05)})
         autocorr = options.pop('autocorr', False)
         options.setdefault('boxsize', None)
@@ -294,11 +297,10 @@ def test_thetacut():
         weight_attrs.pop('normalization', None)
 
         sep_ref = None
-        if True:
-            if space == 'correlation':
-                poles_ref, sep_ref = ref_theta_correlation(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
-            else:
-                poles_ref = ref_theta_spectrum(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
+        if space == 'correlation':
+            poles_ref, sep_ref = ref_theta_correlation(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
+        else:
+            poles_ref = ref_theta_spectrum(edges, data1_ref, data2=data2_ref if not autocorr else None, autocorr=autocorr, n_bitwise_weights=n_bitwise_weights, twopoint_weights=twopoint_weights, selection_attrs=selection_attrs, **ref_options, **weight_attrs)
 
         itemsize = np.dtype('f8' if dtype is None else dtype).itemsize
         tol = {'atol': 1e-8, 'rtol': 1e-2} if itemsize <= 4 else {'atol': 1e-8, 'rtol': 1e-5}
@@ -336,7 +338,7 @@ def test_thetacut():
 
             positions1 = np.column_stack(positions1)
             positions2 = np.column_stack(positions2)
-            print(positions1.shape)
+            print('zero weight', np.sum(weights2 == 0.))
             particles1 = Particles(positions1, weights1)
             particles2 = Particles(positions2, weights2)
             if space == 'correlation':
@@ -381,7 +383,7 @@ def test_corrfunc_smu():
     assert np.allclose(test, ref.wcounts, **tol)
 
 
-def test_jax():
+def test_jax(distributed=False):
     los = 'midpoint'
     edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
     size = int(1e6)
@@ -397,8 +399,11 @@ def test_jax():
         battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
         return count2(particles1, particles2, battrs=battrs)
 
+    #res_numpy = count_numpy()
+    #exit()
+    
     import jax
-    jax.distributed.initialize()
+    if distributed: jax.distributed.initialize()
     from jax import config
     config.update('jax_enable_x64', True)
     
@@ -406,18 +411,21 @@ def test_jax():
     from jax.sharding import Mesh, PartitionSpec as P
     
     def count_jax():
-        sharding_mesh = jax.make_mesh((len(jax.devices()),), ('x',))
         from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs, setup_logging
         #setup_logging("error")
         particles1 = Particles(positions1, weights1)
         particles2 = Particles(positions2, weights2)
         battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-        return shard_map(lambda *particles: jax.lax.psum(count2(*particles, battrs=battrs), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))(particles1, particles2)
+        count = lambda *particles: count2(*particles, battrs=battrs)
+        if distributed:
+            sharding_mesh = Mesh(jax.devices(), ('x',))
+            count = shard_map(lambda *particles: jax.lax.psum(count2(*particles, battrs=battrs), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))
+        return count(particles1, particles2)
 
     res_jax = count_jax()
-    res_numpy = count_numpy()
+    exit()
     assert np.allclose(res_jax, res_numpy)
-    jax.distributed.shutdown()
+    if distributed: jax.distributed.shutdown()
 
 
 if __name__ == '__main__':

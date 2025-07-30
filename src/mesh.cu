@@ -228,6 +228,12 @@ __device__ size_t _get_cell_index(const MeshAttrs mattrs, const FLOAT *position)
 }
 
 
+
+__device__ inline size_t my_atomicAddSizet(size_t* address, size_t val) {
+    return atomicAdd((unsigned long long int*)address, (unsigned long long int)val);
+}
+
+
 __global__ void count_particles_kernel(const MeshAttrs mattrs, const Particles particles, size_t *index, Mesh mesh) {
 
     size_t tid = threadIdx.x;
@@ -235,43 +241,10 @@ __global__ void count_particles_kernel(const MeshAttrs mattrs, const Particles p
     size_t gid = tid + blockIdx.x * blockDim.x;
 
     for (size_t i = gid; i < particles.size; i += stride) {
+        //if (particles.weights[i] == 0.) continue;
         const FLOAT *position = &(particles.positions[NDIM * i]);
         index[i] = _get_cell_index(mattrs, position);
-        atomicAddSizet(&(mesh.nparticles[index[i]]), 1);
-    }
-}
-
-
-// CUDA kernel to compute cumulative sum and reset nparticles
-__global__ void cumulative_count_particles_kernel(size_t *nparticles, size_t *cumnparticles, size_t mesh_size) {
-    // Shared memory for cumulative sum computation
-    extern __shared__ size_t shared_data[];
-
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-
-    // Load nparticles into shared memory
-    if (tid < mesh_size) {
-        shared_data[threadIdx.x] = nparticles[tid];
-    } else {
-        shared_data[threadIdx.x] = 0; // Handle out-of-bounds threads
-    }
-    __syncthreads();
-
-    // Perform cumulative sum using parallel reduction
-    for (size_t stride = 1; stride < blockDim.x; stride *= 2) {
-        size_t temp = 0;
-        if (threadIdx.x >= stride) {
-            temp = shared_data[threadIdx.x - stride];
-        }
-        __syncthreads();
-        shared_data[threadIdx.x] += temp;
-        __syncthreads();
-    }
-
-    // Write cumulative sum to cumnparticles
-    if (tid < mesh_size) {
-        cumnparticles[tid] = (threadIdx.x == 0) ? shared_data[threadIdx.x] : shared_data[threadIdx.x - 1];
-        nparticles[tid] = 0; // Reset nparticles
+        my_atomicAddSizet(&(mesh.nparticles[index[i]]), 1);
     }
 }
 
@@ -283,14 +256,14 @@ __global__ void fill_particles_kernel(const Particles particles, const size_t *i
     size_t gid = tid + blockIdx.x * blockDim.x;
 
     for (size_t i = gid; i < particles.size; i += stride) {
-        size_t idx = index[i];
+        //if (particles.weights[i] == 0.) continue;  // skip particles with zero weight; they count for nothing
         const FLOAT* position = &(particles.positions[NDIM * i]);
         FLOAT sposition[NDIM];
         FLOAT r = cartesian_distance(position);
-
         for (size_t axis = 0; axis < NDIM; axis++) sposition[axis] = position[axis] / r;
 
-        size_t local_index = atomicAddSizet(&(mesh.nparticles[idx]), 1);
+        size_t idx = index[i];
+        size_t local_index = my_atomicAddSizet(&(mesh.nparticles[idx]), 1);
         size_t offset = mesh.cumnparticles[idx] + local_index;
 
         for (size_t axis = 0; axis < NDIM; axis++) {
@@ -300,7 +273,6 @@ __global__ void fill_particles_kernel(const Particles particles, const size_t *i
         mesh.weights[offset] = particles.weights[i];
     }
 }
-
 
 
 void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
@@ -315,7 +287,6 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         mesh.size = 1;
         for (size_t axis = 0; axis < NDIM; axis++) mesh.size *= mattrs.meshsize[axis];
         // Allocate memory for mesh variables
-        mesh.total_nparticles = particles.size;
         size_t *index = (size_t*) my_device_malloc(particles.size * sizeof(size_t), buffer);
         mesh.nparticles = (size_t*) my_device_malloc(mesh.size * sizeof(size_t), buffer);
         CUDA_CHECK(cudaMemset(mesh.nparticles, 0, mesh.size * sizeof(size_t)));
@@ -328,11 +299,14 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         // Assign particle positions to boxes
         count_particles_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(mattrs, particles, index, mesh);
         CUDA_CHECK(cudaDeviceSynchronize());
-        thrust::device_ptr<size_t> d_nparticles(mesh.nparticles);
-        thrust::device_ptr<size_t> d_cumnparticles(mesh.cumnparticles);
+        thrust::device_ptr<size_t> d_nparticles = thrust::device_pointer_cast(mesh.nparticles);
+        thrust::device_ptr<size_t> d_cumnparticles = thrust::device_pointer_cast(mesh.cumnparticles);
         thrust::exclusive_scan(d_nparticles, d_nparticles + mesh.size, d_cumnparticles);
+
         cudaMemset(mesh.nparticles, 0, mesh.size * sizeof(size_t));  // reset
         CUDA_CHECK(cudaDeviceSynchronize());
+        cudaMemcpy(&(mesh.total_nparticles), mesh.cumnparticles + (mesh.size - 1), sizeof(size_t), cudaMemcpyDeviceToHost);
+        //printf("Total nparticles %d %d %d %d\n", imesh, particles.size, mesh.total_nparticles, mesh.size);
         fill_particles_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(particles, index, mesh);
         CUDA_CHECK(cudaDeviceSynchronize());
         my_device_free(index, buffer);
