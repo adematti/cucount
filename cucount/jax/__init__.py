@@ -47,7 +47,7 @@ def count2(*particles: Particles, battrs: BinAttrs, sattrs: SelectionAttrs=Selec
     # Buffer for set_mesh_attrs
     size += nblocks * 2 * ndim
     # Buffer for mesh
-    size += (5 + 1 + 2 * ndim) * sum(particle.positions.shape[0] for particle in particles)
+    size += (5 + 1 + 2 * ndim) * sum(particle.size for particle in particles)
     # Buffer for count2: bins
     size += sum(s + 1 for s in bshape)
     # Buffer for count2: bins

@@ -400,17 +400,15 @@ def test_jax(distributed=False):
         return count2(particles1, particles2, battrs=battrs)
 
     #res_numpy = count_numpy()
-    #exit()
-    
-    import jax
-    if distributed: jax.distributed.initialize()
-    from jax import config
-    config.update('jax_enable_x64', True)
-    
-    from jax.experimental.shard_map import shard_map
-    from jax.sharding import Mesh, PartitionSpec as P
-    
+
     def count_jax():
+        import jax
+        if distributed: jax.distributed.initialize()
+        from jax import config
+        config.update('jax_enable_x64', True)
+        from jax.experimental.shard_map import shard_map
+        from jax.sharding import Mesh, PartitionSpec as P
+
         from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs, setup_logging
         #setup_logging("error")
         particles1 = Particles(positions1, weights1)
@@ -420,16 +418,16 @@ def test_jax(distributed=False):
         if distributed:
             sharding_mesh = Mesh(jax.devices(), ('x',))
             count = shard_map(lambda *particles: jax.lax.psum(count2(*particles, battrs=battrs), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))
-        return count(particles1, particles2)
+        toret = count(particles1, particles2)
+        if distributed: jax.distributed.shutdown()
+        return toret
 
     res_jax = count_jax()
-    exit()
-    assert np.allclose(res_jax, res_numpy)
-    if distributed: jax.distributed.shutdown()
+    #assert np.allclose(res_jax, res_numpy)
 
 
 if __name__ == '__main__':
 
     #test_thetacut()
     #test_corrfunc_smu()
-    test_jax()
+    test_jax(distributed=True)

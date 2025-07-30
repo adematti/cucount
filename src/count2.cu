@@ -436,7 +436,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
         if (battrs.asize[i] > 0) {
             // printf("ALLOCATING bin %d with size %d\n", i, battrs.asize[i]);
             FLOAT *array = (FLOAT*) my_device_malloc(battrs.asize[i] * sizeof(FLOAT), buffer);
-            CUDA_CHECK(cudaMemcpyAsync(array, battrs.array[i], battrs.asize[i] * sizeof(FLOAT), cudaMemcpyHostToDevice, stream));
+            CUDA_CHECK(cudaMemcpy(array, battrs.array[i], battrs.asize[i] * sizeof(FLOAT), cudaMemcpyHostToDevice));
             device_battrs.array[i] = array;
         }
     }
@@ -451,11 +451,13 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaEventCreate(&stop));
     CUDA_CHECK(cudaEventRecord(start, stream));
 
+    CUDA_CHECK(cudaDeviceSynchronize());
     if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
     else count2_cartesian_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
 
     CUDA_CHECK(cudaDeviceSynchronize());
     reduce_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, battrs.size);
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     CUDA_CHECK(cudaEventRecord(stop, stream));
     CUDA_CHECK(cudaEventSynchronize(stop));
