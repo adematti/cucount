@@ -55,16 +55,16 @@ ffi::Error count2Impl(cudaStream_t stream,
     for (size_t imesh=0; imesh < MAX_NMESH; imesh++) list_particles[imesh].size = 0;
     list_particles[0] = get_ffi_particles(positions1, weights1);
     list_particles[1] = get_ffi_particles(positions2, weights2);
-    DeviceMemoryBuffer *membuffer;
-    set_mem_buffer(membuffer, buffer);
-    membuffer->nblocks = 256;
-    membuffer->meshsize = (list_particles[0].size + list_particles[1].size) / 2;
+    DeviceMemoryBuffer membuffer;
+    set_mem_buffer(&membuffer, buffer);
+    membuffer.nblocks = 256;
+    membuffer.meshsize = (list_particles[0].size + list_particles[1].size) / 2;
     MeshAttrs mattrs;
     prepare_mesh_attrs(&mattrs, battrs, sattrs);
-    set_mesh_attrs(list_particles, &mattrs, membuffer, stream);
-    set_mesh(list_particles, list_mesh, mattrs, membuffer, stream);
+    set_mesh_attrs(list_particles, &mattrs, &membuffer, stream);
+    set_mesh(list_particles, list_mesh, mattrs, &membuffer, stream);
     // Perform the computation
-    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, membuffer, stream);
+    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, &membuffer, stream);
 
     cudaError_t last_error = cudaGetLastError();
     if (last_error != cudaSuccess) {
