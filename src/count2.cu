@@ -401,16 +401,23 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, Mesh mesh1, Mesh me
 }
 
 
-__global__ void reduce_kernel(const FLOAT *block_counts, int nblocks, FLOAT *final_counts, size_t size)
+__global__ void reduce_kernel(const FLOAT *block_counts,
+                              int nblocks,
+                              FLOAT *final_counts,
+                              size_t size)
 {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= size) return;
+    // Flatten thread index across entire grid
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = blockDim.x * gridDim.x;
 
-    FLOAT sum = 0;
-    for (int b = 0; b < nblocks; ++b) {
-        sum += block_counts[b * size + i];
+    // Loop over all i values this thread should handle
+    for (size_t i = tid; i < size; i += stride) {
+        FLOAT sum = 0;
+        for (int b = 0; b < nblocks; ++b) {
+            sum += block_counts[(size_t)b * size + i];
+        }
+        final_counts[i] = sum;
     }
-    final_counts[i] = sum;
 }
 
 
