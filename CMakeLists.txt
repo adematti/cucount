@@ -8,7 +8,7 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 set(CMAKE_CXX_STANDARD 17)  # Use C++17
 enable_language(CUDA)
 
-pybind11_add_module(cucount src/cucount.cu src/common.cu src/logger.cc src/mesh.cu src/count2.cu)
+pybind11_add_module(cucount src/cucount.cu src/common.cu src/logger.cu src/mesh.cu src/count2.cu)
 target_include_directories(cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 set_target_properties(cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 target_link_libraries(cucount PRIVATE pybind11::module)
@@ -41,7 +41,7 @@ endif()
 
 if(BUILD_FFI_CUCOUNT)
     message(STATUS "Compilation of the JAX FFI module")
-    pybind11_add_module(ffi_cucount src/ffi_cucount.cu src/common.cu src/logger.cc src/mesh.cu src/count2.cu)
+    pybind11_add_module(ffi_cucount src/ffi_cucount.cu src/common.cu src/logger.cu src/mesh.cu src/count2.cu)
     target_include_directories(ffi_cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
     target_include_directories(ffi_cucount PUBLIC ${XLA_DIR})
     set_target_properties(ffi_cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
