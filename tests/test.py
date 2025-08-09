@@ -426,8 +426,40 @@ def test_jax(distributed=False):
     #assert np.allclose(res_jax, res_numpy)
 
 
+def test_readme():
+    import numpy as np
+    from cucount.numpy import count2, Particles, BinAttrs, setup_logging
+    
+    setup_logging("info")
+    # Prepare catalogs
+    size = int(1e5)
+    boxsize = np.array((3000.,) * 3)
+    rng = np.random.RandomState(seed=42)
+    
+    def generate_catalog(rng, size):
+        offset = boxsize
+        positions = rng.uniform(0., 1., (size, 3)) * boxsize + offset
+        weights = rng.uniform(0., 1., size)
+        return positions, weights
+    
+    positions1, weights1 = generate_catalog(rng, size)
+    positions2, weights2 = generate_catalog(rng, size)
+    
+    # Define binning and line-of-sight
+    edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
+    los = 'midpoint'
+    
+    # Compute pair counts
+    particles1 = Particles(positions1, weights1)
+    particles2 = Particles(positions2, weights2)
+    battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+    counts = count2(particles1, particles2, battrs=battrs)
+    print(counts.sum(axis=-1))
+
+
 if __name__ == '__main__':
 
-    test_thetacut()
+    #test_thetacut()
     #test_corrfunc_smu()
     #test_jax(distributed=True)
+    test_readme()

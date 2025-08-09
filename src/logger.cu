@@ -14,11 +14,11 @@ void log_message(LogLevel level, const char *format, ...) {
     const char *level_strings[] = {"DEBUG", "INFO", "WARN", "ERROR"};
     va_list args;
 
-    fprintf(stderr, "[%s] ", level_strings[level]);
+    fprintf(stdout, "[%s] ", level_strings[level]);
 
     va_start(args, format);
-    vfprintf(stderr, format, args);
+    vfprintf(stdout, format, args);
     va_end(args);
 
-    //fprintf(stderr, "\n");
+    //fprintf(stdout, "\n");
 }
