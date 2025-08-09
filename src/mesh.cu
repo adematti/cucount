@@ -2,9 +2,10 @@
 #include <stdio.h>
 #include <cuda.h>
 #include <sm_20_atomic_functions.h>
-#include <thrust/device_ptr.h>
-#include <thrust/scan.h>
+//#include <thrust/device_ptr.h>
+//#include <thrust/scan.h>
 #include "common.h"
+#include "utils.h"
 
 // Function to calculate the Cartesian distance
 __device__ FLOAT cartesian_distance(const FLOAT *position) {
@@ -304,9 +305,12 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         CUDA_CHECK(cudaDeviceSynchronize());
         count_particles_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(mattrs, particles, index, mesh);
         CUDA_CHECK(cudaDeviceSynchronize());
+        /*
         thrust::device_ptr<size_t> d_nparticles = thrust::device_pointer_cast(mesh.nparticles);
         thrust::device_ptr<size_t> d_cumnparticles = thrust::device_pointer_cast(mesh.cumnparticles);
         thrust::exclusive_scan(d_nparticles, d_nparticles + mesh.size, d_cumnparticles);
+        */
+        exclusive_scan_size_t_device(mesh.nparticles, mesh.cumnparticles, mesh.size, buffer);
         CUDA_CHECK(cudaDeviceSynchronize());
         cudaMemcpy(&(mesh.total_nparticles), mesh.cumnparticles + (mesh.size - 1), sizeof(size_t), cudaMemcpyDeviceToHost);
         size_t last_bin_count;
