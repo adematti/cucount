@@ -21,11 +21,7 @@ classifiers = [
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
 ]
-dependencies = [
-"jaxtyping>=0.2.0",
-"jax>=0.4.35",
-"typing-extensions; python_version < '3.11'",
-]
+dependencies = ["numpy"]
 
 [project.optional-dependencies]
 test = ["pytest>=8.0.0"]
