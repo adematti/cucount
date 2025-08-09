@@ -428,6 +428,6 @@ def test_jax(distributed=False):
 
 if __name__ == '__main__':
 
-    #test_thetacut()
-    test_corrfunc_smu()
+    test_thetacut()
+    #test_corrfunc_smu()
     #test_jax(distributed=True)
