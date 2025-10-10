@@ -64,7 +64,8 @@ ffi::Error count2Impl(cudaStream_t stream,
     set_mesh_attrs(list_particles, &mattrs, &membuffer, stream);
     set_mesh(list_particles, list_mesh, mattrs, &membuffer, stream);
     // Perform the computation
-    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, &membuffer, stream);
+    // Note: FFI interface doesn't support spin parameters yet, defaulting to spin1=0, spin2=0
+    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, 0, 0, &membuffer, stream);
 
     cudaError_t last_error = cudaGetLastError();
     if (last_error != cudaSuccess) {

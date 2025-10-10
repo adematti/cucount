@@ -68,6 +68,8 @@ void copy_particles_to_device(Particles particles, Particles *device_particles, 
     if (mode == 1) {
         device_particles->positions = particles.positions;
         device_particles->weights = particles.weights;
+        device_particles->spin_values = particles.spin_values;
+        device_particles->sky_coords = particles.sky_coords;
     }
     else {
         CUDA_CHECK(cudaMalloc((void **) &(device_particles->positions), NDIM * particles.size * sizeof(FLOAT)));
@@ -75,6 +77,20 @@ void copy_particles_to_device(Particles particles, Particles *device_particles, 
 
         CUDA_CHECK(cudaMalloc((void **) &(device_particles->weights), particles.size * sizeof(FLOAT)));
         CUDA_CHECK(cudaMemcpy(device_particles->weights, particles.weights, particles.size * sizeof(FLOAT), cudaMemcpyHostToDevice));
+
+        if (particles.spin_values != NULL) {
+            CUDA_CHECK(cudaMalloc((void **) &(device_particles->spin_values), 2 * particles.size * sizeof(FLOAT)));
+            CUDA_CHECK(cudaMemcpy(device_particles->spin_values, particles.spin_values, 2 * particles.size * sizeof(FLOAT), cudaMemcpyHostToDevice));
+        } else {
+            device_particles->spin_values = NULL;
+        }
+
+        if (particles.sky_coords != NULL) {
+            CUDA_CHECK(cudaMalloc((void **) &(device_particles->sky_coords), 2 * particles.size * sizeof(FLOAT)));
+            CUDA_CHECK(cudaMemcpy(device_particles->sky_coords, particles.sky_coords, 2 * particles.size * sizeof(FLOAT), cudaMemcpyHostToDevice));
+        } else {
+            device_particles->sky_coords = NULL;
+        }
     }
 }
 
@@ -91,6 +107,8 @@ void copy_particles_to_host(Particles particles, Particles *host_particles, int 
     if (mode == 1) {
         host_particles->positions = particles.positions;
         host_particles->weights = particles.weights;
+        host_particles->spin_values = particles.spin_values;
+        host_particles->sky_coords = particles.sky_coords;
     }
     else {
         host_particles->positions = (FLOAT*) my_malloc(NDIM * particles.size * sizeof(FLOAT));
@@ -98,6 +116,20 @@ void copy_particles_to_host(Particles particles, Particles *host_particles, int 
 
         host_particles->weights = (FLOAT*) my_malloc(particles.size * sizeof(FLOAT));
         CUDA_CHECK(cudaMemcpy(host_particles->weights, particles.weights, particles.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+
+        if (particles.spin_values != NULL) {
+            host_particles->spin_values = (FLOAT*) my_malloc(2 * particles.size * sizeof(FLOAT));
+            CUDA_CHECK(cudaMemcpy(host_particles->spin_values, particles.spin_values, 2 * particles.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+        } else {
+            host_particles->spin_values = NULL;
+        }
+
+        if (particles.sky_coords != NULL) {
+            host_particles->sky_coords = (FLOAT*) my_malloc(2 * particles.size * sizeof(FLOAT));
+            CUDA_CHECK(cudaMemcpy(host_particles->sky_coords, particles.sky_coords, 2 * particles.size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+        } else {
+            host_particles->sky_coords = NULL;
+        }
     }
 }
 
@@ -116,6 +148,8 @@ void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, int mode) {
         device_mesh->spositions = mesh.spositions;
         device_mesh->positions = mesh.positions;
         device_mesh->weights = mesh.weights;
+        device_mesh->spin_values = mesh.spin_values;
+        device_mesh->sky_coords = mesh.sky_coords;
     }
     else {
         CUDA_CHECK(cudaMalloc((void **) &(device_mesh->nparticles), mesh.size * sizeof(size_t)));
@@ -132,6 +166,20 @@ void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, int mode) {
 
         CUDA_CHECK(cudaMalloc((void **) &(device_mesh->weights), mesh.total_nparticles * sizeof(FLOAT)));
         CUDA_CHECK(cudaMemcpy(device_mesh->weights, mesh.weights, mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+
+        if (mesh.spin_values != NULL) {
+            CUDA_CHECK(cudaMalloc((void **) &(device_mesh->spin_values), 2 * mesh.total_nparticles * sizeof(FLOAT)));
+            CUDA_CHECK(cudaMemcpy(device_mesh->spin_values, mesh.spin_values, 2 * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+        } else {
+            device_mesh->spin_values = NULL;
+        }
+
+        if (mesh.sky_coords != NULL) {
+            CUDA_CHECK(cudaMalloc((void **) &(device_mesh->sky_coords), 2 * mesh.total_nparticles * sizeof(FLOAT)));
+            CUDA_CHECK(cudaMemcpy(device_mesh->sky_coords, mesh.sky_coords, 2 * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyHostToDevice));
+        } else {
+            device_mesh->sky_coords = NULL;
+        }
     }
 }
 
@@ -149,6 +197,8 @@ void copy_mesh_to_host(Mesh mesh, Mesh *host_mesh, int mode) {
         host_mesh->spositions = mesh.spositions;
         host_mesh->positions = mesh.positions;
         host_mesh->weights = mesh.weights;
+        host_mesh->spin_values = mesh.spin_values;
+        host_mesh->sky_coords = mesh.sky_coords;
     }
     else {
         host_mesh->nparticles = (size_t*) my_malloc(mesh.size * sizeof(size_t));
@@ -165,6 +215,20 @@ void copy_mesh_to_host(Mesh mesh, Mesh *host_mesh, int mode) {
 
         host_mesh->weights = (FLOAT*) my_malloc(mesh.total_nparticles * sizeof(FLOAT));
         CUDA_CHECK(cudaMemcpy(host_mesh->weights, mesh.weights, mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+
+        if (mesh.spin_values != NULL) {
+            host_mesh->spin_values = (FLOAT*) my_malloc(2 * mesh.total_nparticles * sizeof(FLOAT));
+            CUDA_CHECK(cudaMemcpy(host_mesh->spin_values, mesh.spin_values, 2 * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+        } else {
+            host_mesh->spin_values = NULL;
+        }
+
+        if (mesh.sky_coords != NULL) {
+            host_mesh->sky_coords = (FLOAT*) my_malloc(2 * mesh.total_nparticles * sizeof(FLOAT));
+            CUDA_CHECK(cudaMemcpy(host_mesh->sky_coords, mesh.sky_coords, 2 * mesh.total_nparticles * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+        } else {
+            host_mesh->sky_coords = NULL;
+        }
     }
 }
 
@@ -173,6 +237,12 @@ void free_device_particles(Particles *particles) {
     // Free GPU memory
     CUDA_CHECK(cudaFree(particles->positions));
     CUDA_CHECK(cudaFree(particles->weights));
+    if (particles->spin_values != NULL) {
+        CUDA_CHECK(cudaFree(particles->spin_values));
+    }
+    if (particles->sky_coords != NULL) {
+        CUDA_CHECK(cudaFree(particles->sky_coords));
+    }
 }
 
 void free_device_mesh(Mesh *mesh) {
@@ -182,20 +252,38 @@ void free_device_mesh(Mesh *mesh) {
     CUDA_CHECK(cudaFree(mesh->spositions));
     CUDA_CHECK(cudaFree(mesh->positions));
     CUDA_CHECK(cudaFree(mesh->weights));
+    if (mesh->spin_values != NULL) {
+        CUDA_CHECK(cudaFree(mesh->spin_values));
+    }
+    if (mesh->sky_coords != NULL) {
+        CUDA_CHECK(cudaFree(mesh->sky_coords));
+    }
 }
 
 
 void free_host_particles(Particles *particles) {
-    // Free GPU memory
+    // Free host memory
     free(particles->positions);
     free(particles->weights);
+    if (particles->spin_values != NULL) {
+        free(particles->spin_values);
+    }
+    if (particles->sky_coords != NULL) {
+        free(particles->sky_coords);
+    }
 }
 
 void free_host_mesh(Mesh *mesh) {
-    // Free GPU memory
+    // Free host memory
     free(mesh->nparticles);
     free(mesh->cumnparticles);
     free(mesh->spositions);
     free(mesh->positions);
     free(mesh->weights);
+    if (mesh->spin_values != NULL) {
+        free(mesh->spin_values);
+    }
+    if (mesh->sky_coords != NULL) {
+        free(mesh->sky_coords);
+    }
 }

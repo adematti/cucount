@@ -62,6 +62,8 @@ typedef struct {
     FLOAT *spositions;
     FLOAT *positions;
     FLOAT *weights;
+    FLOAT *spin_values;    // Spin components (s1, s2) per particle [size×2]
+    FLOAT *sky_coords;     // RA, Dec per particle [size×2]
 } Mesh;
 
 
@@ -71,6 +73,8 @@ typedef struct {
     FLOAT *spositions;  // positions on the sphere
     FLOAT *positions;
     FLOAT *weights;
+    FLOAT *spin_values;    // Spin components (s1, s2) per particle [size×2]
+    FLOAT *sky_coords;     // RA, Dec per particle [size×2]
 } Particles; // Particles
 
 

@@ -42,10 +42,39 @@ def get_cartesian(ra, dec):
     z = np.sin(theta)
     return np.column_stack([x, y, z])
 
-def create_particles(ra, dec, weights):
-    """Create cucount Particles object (no sky_coords for spin-0)"""
+def create_particles(ra, dec, weights, ellipticities=None):
+    """Create cucount Particles object from sky coordinates
+
+    Parameters
+    ----------
+    ra : array
+        Right ascension in degrees
+    dec : array
+        Declination in degrees
+    weights : array
+        Particle weights
+    ellipticities : array, optional
+        Ellipticity components (e1, e2) as [N, 2] array.
+        Note: Should be passed with negative sign convention: -e1, -e2
+
+    Returns
+    -------
+    Particles
+        cucount Particles object with positions, weights, sky_coords, and optionally spin_values
+    """
+    # Convert to 3D unit sphere Cartesian coordinates (REQUIRED for cucount)
     positions = get_cartesian(ra, dec)
-    return Particles(positions, weights)
+
+    # Sky coordinates for spin projections (RA, Dec in radians)
+    # NOTE: Always needed for spin projections, regardless of spin-0 or spin-2
+    sky_coords = np.column_stack([ra * np.pi/180, dec * np.pi/180])
+
+    if ellipticities is not None:
+        # Create particles with sky coordinates and spin values (for spin-2 fields)
+        return Particles(positions, weights, sky_coords, ellipticities)
+    else:
+        # Create particles with sky coordinates only (for spin-0 fields)
+        return Particles(positions, weights, sky_coords)
 
 def compute_wgg_cucount(data_ra, data_dec, data_w, rand_ra, rand_dec, rand_w, theta_edges_rad):
     """Compute w_gg using cucount with Landy-Szalay estimator"""

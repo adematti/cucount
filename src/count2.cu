@@ -118,6 +118,64 @@ __device__ inline bool is_selected(FLOAT *sposition1, FLOAT *sposition2, FLOAT *
 }
 
 
+__device__ inline FLOAT compute_position_angle_from_sky_coords(
+    FLOAT ra1, FLOAT dec1, FLOAT ra2, FLOAT dec2) {
+    // Compute position angle between two points on the sky using RA, Dec
+    // Returns azimuthal angle φ in radians
+
+    FLOAT delta_ra = ra2 - ra1;
+
+    // Compute position angle using spherical trigonometry
+    FLOAT cos_dec1 = cos(dec1);
+    FLOAT sin_dec1 = sin(dec1);
+    FLOAT cos_dec2 = cos(dec2);
+    FLOAT sin_dec2 = sin(dec2);
+    FLOAT cos_delta_ra = cos(delta_ra);
+    FLOAT sin_delta_ra = sin(delta_ra);
+
+    // Position angle formula from spherical astronomy
+    FLOAT y = sin_delta_ra * cos_dec2;
+    FLOAT x = cos_dec1 * sin_dec2 - sin_dec1 * cos_dec2 * cos_delta_ra;
+
+    FLOAT phi = atan2(y, x);
+
+    // Ensure phi is in [0, 2π]
+    if (phi < 0) phi += 2 * M_PI;
+
+    return phi;
+}
+
+__device__ inline void compute_spin_projection(
+    FLOAT *sky_coords1, FLOAT *sky_coords2, FLOAT s1, FLOAT s2, int spin,
+    FLOAT *splus_out, FLOAT *scross_out) {
+    // Use sky coordinates (RA, Dec) if available to compute position angle
+    // sky_coords format: [RA, Dec] in radians
+
+    if (sky_coords1 != NULL && sky_coords2 != NULL && spin != 0) {
+        // Extract RA, Dec from sky coordinates (2D array)
+        FLOAT ra1 = sky_coords1[0];
+        FLOAT dec1 = sky_coords1[1];
+        FLOAT ra2 = sky_coords2[0];
+        FLOAT dec2 = sky_coords2[1];
+
+        // Compute position angle using sky coordinates
+        FLOAT phi = compute_position_angle_from_sky_coords(ra1, dec1, ra2, dec2);
+
+        // Project spin components using the sky-based position angle
+        FLOAT cos_sphi = cos(spin * phi);
+        FLOAT sin_sphi = sin(spin * phi);
+
+        // Tangential and cross components for generic spin
+        *splus_out = -(s1 * cos_sphi + s2 * sin_sphi);   // tangential (s+)
+        *scross_out = (s1 * sin_sphi - s2 * cos_sphi);  // cross (s×)
+    } else {
+        // Fallback: set to zero if sky coordinates not available or spin = 0
+        *splus_out = 0.0;
+        *scross_out = 0.0;
+    }
+}
+
+
 __device__ void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2) {
     if ((ellmin % 2 == 0) && (ellstep % 2 == 0)) {
         for (int ell = ellmin; ell <= ellmax; ell+=ellstep) {
@@ -189,7 +247,7 @@ __device__ FLOAT get_bessel(int ell, FLOAT x) {
 }
 
 
-__device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2, FLOAT weight1, FLOAT weight2, BinAttrs battrs) {
+___device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2, FLOAT weight1, FLOAT weight2, FLOAT *spin_vals1, FLOAT *spin_vals2, int spin1, int spin2, FLOAT *sky_coords1, FLOAT *sky_coords2, BinAttrs battrs) {
     int ibin = 0;
     FLOAT diff[NDIM];
     difference(diff, position2, position1);
@@ -282,8 +340,57 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         }
     }
     FLOAT weight = weight1 * weight2;
+    
     if (i == battrs.ndim) {
-        atomicAdd(&(counts[ibin]), weight);
+        // Check if we have spin_values for spin correlations
+        if (spin_vals1 != NULL && spin1 != 0 && spin_vals2 != NULL && spin2 != 0) {
+            // Shape-shape correlations: both particles have spins
+            FLOAT s1_1 = spin_vals1[0], s2_1 = spin_vals1[1];  // spin_values of first galaxy
+            FLOAT s1_2 = spin_vals2[0], s2_2 = spin_vals2[1];  // spin_values of second galaxy
+            FLOAT splus1, scross1, splus2, scross2;
+            
+            // Project both particles' spins
+            compute_spin_projection(sky_coords1, sky_coords2, s1_1, s2_1, spin1, &splus1, &scross1);
+            compute_spin_projection(sky_coords1, sky_coords2, s1_2, s2_2, spin2, &splus2, &scross2);
+            
+            // Compute three correlations: ++, ×+, ××
+            FLOAT plus_plus = splus1 * splus2;
+            FLOAT cross_plus = scross1 * splus2; 
+            FLOAT cross_cross = scross1 * scross2;
+            
+            // Store in three memory locations: [++][×+][××]
+            atomicAdd(&(counts[ibin]), weight * plus_plus);                        // plus_plus
+            atomicAdd(&(counts[ibin + battrs.size]), weight * cross_plus);         // cross_plus  
+            atomicAdd(&(counts[ibin + 2 * battrs.size]), weight * cross_cross);    // cross_cross
+            
+        } else if (spin_vals2 != NULL && spin2 != 0) {  // Only second galaxy has spin_values
+            FLOAT s1_2 = spin_vals2[0], s2_2 = spin_vals2[1];  // spin_values of source galaxy
+            FLOAT splus, scross;
+            
+            // Use generic spin projection
+            compute_spin_projection(sky_coords1, sky_coords2, s1_2, s2_2, spin2, &splus, &scross);
+            
+            // Accumulate both components:
+            // First half of array: splus results
+            // Second half of array: scross results  
+            atomicAdd(&(counts[ibin]), weight * splus);                    // plus
+            atomicAdd(&(counts[ibin + battrs.size]), weight * scross);     // cross
+            
+        } else if (spin_vals1 != NULL && spin1 != 0) {  // Only first galaxy has spin_values
+            FLOAT s1_1 = spin_vals1[0], s2_1 = spin_vals1[1];  // spin_values of first galaxy
+            FLOAT splus, scross;
+            
+            // Use generic spin projection (note reversed sky coordinates)
+            compute_spin_projection(sky_coords2, sky_coords1, s1_1, s2_1, spin1, &splus, &scross);
+
+            // Accumulate both components
+            atomicAdd(&(counts[ibin]), weight * splus);                    // plus
+            atomicAdd(&(counts[ibin + battrs.size]), weight * scross);     // cross
+            
+        } else {
+            // Regular pair count when no spin_values - only use first half of array
+            atomicAdd(&(counts[ibin]), weight);
+        }
     }
     if ((i == battrs.ndim - 1) && (var == VAR_POLE)) {
         FLOAT legendre_cache[MAX_POLE + 1];
@@ -421,7 +528,7 @@ __global__ void reduce_kernel(const FLOAT *block_counts,
 }
 
 
-void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, BinAttrs battrs, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
+void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, BinAttrs battrs, int spin1, int spin2, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
 
     // counts expected on the device already
     int nblocks, nthreads_per_block;

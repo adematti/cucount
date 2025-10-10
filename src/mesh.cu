@@ -300,6 +300,9 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         mesh.positions = (FLOAT*) my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
         mesh.spositions = (FLOAT*) my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
         mesh.weights = (FLOAT*) my_device_malloc(particles.size * sizeof(FLOAT), buffer);
+        // Initialize spin fields to NULL (not used in mesh creation, only in pair counting)
+        mesh.spin_values = NULL;
+        mesh.sky_coords = NULL;
 
         // Assign particle positions to boxes
         CUDA_CHECK(cudaDeviceSynchronize());
