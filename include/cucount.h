@@ -271,7 +271,7 @@ void prepare_mesh_attrs(MeshAttrs *mattrs, BinAttrs battrs, SelectionAttrs sattr
 
     if ((sattrs.ndim) && (sattrs.var[0] == VAR_THETA)) {
         mattrs->type = MESH_ANGULAR;
-        mattrs->smax = cos(sattrs.max[0] * DTORAD);
+        mattrs->smax = cos(sattrs.max[0]);
     }
     else if ((sattrs.ndim) && (sattrs.var[0] == VAR_S)) {
         mattrs->type = MESH_CARTESIAN;
@@ -279,7 +279,7 @@ void prepare_mesh_attrs(MeshAttrs *mattrs, BinAttrs battrs, SelectionAttrs sattr
     }
     else if (battrs.var[0] == VAR_THETA) {
         mattrs->type = MESH_ANGULAR;
-        mattrs->smax = cos(battrs.max[0] * DTORAD);
+        mattrs->smax = cos(battrs.max[0]);
     }
     else if (battrs.var[0] == VAR_S) {
         mattrs->type = MESH_CARTESIAN;

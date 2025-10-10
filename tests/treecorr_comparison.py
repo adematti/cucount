@@ -155,14 +155,16 @@ def main():
     # Create theta bins
     theta_edges_deg = np.logspace(np.log10(MIN_THETA), np.log10(MAX_THETA), NBINS + 1)
     theta_centers_deg = np.sqrt(theta_edges_deg[:-1] * theta_edges_deg[1:])  # geometric mean
+    theta_edges_rad = theta_edges_deg * (np.pi / 180.0)
 
     print("\n" + "=" * 60)
     print("Computing w_gg with cucount...")
     print("=" * 60)
+
     xi_cucount, DD, DR, RR = compute_wgg_cucount(
         data_ra, data_dec, data_w,
         rand_ra, rand_dec, rand_w,
-        theta_edges_deg
+        theta_edges_rad
     )
 
     print("\n" + "=" * 60)
