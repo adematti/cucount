@@ -247,7 +247,7 @@ __device__ FLOAT get_bessel(int ell, FLOAT x) {
 }
 
 
-___device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2, FLOAT weight1, FLOAT weight2, FLOAT *spin_vals1, FLOAT *spin_vals2, int spin1, int spin2, FLOAT *sky_coords1, FLOAT *sky_coords2, BinAttrs battrs) {
+__device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2, FLOAT weight1, FLOAT weight2, FLOAT *spin_vals1, FLOAT *spin_vals2, int spin1, int spin2, FLOAT *sky_coords1, FLOAT *sky_coords2, BinAttrs battrs) {
     int ibin = 0;
     FLOAT diff[NDIM];
     difference(diff, position2, position1);
@@ -342,53 +342,53 @@ ___device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
     FLOAT weight = weight1 * weight2;
     
     if (i == battrs.ndim) {
-        // Check if we have spin_values for spin correlations
+        // Check correlation function spin parameters and available tracer spin_values
         if (spin_vals1 != NULL && spin1 != 0 && spin_vals2 != NULL && spin2 != 0) {
-            // Shape-shape correlations: both particles have spins
-            FLOAT s1_1 = spin_vals1[0], s2_1 = spin_vals1[1];  // spin_values of first galaxy
-            FLOAT s1_2 = spin_vals2[0], s2_2 = spin_vals2[1];  // spin_values of second galaxy
+            // Both correlation spins non-zero: compute spin1-spin2 correlation
+            FLOAT s1_1 = spin_vals1[0], s2_1 = spin_vals1[1];  // spin_values of first tracer
+            FLOAT s1_2 = spin_vals2[0], s2_2 = spin_vals2[1];  // spin_values of second tracer
             FLOAT splus1, scross1, splus2, scross2;
-            
-            // Project both particles' spins
+
+            // Project both tracers' spin_values
             compute_spin_projection(sky_coords1, sky_coords2, s1_1, s2_1, spin1, &splus1, &scross1);
             compute_spin_projection(sky_coords1, sky_coords2, s1_2, s2_2, spin2, &splus2, &scross2);
-            
-            // Compute three correlations: ++, ×+, ××
+
+            // Compute three spin-spin correlations: ++, ×+, ××
             FLOAT plus_plus = splus1 * splus2;
-            FLOAT cross_plus = scross1 * splus2; 
+            FLOAT cross_plus = scross1 * splus2;
             FLOAT cross_cross = scross1 * scross2;
-            
+
             // Store in three memory locations: [++][×+][××]
             atomicAdd(&(counts[ibin]), weight * plus_plus);                        // plus_plus
-            atomicAdd(&(counts[ibin + battrs.size]), weight * cross_plus);         // cross_plus  
+            atomicAdd(&(counts[ibin + battrs.size]), weight * cross_plus);         // cross_plus
             atomicAdd(&(counts[ibin + 2 * battrs.size]), weight * cross_cross);    // cross_cross
-            
-        } else if (spin_vals2 != NULL && spin2 != 0) {  // Only second galaxy has spin_values
-            FLOAT s1_2 = spin_vals2[0], s2_2 = spin_vals2[1];  // spin_values of source galaxy
+
+        } else if (spin_vals2 != NULL && spin2 != 0) {  // Correlation spin2 non-zero for second tracer
+            FLOAT s1_2 = spin_vals2[0], s2_2 = spin_vals2[1];  // spin_values of second tracer
             FLOAT splus, scross;
-            
-            // Use generic spin projection
+
+            // Project second tracer's spin_values
             compute_spin_projection(sky_coords1, sky_coords2, s1_2, s2_2, spin2, &splus, &scross);
-            
+
             // Accumulate both components:
             // First half of array: splus results
-            // Second half of array: scross results  
+            // Second half of array: scross results
             atomicAdd(&(counts[ibin]), weight * splus);                    // plus
             atomicAdd(&(counts[ibin + battrs.size]), weight * scross);     // cross
-            
-        } else if (spin_vals1 != NULL && spin1 != 0) {  // Only first galaxy has spin_values
-            FLOAT s1_1 = spin_vals1[0], s2_1 = spin_vals1[1];  // spin_values of first galaxy
+
+        } else if (spin_vals1 != NULL && spin1 != 0) {  // Correlation spin1 non-zero for first tracer
+            FLOAT s1_1 = spin_vals1[0], s2_1 = spin_vals1[1];  // spin_values of first tracer
             FLOAT splus, scross;
-            
-            // Use generic spin projection (note reversed sky coordinates)
+
+            // Project first tracer's spin_values (note reversed sky coordinates)
             compute_spin_projection(sky_coords2, sky_coords1, s1_1, s2_1, spin1, &splus, &scross);
 
             // Accumulate both components
             atomicAdd(&(counts[ibin]), weight * splus);                    // plus
             atomicAdd(&(counts[ibin + battrs.size]), weight * scross);     // cross
-            
+
         } else {
-            // Regular pair count when no spin_values - only use first half of array
+            // Regular pair count when correlation spins are zero
             atomicAdd(&(counts[ibin]), weight);
         }
     }
@@ -421,14 +421,19 @@ ___device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
     }
 }
 
-__global__ void count2_angular_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2, BinAttrs battrs) {
+__global__ void count2_angular_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2, int spin1, int spin2, BinAttrs battrs) {
 
     size_t tid = threadIdx.x;
 
+    // Determine output array size based on spin parameters
+    bool both_spins = (spin1 != 0) && (spin2 != 0);
+    bool one_spin = (spin1 != 0 && spin2 == 0) || (spin1 == 0 && spin2 != 0);
+    size_t actual_size = both_spins ? 3 * battrs.size : (one_spin ? 2 * battrs.size : battrs.size);
+
     // Initialize local histogram
-    FLOAT *local_counts = &block_counts[blockIdx.x * battrs.size];
+    FLOAT *local_counts = &block_counts[blockIdx.x * actual_size];
     // Zero initialize histogram for this block
-    for (int i = tid; i < battrs.size; i += blockDim.x) local_counts[i] = 0;
+    for (int i = tid; i < actual_size; i += blockDim.x) local_counts[i] = 0;
 
     __syncthreads();
     // Global thread index
@@ -440,6 +445,11 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh
         FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
         FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
         FLOAT weight1 = mesh1.weights[ii];
+
+        // Extract spin and sky coordinates for particle 1 (NULL-safe)
+        FLOAT *spin_vals1 = (mesh1.spin_values != NULL) ? &(mesh1.spin_values[2 * ii]) : NULL;
+        FLOAT *sky_coords1 = (mesh1.sky_coords != NULL) ? &(mesh1.sky_coords[2 * ii]) : NULL;
+
         int bounds[2 * NDIM];
         set_angular_bounds(sposition1, bounds);
         for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
@@ -448,29 +458,41 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh
                 int iphi_true = (iphi + device_mattrs.meshsize[1]) % device_mattrs.meshsize[1];
                 int icell = iphi_true + icth_n;
                 int np2 = mesh2.nparticles[icell];
-                FLOAT *positions2 = &(mesh2.positions[NDIM * mesh2.cumnparticles[icell]]);
-                FLOAT *spositions2 = &(mesh2.spositions[NDIM * mesh2.cumnparticles[icell]]);
-                FLOAT *weights2 = &(mesh2.weights[mesh2.cumnparticles[icell]]);
+                size_t cum2 = mesh2.cumnparticles[icell];
+                FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);
+                FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
+                FLOAT *weights2 = &(mesh2.weights[cum2]);
 
                 for (size_t jj = 0; jj < np2; jj++) {
                     if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
                         continue;
                     }
-                    add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj], battrs);
+
+                    // Extract spin and sky coordinates for particle 2 (NULL-safe)
+                    FLOAT *spin_vals2 = (mesh2.spin_values != NULL) ? &(mesh2.spin_values[2 * (cum2 + jj)]) : NULL;
+                    FLOAT *sky_coords2 = (mesh2.sky_coords != NULL) ? &(mesh2.sky_coords[2 * (cum2 + jj)]) : NULL;
+
+                    add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
+                              weight1, weights2[jj], spin_vals1, spin_vals2, spin1, spin2, sky_coords1, sky_coords2, battrs);
                 }
             }
         }
     }
 }
 
-__global__ void count2_cartesian_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2, BinAttrs battrs) {
+__global__ void count2_cartesian_kernel(FLOAT *block_counts, Mesh mesh1, Mesh mesh2, int spin1, int spin2, BinAttrs battrs) {
 
     size_t tid = threadIdx.x;
 
+    // Determine output array size based on spin parameters
+    bool both_spins = (spin1 != 0) && (spin2 != 0);
+    bool one_spin = (spin1 != 0 && spin2 == 0) || (spin1 == 0 && spin2 != 0);
+    size_t actual_size = both_spins ? 3 * battrs.size : (one_spin ? 2 * battrs.size : battrs.size);
+
     // Initialize local histogram
-    FLOAT *local_counts = &block_counts[blockIdx.x * battrs.size];
+    FLOAT *local_counts = &block_counts[blockIdx.x * actual_size];
     // Zero initialize histogram for this block
-    for (int i = tid; i < battrs.size; i += blockDim.x) local_counts[i] = 0;
+    for (int i = tid; i < actual_size; i += blockDim.x) local_counts[i] = 0;
 
     __syncthreads();
     // Global thread index
@@ -482,6 +504,11 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, Mesh mesh1, Mesh me
         FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
         FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
         FLOAT weight1 = mesh1.weights[ii];
+
+        // Extract spin and sky coordinates for particle 1 (NULL-safe)
+        FLOAT *spin_vals1 = (mesh1.spin_values != NULL) ? &(mesh1.spin_values[2 * ii]) : NULL;
+        FLOAT *sky_coords1 = (mesh1.sky_coords != NULL) ? &(mesh1.sky_coords[2 * ii]) : NULL;
+
         int bounds[2 * NDIM];
         set_cartesian_bounds(position1, bounds);
         //printf("%d %d %d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
@@ -492,14 +519,21 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, Mesh mesh1, Mesh me
                 for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
                     int icell = ix_n + iy_n + iz;
                     int np2 = mesh2.nparticles[icell];
-                    FLOAT *positions2 = &(mesh2.positions[NDIM * mesh2.cumnparticles[icell]]);
-                    FLOAT *spositions2 = &(mesh2.spositions[NDIM * mesh2.cumnparticles[icell]]);
-                    FLOAT *weights2 = &(mesh2.weights[mesh2.cumnparticles[icell]]);
+                    size_t cum2 = mesh2.cumnparticles[icell];
+                    FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);
+                    FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
+                    FLOAT *weights2 = &(mesh2.weights[cum2]);
                     for (size_t jj = 0; jj < np2; jj++) {
                         if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
                             continue;
                         }
-                        add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), weight1, weights2[jj], battrs);
+
+                        // Extract spin and sky coordinates for particle 2 (NULL-safe)
+                        FLOAT *spin_vals2 = (mesh2.spin_values != NULL) ? &(mesh2.spin_values[2 * (cum2 + jj)]) : NULL;
+                        FLOAT *sky_coords2 = (mesh2.sky_coords != NULL) ? &(mesh2.sky_coords[2 * (cum2 + jj)]) : NULL;
+
+                        add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
+                                  weight1, weights2[jj], spin_vals1, spin_vals2, spin1, spin2, sky_coords1, sky_coords2, battrs);
                     }
                 }
             }
@@ -534,12 +568,17 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     int nblocks, nthreads_per_block;
     CONFIGURE_KERNEL_LAUNCH(count2_cartesian_kernel, nblocks, nthreads_per_block, buffer);
 
-    // CUDA timing events
+    // CUDA timing eventsis
     cudaEvent_t start, stop;
     float elapsed_time;
 
+    // Determine output array size based on spin parameters
+    bool both_spins = (spin1 != 0) && (spin2 != 0);
+    bool one_spin = (spin1 != 0 && spin2 == 0) || (spin1 == 0 && spin2 != 0);
+    size_t actual_size = both_spins ? 3 * battrs.size : (one_spin ? 2 * battrs.size : battrs.size);
+
     // Initialize histograms
-    CUDA_CHECK(cudaMemset(counts, 0, battrs.size * sizeof(FLOAT)));
+    CUDA_CHECK(cudaMemset(counts, 0, actual_size * sizeof(FLOAT)));
 
     // Copy constants to device
     CUDA_CHECK(cudaMemcpyToSymbol(device_mattrs, &mattrs, sizeof(MeshAttrs)));
@@ -557,7 +596,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
 
     // allocate histogram arrays
     // printf("ALLOCATING histogram\n");
-    FLOAT *block_counts = (FLOAT*) my_device_malloc(nblocks * battrs.size * sizeof(FLOAT), buffer);
+    FLOAT *block_counts = (FLOAT*) my_device_malloc(nblocks * actual_size * sizeof(FLOAT), buffer);
     //CUDA_CHECK(cudaMemset(block_counts, 0, nblocks * battrs.size * sizeof(FLOAT)));  // set to 0 in the kernel
 
     // Create CUDA events for timing
@@ -566,11 +605,11 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaEventRecord(start, stream));
 
     CUDA_CHECK(cudaDeviceSynchronize());
-    if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
-    else count2_cartesian_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, list_mesh[0], list_mesh[1], device_battrs);
+    if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, list_mesh[0], list_mesh[1], spin1, spin2, device_battrs);
+    else count2_cartesian_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, list_mesh[0], list_mesh[1], spin1, spin2, device_battrs);
 
     CUDA_CHECK(cudaDeviceSynchronize());
-    reduce_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, battrs.size);
+    reduce_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, actual_size);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     CUDA_CHECK(cudaEventRecord(stop, stream));

@@ -276,6 +276,18 @@ __global__ void fill_particles_kernel(const Particles particles, const size_t *i
             mesh.spositions[NDIM * offset + axis] = sposition[axis];
         }
         mesh.weights[offset] = particles.weights[i];
+
+        // Copy spin values if present
+        if (particles.spin_values != NULL && mesh.spin_values != NULL) {
+            mesh.spin_values[2 * offset] = particles.spin_values[2 * i];         // e1 (or s1)
+            mesh.spin_values[2 * offset + 1] = particles.spin_values[2 * i + 1]; // e2 (or s2)
+        }
+
+        // Copy sky coordinates if present
+        if (particles.sky_coords != NULL && mesh.sky_coords != NULL) {
+            mesh.sky_coords[2 * offset] = particles.sky_coords[2 * i];         // RA
+            mesh.sky_coords[2 * offset + 1] = particles.sky_coords[2 * i + 1]; // Dec
+        }
     }
 }
 
@@ -300,9 +312,17 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         mesh.positions = (FLOAT*) my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
         mesh.spositions = (FLOAT*) my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
         mesh.weights = (FLOAT*) my_device_malloc(particles.size * sizeof(FLOAT), buffer);
-        // Initialize spin fields to NULL (not used in mesh creation, only in pair counting)
-        mesh.spin_values = NULL;
-        mesh.sky_coords = NULL;
+        // Allocate spin fields if present in particles
+        if (particles.spin_values != NULL) {
+            mesh.spin_values = (FLOAT*) my_device_malloc(2 * particles.size * sizeof(FLOAT), buffer);
+        } else {
+            mesh.spin_values = NULL;
+        }
+        if (particles.sky_coords != NULL) {
+            mesh.sky_coords = (FLOAT*) my_device_malloc(2 * particles.size * sizeof(FLOAT), buffer);
+        } else {
+            mesh.sky_coords = NULL;
+        }
 
         // Assign particle positions to boxes
         CUDA_CHECK(cudaDeviceSynchronize());
