@@ -218,8 +218,14 @@ def compute_wss_cucount(sources, theta_edges_rad):
     elapsed = time.time() - t0
     return xi_plus_plus, xi_cross_plus, xi_cross_cross, elapsed
 
-def compute_correlations_treecorr(lenses_data, sources_data, randoms_data, theta_edges_deg, correlations):
-    """Compute correlations using TreeCorr for comparison"""
+def compute_correlations_treecorr(lenses_data, sources_data, randoms_data, theta_edges_deg, correlations, bin_slop=0.01, metric='Euclidean'):
+    """Compute correlations using TreeCorr for comparison
+
+    Parameters
+    ----------
+    metric : str
+        Distance metric for TreeCorr ('Euclidean' or 'Arc')
+    """
 
     if not TREECORR_AVAILABLE:
         raise ImportError("TreeCorr is not available")
@@ -242,15 +248,15 @@ def compute_correlations_treecorr(lenses_data, sources_data, randoms_data, theta
                                     w=randoms_data['weights'], ra_units='deg', dec_units='deg')
 
         dd = treecorr.NNCorrelation(min_sep=min_sep, max_sep=max_sep, nbins=nbins,
-                                    sep_units='arcmin', bin_type='Log')
+                                    sep_units='arcmin', bin_type='Log', bin_slop=bin_slop, metric=metric)
         dd.process(lens_cat)
 
         rr = treecorr.NNCorrelation(min_sep=min_sep, max_sep=max_sep, nbins=nbins,
-                                    sep_units='arcmin', bin_type='Log')
+                                    sep_units='arcmin', bin_type='Log', bin_slop=bin_slop, metric=metric)
         rr.process(rand_cat)
 
         dr = treecorr.NNCorrelation(min_sep=min_sep, max_sep=max_sep, nbins=nbins,
-                                    sep_units='arcmin', bin_type='Log')
+                                    sep_units='arcmin', bin_type='Log', bin_slop=bin_slop, metric=metric)
         dr.process(lens_cat, rand_cat)
 
         xi, _ = dd.calculateXi(rr=rr, dr=dr)
@@ -270,11 +276,11 @@ def compute_correlations_treecorr(lenses_data, sources_data, randoms_data, theta
                                     w=randoms_data['weights'], ra_units='deg', dec_units='deg')
 
         ng = treecorr.NGCorrelation(min_sep=min_sep, max_sep=max_sep, nbins=nbins,
-                                    sep_units='arcmin', bin_type='Log')
+                                    sep_units='arcmin', bin_type='Log', bin_slop=bin_slop, metric=metric)
         ng.process(lens_cat, source_cat)
 
         rg = treecorr.NGCorrelation(min_sep=min_sep, max_sep=max_sep, nbins=nbins,
-                                    sep_units='arcmin', bin_type='Log')
+                                    sep_units='arcmin', bin_type='Log', bin_slop=bin_slop, metric=metric)
         rg.process(rand_cat, source_cat)
 
         gamma_t, gamma_x, _ = ng.calculateXi(rg=rg)
@@ -291,7 +297,7 @@ def compute_correlations_treecorr(lenses_data, sources_data, randoms_data, theta
                                       ra_units='deg', dec_units='deg')
 
         gg = treecorr.GGCorrelation(min_sep=min_sep, max_sep=max_sep, nbins=nbins,
-                                    sep_units='arcmin', bin_type='Log')
+                                    sep_units='arcmin', bin_type='Log', bin_slop=bin_slop, metric=metric)
         gg.process(source_cat)
 
         # Convert ξ_+, ξ_- to ξ_++, ξ_××
@@ -441,6 +447,10 @@ def main():
                         help='Maximum number of lens galaxies')
     parser.add_argument('--max-sources', type=int, default=None,
                         help='Maximum number of source galaxies')
+    parser.add_argument('--bin-slop', type=float, default=0.2,
+                        help='TreeCorr bin slop parameter (tolerance for bin placement)')
+    parser.add_argument('--treecorr-metric', type=str, default='Euclidean', choices=['Euclidean', 'Arc'],
+                        help='TreeCorr metric to use for distance calculations')
 
     args = parser.parse_args()
 
@@ -545,7 +555,8 @@ def main():
                            'e1': src_e1, 'e2': src_e2}
 
         treecorr_results, treecorr_timings = compute_correlations_treecorr(lenses_data, sources_data, randoms_data,
-                                                                           theta_edges_deg, args.correlations)
+                                                                           theta_edges_deg, args.correlations,
+                                                                           bin_slop=args.bin_slop, metric=args.treecorr_metric)
         results.update(treecorr_results)
 
     # Print timing comparison
