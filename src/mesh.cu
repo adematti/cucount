@@ -176,7 +176,7 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs, DeviceMe
         if (mattrs->meshsize[0] * mattrs->meshsize[1] == 0) {
             FLOAT theta_max = acos(mattrs->smax);
             int nside1 = 5 * (int)(M_PI / theta_max);
-            int nside2 = MIN((int)(sqrt(0.25 * nparticles / fsky)), 2048);  // cap to avoid blowing up the memory
+            int nside2 = MIN((int)(sqrt(0.25 * nparticles / fsky)), 4096);  // cap to avoid blowing up the memory
             if ((buffer) && (buffer->size > 0)) nside2 = MIN(nside2, (int)(sqrt(0.5 * buffer->meshsize)));
             mattrs->meshsize[0] = (size_t) MAX(MIN(nside1, nside2), 1);
             mattrs->meshsize[1] = 2 * mattrs->meshsize[0];
