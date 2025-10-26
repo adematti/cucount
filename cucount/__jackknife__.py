@@ -83,11 +83,13 @@ def subset_particles(particles: Particles, mask: np.ndarray) -> Particles:
     # Handle optional attributes
     sky_coords = None
     if hasattr(particles, 'sky_coords') and particles.sky_coords is not None:
-        sky_coords = particles.sky_coords[mask]
+        if len(particles.sky_coords) > 0:  # Check not empty
+            sky_coords = particles.sky_coords[mask]
 
     spin_values = None
     if hasattr(particles, 'spin_values') and particles.spin_values is not None:
-        spin_values = particles.spin_values[mask]
+        if len(particles.spin_values) > 0:  # Check not empty
+            spin_values = particles.spin_values[mask]
 
     # Create new Particles object
     if spin_values is not None and sky_coords is not None:
@@ -399,6 +401,160 @@ def run_fast_count_count_jackknife(
 
         jk = (DD_jk - 2 * DR_jk + RR_jk)
         jackknife_samples[region] = _safe_divide(jk, RR_jk)
+
+    return xi_full, jackknife_samples
+
+
+def run_fast_cross_count_jackknife(
+    particles_one: Particles,
+    particles_two: Particles,
+    randoms_one: Particles,
+    randoms_two: Particles,
+    assignments_one: np.ndarray,
+    assignments_two: np.ndarray,
+    assignments_randoms_one: np.ndarray,
+    assignments_randoms_two: np.ndarray,
+    bin_attrs,
+    n_bins: int,
+    n_regions: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Fast jackknife for cross-correlation (D1D2) using hole subtraction, 
+    consistent with the alpha-corrected Landy-Szalay auto-correlation estimator.
+
+    Cross-correlation estimator: (D1D2 - D1R2 - D2R1 + R1R2) / R1R2
+    
+    Parameters
+    ----------
+    particles_one : Particles (D1)
+    particles_two : Particles (D2)
+    randoms_one : Particles (R1)
+    randoms_two : Particles (R2)
+    assignments_... : np.ndarray
+        Region assignments for respective catalogs
+    bin_attrs : BinAttrs
+        Binning attributes
+    n_bins : int
+        Total number of bins
+    n_regions : int
+        Number of jackknife regions
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        (xi_full, jk_samples) where both are 1D arrays
+    """
+
+    # Initialize arrays for cross-terms (12 unique pair-counts per region)
+    D1hD2h = np.zeros((n_regions, n_bins))
+    D1hD2o = np.zeros((n_regions, n_bins))
+    D1oD2h = np.zeros((n_regions, n_bins))
+    D1hR2h = np.zeros((n_regions, n_bins))
+    D1hR2o = np.zeros((n_regions, n_bins))
+    D1oR2h = np.zeros((n_regions, n_bins))
+    D2hR1h = np.zeros((n_regions, n_bins))
+    D2hR1o = np.zeros((n_regions, n_bins))
+    D2oR1h = np.zeros((n_regions, n_bins))
+    R1hR2h = np.zeros((n_regions, n_bins))
+    R1hR2o = np.zeros((n_regions, n_bins))
+    R1oR2h = np.zeros((n_regions, n_bins))
+
+    # Track total and hole weights
+    w1_total = np.sum(particles_one.weights)
+    w2_total = np.sum(particles_two.weights)
+    rw1_total = np.sum(randoms_one.weights)
+    rw2_total = np.sum(randoms_two.weights)
+    w1_holes = np.zeros(n_regions)
+    w2_holes = np.zeros(n_regions)
+    rw1_holes = np.zeros(n_regions)
+    rw2_holes = np.zeros(n_regions)
+
+    # Loop over regions to compute hole/keep contributions
+    for region in range(n_regions):
+        d1_hole = subset_particles(particles_one, assignments_one == region)
+        d1_keep = subset_particles(particles_one, assignments_one != region)
+        d2_hole = subset_particles(particles_two, assignments_two == region)
+        d2_keep = subset_particles(particles_two, assignments_two != region)
+        r1_hole = subset_particles(randoms_one, assignments_randoms_one == region)
+        r1_keep = subset_particles(randoms_one, assignments_randoms_one != region)
+        r2_hole = subset_particles(randoms_two, assignments_randoms_two == region)
+        r2_keep = subset_particles(randoms_two, assignments_randoms_two != region)
+
+        w1_holes[region] = np.sum(d1_hole.weights)
+        w2_holes[region] = np.sum(d2_hole.weights)
+        rw1_holes[region] = np.sum(r1_hole.weights)
+        rw2_holes[region] = np.sum(r2_hole.weights)
+
+        # Pair Counts
+        D1hD2h[region] = _count_scalar_pairs(d1_hole, d2_hole, bin_attrs, n_bins)
+        D1hD2o[region] = _count_scalar_pairs(d1_hole, d2_keep, bin_attrs, n_bins)
+        D1oD2h[region] = _count_scalar_pairs(d1_keep, d2_hole, bin_attrs, n_bins)
+        D1hR2h[region] = _count_scalar_pairs(d1_hole, r2_hole, bin_attrs, n_bins)
+        D1hR2o[region] = _count_scalar_pairs(d1_hole, r2_keep, bin_attrs, n_bins)
+        D1oR2h[region] = _count_scalar_pairs(d1_keep, r2_hole, bin_attrs, n_bins)
+        D2hR1h[region] = _count_scalar_pairs(d2_hole, r1_hole, bin_attrs, n_bins)
+        D2hR1o[region] = _count_scalar_pairs(d2_hole, r1_keep, bin_attrs, n_bins)
+        D2oR1h[region] = _count_scalar_pairs(d2_keep, r1_hole, bin_attrs, n_bins)
+        R1hR2h[region] = _count_scalar_pairs(r1_hole, r2_hole, bin_attrs, n_bins)
+        R1hR2o[region] = _count_scalar_pairs(r1_hole, r2_keep, bin_attrs, n_bins)
+        R1oR2h[region] = _count_scalar_pairs(r1_keep, r2_hole, bin_attrs, n_bins)
+
+    # Compute total full survey counts (sum of all contributions)
+    D1D2_total = np.sum(D1hD2h + D1hD2o + D1oD2h, axis=0)
+    D1R2_total = np.sum(D1hR2h + D1hR2o + D1oR2h, axis=0)
+    D2R1_total = np.sum(D2hR1h + D2hR1o + D2oR1h, axis=0)
+    R1R2_total = np.sum(R1hR2h + R1hR2o + R1oR2h, axis=0)
+
+    # --- Full Correlation (Standard Normalization) ---
+    D1D2_full = D1D2_total / max(w1_total * w2_total, 1e-12)
+    D1R2_full = D1R2_total / max(w1_total * rw2_total, 1e-12)
+    D2R1_full = D2R1_total / max(w2_total * rw1_total, 1e-12)
+    R1R2_full = R1R2_total / max(rw1_total * rw2_total, 1e-12)
+
+    numerator = D1D2_full - D1R2_full - D2R1_full + R1R2_full
+    denominator = R1R2_full
+    xi_full = _safe_divide(numerator, denominator)
+
+    # --- Jackknife Samples (Alpha-Corrected Normalization) ---
+    alpha = n_regions / (2 + np.sqrt(2) * (n_regions - 1)) / 4
+    jackknife_samples = np.zeros((n_regions, n_bins))
+
+    for region in range(n_regions):
+        w1_hole = w1_holes[region]
+        w2_hole = w2_holes[region]
+        rw1_hole = rw1_holes[region]
+        rw2_hole = rw2_holes[region]
+        
+        w1_keep = w1_total - w1_hole
+        w2_keep = w2_total - w2_hole
+        rw1_keep = rw1_total - rw1_hole
+        rw2_keep = rw2_total - rw2_hole
+
+        # 1. D1D2 Term
+        norm_D1D2 = (w1_keep * w2_keep) + alpha * (w1_hole * w2_keep + w2_hole * w1_keep)
+        D1D2_jk_count = D1D2_total - (1 - alpha) * (D1hD2o[region] + D1oD2h[region]) - D1hD2h[region]
+        D1D2_jk = D1D2_jk_count / max(norm_D1D2, 1e-12)
+
+        # 2. D1R2 Term
+        norm_D1R2 = (w1_keep * rw2_keep) + alpha * (w1_hole * rw2_keep + rw2_hole * w1_keep)
+        D1R2_jk_count = D1R2_total - (1 - alpha) * (D1hR2o[region] + D1oR2h[region]) - D1hR2h[region]
+        D1R2_jk = D1R2_jk_count / max(norm_D1R2, 1e-12)
+
+        # 3. D2R1 Term
+        norm_D2R1 = (w2_keep * rw1_keep) + alpha * (w2_hole * rw1_keep + rw1_hole * w2_keep)
+        D2R1_jk_count = D2R1_total - (1 - alpha) * (D2hR1o[region] + D2oR1h[region]) - D2hR1h[region]
+        D2R1_jk = D2R1_jk_count / max(norm_D2R1, 1e-12)
+
+        # 4. R1R2 Term
+        norm_R1R2 = (rw1_keep * rw2_keep) + alpha * (rw1_hole * rw2_keep + rw2_hole * rw1_keep)
+        R1R2_jk_count = R1R2_total - (1 - alpha) * (R1hR2o[region] + R1oR2h[region]) - R1hR2h[region]
+        R1R2_jk = R1R2_jk_count / max(norm_R1R2, 1e-12)
+
+        # Final Landy-Szalay for the jackknife sample
+        num_jk = D1D2_jk - D1R2_jk - D2R1_jk + R1R2_jk
+        den_jk = R1R2_jk
+
+        jackknife_samples[region] = _safe_divide(num_jk, den_jk)
 
     return xi_full, jackknife_samples
 
