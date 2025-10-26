@@ -18,6 +18,6 @@ Example
 from .correlations import calculate_correlation
 
 __all__ = [
-	"calculate_correlation",
+	"calculate_correlation"
 ]
 
