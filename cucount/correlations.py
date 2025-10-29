@@ -11,7 +11,7 @@ This computes the correlation for arbitrary spin combinations and, if requested,
 jackknife errors using a lightweight region assignment (following the approach here:
  https://github.com/theonefromnowhere/JK_pycorr/blob/main/CF_JK_ST_conf.py). It normalizes spin
 statistics by the pair counts (spin-i/0) so the return values are per-pair
-averages in each angular bin. For spin=(0,0), the raw per-bin pair counts we use 
+averages in each angular bin. For spin=(0,0), counts we use 
 the Landy–Szalay formula.
 
 """
