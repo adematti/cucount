@@ -14,12 +14,14 @@
 namespace py = pybind11;
 namespace ffi = xla::ffi;
 
-static BinAttrs battrs;
 static SelectionAttrs sattrs;
+static BinAttrs battrs;
+static WeightAttrs wattrs;
 
 
-void set_attrs_py(BinAttrs_py& battrs_py, const SelectionAttrs_py& sattrs_py = SelectionAttrs_py()) {
+void set_attrs_py(BinAttrs_py& battrs_py, const WeightAttrs_py& sattrs_py = WeightAttrs_py(), const SelectionAttrs_py& sattrs_py = SelectionAttrs_py()) {
     battrs = battrs_py.data();
+    wattrs = wattrs_py.data();
     sattrs = sattrs_py.data();
 }
 
@@ -65,7 +67,7 @@ ffi::Error count2Impl(cudaStream_t stream,
     set_mesh(list_particles, list_mesh, mattrs, &membuffer, stream);
     // Perform the computation
     // Note: FFI interface doesn't support spin parameters yet, defaulting to spin1=0, spin2=0
-    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, 0, 0, &membuffer, stream);
+    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, wattrs, &membuffer, stream);
 
     cudaError_t last_error = cudaGetLastError();
     if (last_error != cudaSuccess) {
@@ -122,6 +124,7 @@ PYBIND11_MODULE(ffi_cucount, m) {
 
     m.def("set_attrs", &set_attrs_py, "Set attributes",
         py::arg("battrs"),
+        py::arg("wattrs") = WeightAttrs_py(), // Default value
         py::arg("sattrs") = SelectionAttrs_py()); // Default value
 
     m.def("count2", []() { return EncapsulateFfiCall(count2ffi); });
