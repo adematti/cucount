@@ -58,6 +58,7 @@ MIN_THETA = 0.01  # degrees
 MAX_THETA = 1.0
 NBINS = 20
 
+
 def load_desi_catalog(path):
     """Load DESI LRG catalog"""
     with fits.open(path) as hdul:
@@ -65,8 +66,9 @@ def load_desi_catalog(path):
         ra = data['RA']
         dec = data['DEC']
         weights = data['WEIGHT'] * data['WEIGHT_FKP']
-    print(f"  Loaded {len(ra)} objects from {path.split('/')[-1]}")
+    print(f"  Loaded {len(ra)} objects from {os.path.basename(path)}")
     return ra, dec, weights
+
 
 def load_unions_catalog(path, max_sources=None):
     """Load UNIONS shape catalog with optional subsampling"""
@@ -99,6 +101,7 @@ def load_unions_catalog(path, max_sources=None):
     print(f"  e2 range: [{e2.min():.3f}, {e2.max():.3f}]")
     return ra, dec, weights, e1, e2
 
+
 def get_cartesian(ra, dec):
     """Convert RA/Dec to unit sphere Cartesian coordinates"""
     conv = np.pi / 180.
@@ -107,6 +110,7 @@ def get_cartesian(ra, dec):
     y = np.cos(theta) * np.sin(phi)
     z = np.sin(theta)
     return np.column_stack([x, y, z])
+
 
 def create_particles(ra, dec, weights, ellipticities=None):
     """Create cucount Particles object from sky coordinates
@@ -140,19 +144,20 @@ def create_particles(ra, dec, weights, ellipticities=None):
         # Create particles with sky coordinates only (for spin-0 fields)
         return Particles(positions, weights, sky_coords)
 
+
 def compute_wgg_cucount(lenses, randoms, theta_edges_rad):
     """Compute w_gg using cucount with Landy-Szalay estimator"""
 
     t0 = time.time()
 
+    battrs = BinAttrs(theta=theta_edges_rad)
     # Compute pair counts (no spin)
     print("  Computing DD...")
-    DD = count2(lenses, lenses, battrs=BinAttrs(theta=theta_edges_rad))
+    DD = count2(lenses, lenses, battrs=battrs)
     print("  Computing DR...")
-    DR = count2(lenses, randoms, battrs=BinAttrs(theta=theta_edges_rad))
+    DR = count2(lenses, randoms, battrs=battrs)
     print("  Computing RR...")
-    RR = count2(randoms, randoms, battrs=BinAttrs(theta=theta_edges_rad))
-
+    RR = count2(randoms, randoms, battrs=battrs)
     # Normalization
     DD_norm = np.sum(lenses.weights)**2 - np.sum(lenses.weights**2)
     DR_norm = np.sum(lenses.weights) * np.sum(randoms.weights)
@@ -163,6 +168,7 @@ def compute_wgg_cucount(lenses, randoms, theta_edges_rad):
 
     elapsed = time.time() - t0
     return xi, elapsed
+
 
 def compute_wg_cucount(lenses, sources, randoms, theta_edges_rad):
     """Compute galaxy-shear correlations using cucount"""
@@ -195,6 +201,7 @@ def compute_wg_cucount(lenses, sources, randoms, theta_edges_rad):
     elapsed = time.time() - t0
     return gamma_t, gamma_x, elapsed
 
+
 def compute_wss_cucount(sources, theta_edges_rad):
     """Compute shape-shape correlations using cucount"""
 
@@ -217,6 +224,7 @@ def compute_wss_cucount(sources, theta_edges_rad):
 
     elapsed = time.time() - t0
     return xi_plus_plus, xi_cross_plus, xi_cross_cross, elapsed
+
 
 def compute_correlations_treecorr(lenses_data, sources_data, randoms_data, theta_edges_deg, correlations, bin_slop=0.01, metric='Euclidean'):
     """Compute correlations using TreeCorr for comparison
@@ -307,6 +315,7 @@ def compute_correlations_treecorr(lenses_data, sources_data, randoms_data, theta
 
     return results, timings
 
+
 def print_timing_table(cucount_timings, treecorr_timings=None):
     """Print a formatted timing comparison table"""
 
@@ -343,6 +352,7 @@ def print_timing_table(cucount_timings, treecorr_timings=None):
                 print(f"{label:<15} {cucount_time:>10.3f}")
 
     print("=" * 60)
+
 
 def plot_correlations(results, theta_centers, correlations, output_prefix='correlation'):
     """Plot all correlation functions"""
@@ -416,6 +426,7 @@ def plot_correlations(results, theta_centers, correlations, output_prefix='corre
     plt.savefig(outfile, dpi=150)
     print(f"Saved plot to {outfile}")
     plt.close()
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -583,4 +594,5 @@ def main():
     print("=" * 60)
 
 if __name__ == "__main__":
+
     main()
