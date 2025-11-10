@@ -51,7 +51,7 @@ def get_catalogs(write=False):
 
 
 def test(write=False):
-    from cucount.numpy import BinAttrs, Particles, count2
+    from cucount.numpy import BinAttrs, WeightAttrs, Particles, count2
     import treecorr
 
     def get_cartesian(ra, dec):
@@ -63,17 +63,13 @@ def test(write=False):
         z = np.sin(theta)
         return np.column_stack([x, y, z])
 
-    def create_cucount_particles(catalog, with_ellipticies=True):
+    def create_cucount_particles(catalog):
         ra, dec, e1, e2, weights = catalog
         # Convert to 3D unit sphere Cartesian coordinates
         positions = get_cartesian(ra, dec)
         # Sky coordinates for spin projections (RA, Dec in radians)
         sky_coords = np.column_stack([ra * np.pi/180, dec * np.pi/180])
-        args = [positions, weights, sky_coords]
-        if with_ellipticies:
-            # convention
-            args.append(- np.column_stack([e1, e2]))
-        return Particles(*args)
+        return Particles(positions, weights, sky_coords=sky_coords, spin_values=-np.column_stack([e1, e2]))
 
     def create_treecorr_catalog(catalog):
         ra, dec, e1, e2, weights = catalog
@@ -89,8 +85,8 @@ def test(write=False):
     nbins = len(edges) - 1
 
     # gg
-    particles = [create_cucount_particles(catalog, with_ellipticies=False) for catalog in catalogs]
-    counts = count2(*particles, battrs=battrs, spin1=0, spin2=0)
+    particles = [create_cucount_particles(catalog) for catalog in catalogs]
+    counts = count2(*particles, battrs=battrs)['weights']
     fn = dirname / 'counts_gg.txt'
     if write:
         np.savetxt(fn, counts)
@@ -100,7 +96,8 @@ def test(write=False):
     
     # gs
     particles = [create_cucount_particles(catalog) for catalog in catalogs]
-    counts = count2(*particles, battrs=battrs, spin1=0, spin2=2)
+    wattrs = WeightAttrs(spin=(0, 2))
+    counts = count2(*particles, battrs=battrs, wattrs=wattrs)
     counts = np.column_stack(list(counts.values()))
     fn = dirname / 'counts_gs.txt'
     if write:
@@ -110,8 +107,9 @@ def test(write=False):
         assert np.allclose(counts, counts_ref)
 
     # ss
-    particles = [create_cucount_particles(catalog, with_ellipticies=True) for catalog in catalogs]
-    counts = count2(*particles, battrs=battrs, spin1=2, spin2=2)
+    particles = [create_cucount_particles(catalog) for catalog in catalogs]
+    wattrs = WeightAttrs(spin=(2, 2))
+    counts = count2(*particles, battrs=battrs, wattrs=wattrs)
     counts = np.column_stack(list(counts.values()))
     fn = dirname / 'counts_ss.txt'
     if write:

@@ -261,6 +261,43 @@ struct SelectionAttrs_py {
 };
 
 
+// Expose the WeightAttrs struct to Python
+struct WeightAttrs_py {
+    std::vector<size_t> spin;
+
+    // Default constructor
+    WeightAttrs_py() {}
+
+    // Constructor that takes a Python dictionary
+    WeightAttrs_py(const py::kwargs& kwargs) {
+        for (auto item : kwargs) {
+            // Extract the variable name and range tuple
+            std::string var_name = py::cast<std::string>(item.first);
+            if (var_name == "spin") {
+                if (py::isinstance<py::iterable>(item.second)) {
+                    for (auto v : py::cast<py::iterable>(item.second)) {
+                        spin.push_back(py::cast<size_t>(v));
+                    }
+                }
+                else {
+                    throw std::invalid_argument("Invalid type for 'spin' (expected iterable)");
+                }
+            }
+            else {
+                throw std::invalid_argument("Invalid argument " + var_name);
+            }
+        }
+    }
+
+    WeightAttrs data() const {
+        WeightAttrs wattrs;
+        for (size_t i = 0; i < MAX_NMESH; i++) wattrs.spin[i] = 0;
+        for (size_t i = 0; i < spin.size(); i++) wattrs.spin[i] = spin[i];
+        return wattrs;
+    }
+};
+
+
 void prepare_mesh_attrs(MeshAttrs *mattrs, BinAttrs battrs, SelectionAttrs sattrs) {
 
     for (size_t axis = 0; axis < NDIM; axis++) {

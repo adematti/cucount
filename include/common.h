@@ -106,6 +106,12 @@ typedef struct {
 } MeshAttrs;
 
 
+typedef struct {
+    size_t spin[MAX_NMESH];
+
+} WeightAttrs;
+
+
 // Device memory buffer struct
 struct DeviceMemoryBuffer {
     void* ptr;

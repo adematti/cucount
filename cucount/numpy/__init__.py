@@ -1,1 +1,1 @@
-from cucountlib.cucount import count2, Particles, BinAttrs, SelectionAttrs, setup_logging
+from cucountlib.cucount import count2, Particles, BinAttrs, WeightAttrs, SelectionAttrs, setup_logging
