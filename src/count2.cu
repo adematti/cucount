@@ -176,6 +176,55 @@ __device__ inline void compute_spin_projection(
 }
 
 
+__device__ inline void compute_spin_projection_cartesian(
+    const FLOAT *r1, const FLOAT *r2, FLOAT s1, FLOAT s2, int spin,
+    FLOAT *splus_out, FLOAT *scross_out)
+{
+    if (r1 != NULL && r2 != NULL && spin != 0) {
+
+        // Reference "north pole" vector
+        const FLOAT zhat[3] = {0.0, 0.0, 1.0};
+
+        // Compute east and north basis at r1
+        FLOAT east[3] = {
+            zhat[1]*r1[2] - zhat[2]*r1[1],
+            zhat[2]*r1[0] - zhat[0]*r1[2],
+            zhat[0]*r1[1] - zhat[1]*r1[0]
+        };
+        FLOAT east_norm = rsqrtf(east[0]*east[0] + east[1]*east[1] + east[2]*east[2]);
+        east[0] *= east_norm; east[1] *= east_norm; east[2] *= east_norm;
+
+        FLOAT north[3] = {
+            r1[1]*east[2] - r1[2]*east[1],
+            r1[2]*east[0] - r1[0]*east[2],
+            r1[0]*east[1] - r1[1]*east[0]
+        };
+
+        // Project r2 into tangent plane at r1
+        FLOAT dot12 = r1[0]*r2[0] + r1[1]*r2[1] + r1[2]*r2[2];
+        FLOAT p[3] = {
+            r2[0] - dot12 * r1[0],
+            r2[1] - dot12 * r1[1],
+            r2[2] - dot12 * r1[2]
+        };
+
+        // Position angle (no need for normalization of p)
+        FLOAT pe = p[0]*east[0] + p[1]*east[1] + p[2]*east[2];
+        FLOAT pn = p[0]*north[0] + p[1]*north[1] + p[2]*north[2];
+        FLOAT phi = atan2(pe, pn);
+
+        FLOAT sphi = sin(spin * phi);
+        FLOAT cphi = cos(spin * phi);
+
+        *splus_out  = -(s1 * cphi + s2 * sphi);
+        *scross_out =  (s1 * sphi - s2 * cphi);
+    } else {
+        *splus_out = 0.0;
+        *scross_out = 0.0;
+    }
+}
+
+
 __device__ void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2) {
     if ((ellmin % 2 == 0) && (ellstep % 2 == 0)) {
         for (int ell = ellmin; ell <= ellmax; ell+=ellstep) {
@@ -350,8 +399,11 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             FLOAT splus1, scross1, splus2, scross2;
 
             // Project both tracers' spin_values
-            compute_spin_projection(sky_coords1, sky_coords2, s1_1, s2_1, wattrs.spin[0], &splus1, &scross1);
-            compute_spin_projection(sky_coords1, sky_coords2, s1_2, s2_2, wattrs.spin[1], &splus2, &scross2);
+            //compute_spin_projection(sky_coords1, sky_coords2, s1_1, s2_1, wattrs.spin[0], &splus1, &scross1);
+            //compute_spin_projection(sky_coords1, sky_coords2, s1_2, s2_2, wattrs.spin[1], &splus2, &scross2);
+
+            compute_spin_projection_cartesian(sposition1, sposition2, s1_1, s2_1, wattrs.spin[0], &splus1, &scross1);
+            compute_spin_projection_cartesian(sposition1, sposition2, s1_2, s2_2, wattrs.spin[1], &splus2, &scross2);
 
             // Compute three spin-spin correlations: ++, ×+, ××
             FLOAT plus_plus = splus1 * splus2;
@@ -368,7 +420,8 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             FLOAT splus, scross;
 
             // Project second tracer's spin_values
-            compute_spin_projection(sky_coords1, sky_coords2, s1_2, s2_2, wattrs.spin[1], &splus, &scross);
+            //compute_spin_projection(sky_coords1, sky_coords2, s1_2, s2_2, wattrs.spin[1], &splus, &scross);
+            compute_spin_projection_cartesian(sposition1, sposition2, s1_2, s2_2, wattrs.spin[1], &splus, &scross);
 
             // Accumulate both components:
             // First half of array: splus results
@@ -381,7 +434,8 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             FLOAT splus, scross;
 
             // Project first tracer's spin_values (note reversed sky coordinates)
-            compute_spin_projection(sky_coords2, sky_coords1, s1_1, s2_1, wattrs.spin[0], &splus, &scross);
+            //compute_spin_projection(sky_coords2, sky_coords1, s1_1, s2_1, wattrs.spin[0], &splus, &scross);
+            compute_spin_projection_cartesian(sposition2, sposition1, s1_1, s2_1, wattrs.spin[0], &splus, &scross);
 
             // Accumulate both components
             atomicAdd(&(counts[ibin]), weight * splus);                    // plus
