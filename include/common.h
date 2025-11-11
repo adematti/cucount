@@ -77,7 +77,7 @@ IndexValue get_index_value(int size_spin, int size_individual_weight, int size_b
         index_value.size_bitwise_weight = size_bitwise_weight;
         index_value.size += size_bitwise_weight;
     }
-    return index_value
+    return index_value;
 }
 
 
@@ -102,15 +102,15 @@ size_t get_count2_names(IndexValue index_value1, IndexValue index_value2,
         names[i][0] = '\0';
     }
 
-    if (a && b) {
+    if (s1 && s2) {
         strncpy(names[0], "weight_plus_plus", SIZE_NAME-1);
         strncpy(names[1], "weight_plus_cross", SIZE_NAME-1);
         strncpy(names[2], "weight_cross_cross", SIZE_NAME-1);
-    } else if (a ^ b) {
-        strncpy(names_out[0], "weight_plus", SIZE_NAME-1);
-        strncpy(names_out[1], "weight_cross", SIZE_NAME-1);
+    } else if (s1 ^ s2) {
+        strncpy(names[0], "weight_plus", SIZE_NAME-1);
+        strncpy(names[1], "weight_cross", SIZE_NAME-1);
     } else {
-        strncpy(names_out[0], "weight", SIZE_NAME-1);
+        strncpy(names[0], "weight", SIZE_NAME-1);
     }
 
     return n;
