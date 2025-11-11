@@ -118,69 +118,12 @@ __device__ inline bool is_selected(FLOAT *sposition1, FLOAT *sposition2, FLOAT *
 }
 
 
-__device__ inline FLOAT compute_position_angle_from_sky_coords(
-    FLOAT ra1, FLOAT dec1, FLOAT ra2, FLOAT dec2) {
-    // Compute position angle between two points on the sky using RA, Dec
-    // Returns azimuthal angle φ in radians
-
-    FLOAT delta_ra = ra2 - ra1;
-
-    // Compute position angle using spherical trigonometry
-    FLOAT cos_dec1 = cos(dec1);
-    FLOAT sin_dec1 = sin(dec1);
-    FLOAT cos_dec2 = cos(dec2);
-    FLOAT sin_dec2 = sin(dec2);
-    FLOAT cos_delta_ra = cos(delta_ra);
-    FLOAT sin_delta_ra = sin(delta_ra);
-
-    // Position angle formula from spherical astronomy
-    FLOAT y = sin_delta_ra * cos_dec2;
-    FLOAT x = cos_dec1 * sin_dec2 - sin_dec1 * cos_dec2 * cos_delta_ra;
-
-    FLOAT phi = atan2(y, x);
-
-    // Ensure phi is in [0, 2π]
-    if (phi < 0) phi += 2 * M_PI;
-
-    return phi;
-}
-
-__device__ inline void compute_spin_projection(
-    FLOAT *sky_coords1, FLOAT *sky_coords2, FLOAT s1, FLOAT s2, int spin,
-    FLOAT *splus_out, FLOAT *scross_out) {
-    // Use sky coordinates (RA, Dec) if available to compute position angle
-    // sky_coords format: [RA, Dec] in radians
-
-    if (sky_coords1 != NULL && sky_coords2 != NULL && spin != 0) {
-        // Extract RA, Dec from sky coordinates (2D array)
-        FLOAT ra1 = sky_coords1[0];
-        FLOAT dec1 = sky_coords1[1];
-        FLOAT ra2 = sky_coords2[0];
-        FLOAT dec2 = sky_coords2[1];
-
-        // Compute position angle using sky coordinates
-        FLOAT phi = compute_position_angle_from_sky_coords(ra1, dec1, ra2, dec2);
-
-        // Project spin components using the sky-based position angle
-        FLOAT cos_sphi = cos(spin * phi);
-        FLOAT sin_sphi = sin(spin * phi);
-
-        // Tangential and cross components for generic spin
-        *splus_out = -(s1 * cos_sphi + s2 * sin_sphi);   // tangential (s+)
-        *scross_out = (s1 * sin_sphi - s2 * cos_sphi);  // cross (s×)
-    } else {
-        // Fallback: set to zero if sky coordinates not available or spin = 0
-        *splus_out = 0.0;
-        *scross_out = 0.0;
-    }
-}
-
-
 __device__ inline void compute_spin_projection_cartesian(
-    const FLOAT *r1, const FLOAT *r2, FLOAT s1, FLOAT s2, int spin,
+    const FLOAT *r1, const FLOAT *r2, FLOAT* s, int spin,
     FLOAT *splus_out, FLOAT *scross_out)
 {
-    if (r1 != NULL && r2 != NULL && spin != 0) {
+    // r1 and r2 are assumed on the sphere
+    if (spin != 0) {
 
         // Reference "north pole" vector
         const FLOAT zhat[3] = {0.0, 0.0, 1.0};
@@ -216,11 +159,11 @@ __device__ inline void compute_spin_projection_cartesian(
         FLOAT sphi = sin(spin * phi);
         FLOAT cphi = cos(spin * phi);
 
-        *splus_out  = -(s1 * cphi + s2 * sphi);
-        *scross_out =  (s1 * sphi - s2 * cphi);
+        *splus_out  = -(s[0] * cphi + s[1] * sphi);
+        *scross_out =  (s[0] * sphi - s[1] * cphi);
     } else {
-        *splus_out = 0.0;
-        *scross_out = 0.0;
+        *splus_out = - s[0];
+        *scross_out = - s[1];
     }
 }
 
@@ -296,7 +239,7 @@ __device__ FLOAT get_bessel(int ell, FLOAT x) {
 }
 
 
-__device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2, FLOAT weight1, FLOAT weight2, FLOAT *spin_vals1, FLOAT *spin_vals2, FLOAT *sky_coords1, FLOAT *sky_coords2, BinAttrs battrs, WeightAttrs wattrs) {
+__device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2, FLOAT *value1, FLOAT *value2, IndexValue index_value1, IndexValue index_value2, BinAttrs battrs, WeightAttrs wattrs) {
     int ibin = 0;
     FLOAT diff[NDIM];
     difference(diff, position2, position1);
@@ -388,72 +331,54 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             break;
         }
     }
-    FLOAT weight = weight1 * weight2;
+    FLOAT pair_weight = 1.;
+    if (index_value1.size_individual_weight) pair_weight *= value1[index_value1.start_individual_weight];
+    if (index_value2.size_individual_weight) pair_weight *= value2[index_value2.start_individual_weight];
+    // TODO: add bitwise and angular upweights here
+    FLOAT weight[MAX_NWEIGHT];
+    size_t nweight = 1;
+    FLOAT splus1, scross1, splus2, scross2;
+    if (index_value1.size_spin) compute_spin_projection_cartesian(sposition1, sposition2, value1[index_value1.start_spin], wattrs.spin[0], &splus1, &scross1);
+    if (index_value2.size_spin) compute_spin_projection_cartesian(sposition1, sposition2, value2[index_value1.start_spin], wattrs.spin[1], &splus2, &scross2);
 
+    if (index_value1.size_spin && index_value2.size_spin) {
+        nweight = 3;
+        weight[0] = pair_weight * splus1 * splus2;
+        weight[1] = pair_weight * scross1 * splus2;
+        weight[1] = pair_weight * scross1 * scross2;
+    }
+    else if (index_value1.size_spin) {
+        nweight = 2;
+        weight[0] = pair_weight * splus1;
+        weight[1] = pair_weight * scross1;
+    }
+    else if (index_value2.size_spin) {
+        nweight = 2;
+        weight[0] = pair_weight * splus2;
+        weight[1] = pair_weight * scross2;
+    }
+    else { // no spin
+        nweight = 1;
+        weight[0] = pair_weight;
+    }
     if (i == battrs.ndim) {
-        // Check correlation function spin parameters and available tracer spin_values
-        if (spin_vals1 != NULL && wattrs.spin[0] != 0 && spin_vals2 != NULL && wattrs.spin[1] != 0) {
-            // Both correlation spins non-zero: compute spin1-spin2 correlation
-            FLOAT s1_1 = spin_vals1[0], s2_1 = spin_vals1[1];  // spin_values of first tracer
-            FLOAT s1_2 = spin_vals2[0], s2_2 = spin_vals2[1];  // spin_values of second tracer
-            FLOAT splus1, scross1, splus2, scross2;
-
-            // Project both tracers' spin_values
-            //compute_spin_projection(sky_coords1, sky_coords2, s1_1, s2_1, wattrs.spin[0], &splus1, &scross1);
-            //compute_spin_projection(sky_coords1, sky_coords2, s1_2, s2_2, wattrs.spin[1], &splus2, &scross2);
-
-            compute_spin_projection_cartesian(sposition1, sposition2, s1_1, s2_1, wattrs.spin[0], &splus1, &scross1);
-            compute_spin_projection_cartesian(sposition1, sposition2, s1_2, s2_2, wattrs.spin[1], &splus2, &scross2);
-
-            // Compute three spin-spin correlations: ++, ×+, ××
-            FLOAT plus_plus = splus1 * splus2;
-            FLOAT cross_plus = scross1 * splus2;
-            FLOAT cross_cross = scross1 * scross2;
-
-            // Store in three memory locations: [++][×+][××]
-            atomicAdd(&(counts[ibin]), weight * plus_plus);                        // plus_plus
-            atomicAdd(&(counts[ibin + battrs.size]), weight * cross_plus);         // cross_plus
-            atomicAdd(&(counts[ibin + 2 * battrs.size]), weight * cross_cross);    // cross_cross
-
-        } else if (spin_vals2 != NULL && wattrs.spin[1] != 0) {  // Correlation spin2 non-zero for second tracer
-            FLOAT s1_2 = spin_vals2[0], s2_2 = spin_vals2[1];  // spin_values of second tracer
-            FLOAT splus, scross;
-
-            // Project second tracer's spin_values
-            //compute_spin_projection(sky_coords1, sky_coords2, s1_2, s2_2, wattrs.spin[1], &splus, &scross);
-            compute_spin_projection_cartesian(sposition1, sposition2, s1_2, s2_2, wattrs.spin[1], &splus, &scross);
-
-            // Accumulate both components:
-            // First half of array: splus results
-            // Second half of array: scross results
-            atomicAdd(&(counts[ibin]), weight * splus);                    // plus
-            atomicAdd(&(counts[ibin + battrs.size]), weight * scross);     // cross
-
-        } else if (spin_vals1 != NULL && wattrs.spin[0] != 0) {  // Correlation spin1 non-zero for first tracer
-            FLOAT s1_1 = spin_vals1[0], s2_1 = spin_vals1[1];  // spin_values of first tracer
-            FLOAT splus, scross;
-
-            // Project first tracer's spin_values (note reversed sky coordinates)
-            //compute_spin_projection(sky_coords2, sky_coords1, s1_1, s2_1, wattrs.spin[0], &splus, &scross);
-            compute_spin_projection_cartesian(sposition2, sposition1, s1_1, s2_1, wattrs.spin[0], &splus, &scross);
-
-            // Accumulate both components
-            atomicAdd(&(counts[ibin]), weight * splus);                    // plus
-            atomicAdd(&(counts[ibin + battrs.size]), weight * scross);     // cross
-
-        } else {
-            // Regular pair count when correlation spins are zero
-            atomicAdd(&(counts[ibin]), weight);
+        for (size_t iweight; iweight < nweight; iweight++) {
+            atomicAdd(&(counts[ibin + iweight * battrs.size]), weight[iweight]);
         }
     }
-    if ((i == battrs.ndim - 1) && (var == VAR_POLE)) {
+
+    else if ((i == battrs.ndim - 1) && (var == VAR_POLE)) {
         FLOAT legendre_cache[MAX_POLE + 1];
         set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
         for (int ill = 0; ill < battrs.shape[i]; ill++) {
             size_t ell;
             if (battrs.asize[i] > 0) ell = (size_t) battrs.array[i][ill];
             else ell = ill * ellstep + ellmin;
-            atomicAdd(&(counts[ibin * battrs.shape[i] + ill]), weight * (2 * ell + 1) * legendre_cache[ell]);
+            size_t ibin_loc = ibin * battrs.shape[i] + ill;
+            FLOAT leg = (2 * ell + 1) * legendre_cache[ell];
+            for (size_t iweight; iweight < nweight; iweight++) {
+                atomicAdd(&(counts[ibin_loc + iweight * battrs.size]), weight[iweight] * leg);
+            }
         }
     }
     else if ((i == battrs.ndim - 2) && (battrs.var[i] == VAR_K) && (battrs.var[i + 1] == VAR_POLE)) {
@@ -463,13 +388,16 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             size_t ell;
             if (battrs.asize[i] > 0) ell = (size_t) battrs.array[i][ill];
             else ell = ill * ellstep + ellmin;
-            FLOAT weight_legendre = pow(-1, ell / 2) * weight * (2 * ell + 1) * legendre_cache[ell];
+            FLOAT leg = pow(-1, ell / 2) * (2 * ell + 1) * legendre_cache[ell];
             for (int ik = 0; ik < battrs.shape[i]; ik++) {
                 FLOAT k = 0.;
                 if (battrs.asize[i] > 0) k = battrs.array[i][ik];
                 else k = ik * battrs.step[i] + battrs.min[i];
                 size_t ibin_loc = (ibin * battrs.shape[i] + ik) * battrs.shape[i + 1] + ill;
-                atomicAdd(&(counts[ibin_loc]), weight_legendre * get_bessel(ell, k * s));
+                FLOAT leg_bessel = leg * get_bessel(ell, k * s);
+                for (size_t iweight; iweight < nweight; iweight++) {
+                    atomicAdd(&(counts[ibin_loc + iweight * battrs.size]), weight[iweight] * leg_bessel);
+                }
             }
         }
     }
@@ -493,12 +421,7 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh me
     for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
         FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
         FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
-        FLOAT weight1 = mesh1.weights[ii];
-
-        // Extract spin and sky coordinates for particle 1 (NULL-safe)
-        FLOAT *spin_vals1 = (mesh1.spin_values != NULL) ? &(mesh1.spin_values[2 * ii]) : NULL;
-        FLOAT *sky_coords1 = (mesh1.sky_coords != NULL) ? &(mesh1.sky_coords[2 * ii]) : NULL;
-
+        FLOAT *value1 = &(mesh1.spositions[mesh1.nvalues * ii]);
         int bounds[2 * NDIM];
         set_angular_bounds(sposition1, bounds);
         for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
@@ -510,19 +433,13 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh me
                 size_t cum2 = mesh2.cumnparticles[icell];
                 FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);
                 FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
-                FLOAT *weights2 = &(mesh2.weights[cum2]);
-
+                FLOAT *values2 = &(mesh2.values[mesh2.nvalues * cum2]);
                 for (size_t jj = 0; jj < np2; jj++) {
                     if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
                         continue;
                     }
-
-                    // Extract spin and sky coordinates for particle 2 (NULL-safe)
-                    FLOAT *spin_vals2 = (mesh2.spin_values != NULL) ? &(mesh2.spin_values[2 * (cum2 + jj)]) : NULL;
-                    FLOAT *sky_coords2 = (mesh2.sky_coords != NULL) ? &(mesh2.sky_coords[2 * (cum2 + jj)]) : NULL;
-
                     add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                              weight1, weights2[jj], spin_vals1, spin_vals2, sky_coords1, sky_coords2, battrs, wattrs);
+                               value1, values2[mesh2.nvalues * jj], mesh1.index_value, mesh2.index_value, battrs, wattrs);
                 }
             }
         }
@@ -547,12 +464,7 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh 
     for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
         FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
         FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
-        FLOAT weight1 = mesh1.weights[ii];
-
-        // Extract spin and sky coordinates for particle 1 (NULL-safe)
-        FLOAT *spin_vals1 = (mesh1.spin_values != NULL) ? &(mesh1.spin_values[2 * ii]) : NULL;
-        FLOAT *sky_coords1 = (mesh1.sky_coords != NULL) ? &(mesh1.sky_coords[2 * ii]) : NULL;
-
+        FLOAT *value1 = &(mesh1.spositions[mesh1.nvalues * ii]);
         int bounds[2 * NDIM];
         set_cartesian_bounds(position1, bounds);
         //printf("%d %d %d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
@@ -566,18 +478,13 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh 
                     size_t cum2 = mesh2.cumnparticles[icell];
                     FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);
                     FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
-                    FLOAT *weights2 = &(mesh2.weights[cum2]);
+                    FLOAT *values2 = &(mesh2.values[mesh2.nvalues * cum2]);
                     for (size_t jj = 0; jj < np2; jj++) {
                         if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
                             continue;
                         }
-
-                        // Extract spin and sky coordinates for particle 2 (NULL-safe)
-                        FLOAT *spin_vals2 = (mesh2.spin_values != NULL) ? &(mesh2.spin_values[2 * (cum2 + jj)]) : NULL;
-                        FLOAT *sky_coords2 = (mesh2.sky_coords != NULL) ? &(mesh2.sky_coords[2 * (cum2 + jj)]) : NULL;
-
                         add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                                  weight1, weights2[jj], spin_vals1, spin_vals2, sky_coords1, sky_coords2, battrs, wattrs);
+                        value1, values2[mesh2.nvalues * jj], mesh1.index_value, mesh2.index_value, battrs, wattrs);
                     }
                 }
             }
@@ -617,8 +524,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     float elapsed_time;
 
     // Determine output array size based on spin parameters
-    size_t nspins = (wattrs.spin[0] > 0) + (wattrs.spin[1] > 0);
-    size_t csize = (1 + nspins) * battrs.size;
+    size_t csize = get_count2_names(list_mesh[0].index_value, list_mesh[1].index_value, NULL) * battrs.size;
 
     // Initialize histograms
     CUDA_CHECK(cudaMemset(counts, 0, csize * sizeof(FLOAT)));

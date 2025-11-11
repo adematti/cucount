@@ -15,71 +15,51 @@ static bool is_contiguous(py::array array) {
     return array.flags() & py::array::c_style;
 }
 
+
+
 // Expose the Particles struct to Python
+// NB: We could have made this more Pythonic, with arguments "spin_values", "individual_weights", "bitwise_weights", etc.
+// But for simplicity, and given we also have ffi_count.cu, let's differ this to pure Python
 struct Particles_py {
     py::array_t<FLOAT> positions;
-    py::array_t<FLOAT> weights;
-    py::array_t<FLOAT> spin_values; // Optional spin values array
-    py::array_t<FLOAT> sky_coords; // Optional RA, Dec array
+    py::array_t<FLOAT> values; // Optional spin values array
+    IndexValue index_value;
 
     // Single constructor accepting optional sky_coords and spin_values (can be None)
-    Particles_py(py::array_t<FLOAT> positions_, py::array_t<FLOAT> weights_,
-                 py::object sky_coords_ = py::none(), py::object spin_values_ = py::none())
-        : positions(positions_), weights(weights_), spin_values(py::array_t<FLOAT>()), sky_coords(py::array_t<FLOAT>()) {
+    Particles_py(py::array_t<FLOAT> positions_, py::array_t<FLOAT> values_ = py::none(),
+        const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0)
+        : positions(positions_), values(py::array_t<FLOAT>()) {
+
+        this->index_value = get_index_value(size_spin, size_individual_weight, size_bitwise_weight);
 
         // Ensure positions are C-contiguous
         if (!is_contiguous(this->positions)) this->positions = py::array_t<FLOAT>(this->positions.attr("copy")());
-
-        // Ensure weights are C-contiguous
-        if (!is_contiguous(this->weights)) this->weights = py::array_t<FLOAT>(this->weights.attr("copy")());
-
-        // Check that positions and weights have the same length
         size_t npositions = this->positions.shape(0);
-        size_t nweights = this->weights.shape(0);
-        if (npositions != nweights) {
-            throw std::invalid_argument(
-                "Particles_py: positions and weights must have the same length, but got positions.shape(0) = " +
-                std::to_string(npositions) + " and weights.shape(0) = " + std::to_string(nweights)
-            );
-        }
 
-        // Optional: sky_coords
-        if (!py::isinstance<py::none>(sky_coords_)) {
-            auto arr = py::cast<py::array_t<FLOAT>>(sky_coords_);
-            if (!is_contiguous(arr)) arr = py::array_t<FLOAT>(arr.attr("copy")());
-            this->sky_coords = arr;
-            // Validate dims/length
-            if (this->sky_coords.ndim() != 2 || this->sky_coords.shape(1) != 2) {
-                throw std::invalid_argument("Particles_py: sky_coords must be a 2D array with shape (N, 2) for (RA, Dec) components");
-            }
-            size_t nsky_coords = this->sky_coords.shape(0);
-            if (nsky_coords != npositions) {
+        if (this->index_value.size) {
+            if (py::isinstance<py::none>(values_)) {
                 throw std::invalid_argument(
-                    "Particles_py: sky_coords and positions must have the same length, but got sky_coords.shape(0) = " +
-                    std::to_string(nsky_coords) + " and positions.shape(0) = " + std::to_string(npositions)
+                    "Particles_py: non-trivial values are indicated with size_*, but input values are empty")
                 );
             }
-        }
-
-        // Optional: spin_values
-        if (!py::isinstance<py::none>(spin_values_)) {
-            auto arr = py::cast<py::array_t<FLOAT>>(spin_values_);
-            if (!is_contiguous(arr)) arr = py::array_t<FLOAT>(arr.attr("copy")());
-            this->spin_values = arr;
-            // Validate dims/length
-            if (this->spin_values.ndim() != 2 || this->spin_values.shape(1) != 2) {
-                throw std::invalid_argument("Particles_py: spin_values must be a 2D array with shape (N, 2) for (s1, s2) components");
-            }
-            size_t nspin_values = this->spin_values.shape(0);
-            if (nspin_values != npositions) {
+            auto array = py::cast<py::array_t<FLOAT>>(weights_);
+            if (!is_contiguous(array)) array = py::array_t<FLOAT>(array.attr("copy")());
+            if (array.shape(0) != npositions) {
                 throw std::invalid_argument(
-                    "Particles_py: spin_values and positions must have the same length, but got spin_values.shape(0) = " +
-                    std::to_string(nspin_values) + " and positions.shape(0) = " + std::to_string(npositions)
+                    "Particles_py: positions and values must have the same length, but got positions.shape(0) = " +
+                    std::to_string(npositions) + " and values.shape(0) = " + std::to_string(array.shape(0))
                 );
             }
+            if (array.shape(1) < this->index_value.size) {
+                throw std::invalid_argument(
+                    "Particles_py: expected values with values.shape(1) >= " +
+                    std::to_string(this->index_value.size) + " but only got values.shape(1) = " + std::to_string(array.shape(1))
+                );
+            }
+            this->values = array;
         }
+
     }
-
 
     // Method to get the number of particles automatically
     size_t size() const {
@@ -88,19 +68,10 @@ struct Particles_py {
 
     Particles data() {
         Particles particles;
-        particles.positions = positions.mutable_data();
-        particles.weights = weights.mutable_data();
+        particles.index_value = index_value;
         particles.size = size();
-        if (spin_values.size() > 0 && spin_values.data() != nullptr) {
-            particles.spin_values = spin_values.mutable_data();
-        } else {
-            particles.spin_values = NULL;
-        }
-        if (sky_coords.size() > 0 && sky_coords.data() != nullptr) {
-            particles.sky_coords = sky_coords.mutable_data();
-        } else {
-            particles.sky_coords = NULL;
-        }
+        particles.positions = positions.mutable_data();
+        if (values.data() != nullptr) particles.values = values;
         return particles;
     }
 };
@@ -123,18 +94,15 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     SelectionAttrs sattrs = sattrs_py.data();
     MeshAttrs mattrs;
 
-    // Determine output size based on spin parameters
-    // - if both spin parameters = 0: only need one correlation (regular pair counting)
-    // - if one spin parameter != 0 and one = 0: need two correlations (plus, cross)
-    // - if both spin parameters != 0: need three correlations (plus_plus, cross_plus, cross_cross)
-    size_t nspins = (wattrs.spin[0] > 0) + (wattrs.spin[1] > 0);
-    size_t output_size = (1 + nspins) * battrs.size;
+    char names[MAX_NWEIGHT][SIZE_NAME];
+    size_t ncounts = get_count2_names(list_particles[0].index_value, list_particles[1].index_value, names);
+    size_t csize = ncounts * battrs.size;
 
     // Create a numpy array to store the results
-    py::array_t<FLOAT> counts_py(output_size);
+    py::array_t<FLOAT> counts_py(csize);
     auto counts_ptr = counts_py.mutable_data(); // Get a pointer to the array's data
-    // Array on the GPU - allocate double size if we have spin_values
-    FLOAT *counts = (FLOAT*) my_device_malloc(output_size * sizeof(FLOAT), membuffer);
+
+    FLOAT *counts = (FLOAT*) my_device_malloc(csize * sizeof(FLOAT), membuffer);
 
     // Create a default CUDA stream (or use 0 for the default stream)
     cudaStream_t stream;
@@ -148,7 +116,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     // Perform the computation
     count2(counts, list_mesh, mattrs, sattrs, battrs, wattrs, membuffer, stream);
 
-    CUDA_CHECK(cudaMemcpy(counts_ptr, counts, output_size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(counts_ptr, counts, csize * sizeof(FLOAT), cudaMemcpyDeviceToHost));
     my_device_free(counts, membuffer);
 
     // Free allocated memory
@@ -159,25 +127,9 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
 
     py::dict result;
     // Return appropriate result based on spin parameters
-    if (nspins == 2) {
-        // Create zero-copy numpy views into counts_py rather than memcpy'ing
-        py::array_t<FLOAT> plus_plus_py({(ssize_t)battrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr, counts_py);
-        py::array_t<FLOAT> cross_plus_py({(ssize_t)battrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr + battrs.size, counts_py);
-        py::array_t<FLOAT> cross_cross_py({(ssize_t)battrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr + 2 * battrs.size, counts_py);
-        // Return dictionary with three components
-        result["weights_plus_plus"] = plus_plus_py;
-        result["weights_plus"] = cross_plus_py;
-        result["weights_cross_cross"] = cross_cross_py;
-    } else if (nspins == 1) {
-        // Zero-copy views for two correlations
-        py::array_t<FLOAT> plus_py({(ssize_t)battrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr, counts_py);
-        py::array_t<FLOAT> cross_py({(ssize_t)battrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr + battrs.size, counts_py);
-        result["weights_plus"] = plus_py;
-        result["weights_cross"] = cross_py;
-        return result;
-    } else {
-        // Return the numpy array for regular pair counts
-        result["weights"] = counts_py;
+    for (size_t icount = 0; icount < ncounts; icount++) {
+        py::array_t<FLOAT> array_py({(ssize_t)battrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr + icount * battrs.size, counts_py);
+        result[names[icount]] = array_py;
     }
     return result;
 }
@@ -186,30 +138,33 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
 // Bind the function and structs to Python
 PYBIND11_MODULE(cucount, m) {
     py::class_<Particles_py>(m, "Particles", py::module_local())
-        .def(py::init<py::array_t<FLOAT>, py::array_t<FLOAT>, py::object, py::object>(),
-             py::arg("positions"), py::arg("weights"), py::arg("sky_coords") = py::none(), py::arg("spin_values") = py::none())
-        .def_property_readonly("size", &Particles_py::size)
-        .def_readwrite("positions", &Particles_py::positions)
-        .def_readwrite("weights", &Particles_py::weights)
-        .def_readwrite("spin_values", &Particles_py::spin_values)
-        .def_readwrite("sky_coords", &Particles_py::sky_coords);
+    .def(py::init<py::array_t<FLOAT>, py::array_t<FLOAT>, int, int, int>(),
+         py::arg("positions"),
+         py::arg("values") = py::none(),
+         py::arg("size_spin") = 0,
+         py::arg("size_individual_weight") = 0,
+         py::arg("size_bitwise_weight") = 0)
+    .def_property_readonly("size", &Particles_py::size)
+    .def_property_readonly("positions", &Particles_py::positions)
+    .def_property_readonly("values", &Particles_py::values)
+    .def_property_readonly("index_value", &Particles_py::index_value);
 
     py::class_<BinAttrs_py>(m, "BinAttrs", py::module_local())
         .def(py::init<py::kwargs>()) // Accept Python kwargs
         .def_property_readonly("shape", &BinAttrs_py::shape)
         .def_property_readonly("size", &BinAttrs_py::size)
         .def_property_readonly("ndim", &BinAttrs_py::ndim)
-        .def_readwrite("var", &BinAttrs_py::var)
-        .def_readwrite("min", &BinAttrs_py::min)
-        .def_readwrite("max", &BinAttrs_py::max)
-        .def_readwrite("step", &BinAttrs_py::step);
+        .def_property_readonly("var", &BinAttrs_py::var)
+        .def_property_readonly("min", &BinAttrs_py::min)
+        .def_property_readonly("max", &BinAttrs_py::max)
+        .def_property_readonly("step", &BinAttrs_py::step);
 
     py::class_<SelectionAttrs_py>(m, "SelectionAttrs", py::module_local())
         .def(py::init<py::kwargs>()) // Accept Python kwargs
         .def_property_readonly("ndim", &SelectionAttrs_py::ndim)
-        .def_readwrite("var", &SelectionAttrs_py::var)
-        .def_readwrite("min", &SelectionAttrs_py::min)
-        .def_readwrite("max", &SelectionAttrs_py::max);
+        .def_property_readonly("var", &SelectionAttrs_py::var)
+        .def_property_readonly("min", &SelectionAttrs_py::min)
+        .def_property_readonly("max", &SelectionAttrs_py::max);
 
     py::class_<WeightAttrs_py>(m, "WeightAttrs", py::module_local())
         .def(py::init<py::kwargs>()); // Accept Python kwargs

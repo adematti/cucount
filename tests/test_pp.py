@@ -347,7 +347,7 @@ def test_thetacut():
                 battrs = BinAttrs(**{'k': edges, 'pole': (np.array(ells), los)})
             for var in selection_attrs:
                 sattrs = SelectionAttrs(**{var: (selection_attrs[var][0], selection_attrs[var][1])})
-            return count2(particles1, particles2, battrs=battrs, sattrs=sattrs)['weights']
+            return count2(particles1, particles2, battrs=battrs, sattrs=sattrs)['weight']
 
         test = run()
         print(test)
@@ -371,7 +371,7 @@ def test_corrfunc_smu():
     particles2 = Particles(positions2, weights2)
     los = 'midpoint'
     battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-    test = count2(particles1, particles2, battrs=battrs)['weights']
+    test = count2(particles1, particles2, battrs=battrs)['weight']
     print('cucount', time.time() - t0)
 
     from pycorr import TwoPointCounter
@@ -397,7 +397,7 @@ def test_jax(distributed=False):
         particles1 = Particles(positions1, weights1)
         particles2 = Particles(positions2, weights2)
         battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-        return count2(particles1, particles2, battrs=battrs)['weights']
+        return count2(particles1, particles2, battrs=battrs)['weight']
 
     #res_numpy = count_numpy()
 
@@ -420,7 +420,7 @@ def test_jax(distributed=False):
             count = shard_map(lambda *particles: jax.lax.psum(count2(*particles, battrs=battrs), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))
         toret = count(particles1, particles2)
         if distributed: jax.distributed.shutdown()
-        return toret['weights']
+        return toret['weight']
 
     res_jax = count_jax()
     #assert np.allclose(res_jax, res_numpy)
@@ -429,31 +429,31 @@ def test_jax(distributed=False):
 def test_readme():
     import numpy as np
     from cucount.numpy import count2, Particles, BinAttrs, setup_logging
-    
+
     setup_logging("info")
     # Prepare catalogs
     size = int(1e5)
     boxsize = np.array((3000.,) * 3)
     rng = np.random.RandomState(seed=42)
-    
+
     def generate_catalog(rng, size):
         offset = boxsize
         positions = rng.uniform(0., 1., (size, 3)) * boxsize + offset
         weights = rng.uniform(0., 1., size)
         return positions, weights
-    
+
     positions1, weights1 = generate_catalog(rng, size)
     positions2, weights2 = generate_catalog(rng, size)
-    
+
     # Define binning and line-of-sight
     edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
     los = 'midpoint'
-    
+
     # Compute pair counts
     particles1 = Particles(positions1, weights1)
     particles2 = Particles(positions2, weights2)
     battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-    counts = count2(particles1, particles2, battrs=battrs)['weights']
+    counts = count2(particles1, particles2, battrs=battrs)['weight']
     print(counts.sum(axis=-1))
 
 

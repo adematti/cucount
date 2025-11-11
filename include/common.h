@@ -55,15 +55,78 @@ typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT} LOS_TYPE;
 
 
 typedef struct {
+    // To check/modify when adding new weighting scheme
+    size_t start_spin, size_spin, start_individual_weight, size_individual_weight, start_bitwise_weight, size_bitwise_weight, size;
+} IndexValue;
+
+
+IndexValue get_index_value(int size_spin, int size_individual_weight, int size_bitwise_weight) {
+    // To check/modify when adding new weighting scheme
+    IndexValue index_value = {0};  // sets everything to 0
+    if (size_spin) {
+        index_value.size_spin = size_spin;
+        index_value.size += size_spin;
+    }
+    if (size_individual_weight) {
+        index_value.start_individual_weight = index_value.size;
+        index_value.size_individual_weight = size_individual_weight;
+        index_value.size += size_individual_weight;
+    }
+    if (size_bitwise_weight) {
+        index_value.start_bitwise_weight = index_value.size;
+        index_value.size_bitwise_weight = size_bitwise_weight;
+        index_value.size += size_bitwise_weight;
+    }
+    return index_value
+}
+
+
+#define MAX_NWEIGHT 4
+#define SIZE_NAME 32
+
+
+size_t get_count2_names(IndexValue index_value1, IndexValue index_value2,
+                        char names[][SIZE_NAME])
+{
+    // To check/modify when adding new weighting scheme
+    int s1 = (index_value1.size_spin > 0);
+    int s2 = (index_value2.size_spin > 0);
+    size_t n = 1 + s1 + s2;
+
+    if (names == NULL) {
+        return n;
+    }
+    /* clear first buffers to be safe */
+    size_t i;
+    for (i = 0; i < MAX_NWEIGHT; ++i) {
+        names[i][0] = '\0';
+    }
+
+    if (a && b) {
+        strncpy(names[0], "weight_plus_plus", SIZE_NAME-1);
+        strncpy(names[1], "weight_plus_cross", SIZE_NAME-1);
+        strncpy(names[2], "weight_cross_cross", SIZE_NAME-1);
+    } else if (a ^ b) {
+        strncpy(names_out[0], "weight_plus", SIZE_NAME-1);
+        strncpy(names_out[1], "weight_cross", SIZE_NAME-1);
+    } else {
+        strncpy(names_out[0], "weight", SIZE_NAME-1);
+    }
+
+    return n;
+}
+
+
+
+typedef struct {
     size_t size;
     size_t total_nparticles;
     size_t *nparticles;
     size_t *cumnparticles;
     FLOAT *spositions;
     FLOAT *positions;
-    FLOAT *weights;
-    FLOAT *spin_values;    // Spin components (s1, s2) per particle [size×2]
-    FLOAT *sky_coords;     // RA, Dec per particle [size×2]
+    FLOAT *values;  // contains spin components, individual weights, bitwise weights in this order
+    IndexValue index_value;
 } Mesh;
 
 
@@ -72,9 +135,8 @@ typedef struct {
     size_t size;
     FLOAT *spositions;  // positions on the sphere
     FLOAT *positions;
-    FLOAT *weights;
-    FLOAT *spin_values;    // Spin components (s1, s2) per particle [size×2]
-    FLOAT *sky_coords;     // RA, Dec per particle [size×2]
+    FLOAT *values;  // contains shear values, individual weights, bitwise weights in this order
+    IndexValue index_value;
 } Particles; // Particles
 
 
@@ -85,7 +147,7 @@ typedef struct {
     FLOAT *array[MAX_NBIN];
     size_t shape[MAX_NBIN], asize[MAX_NBIN];
     size_t size;
-    size_t ndim;
+    size_t ndim;  // binning dimensionality (e.g. 1D or 2D)
 } BinAttrs;
 
 
@@ -108,7 +170,6 @@ typedef struct {
 
 typedef struct {
     size_t spin[MAX_NMESH];
-
 } WeightAttrs;
 
 

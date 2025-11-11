@@ -86,14 +86,14 @@ def test(write=False):
 
     # gg
     particles = [create_cucount_particles(catalog) for catalog in catalogs]
-    counts = count2(*particles, battrs=battrs)['weights']
+    counts = count2(*particles, battrs=battrs)['weight']
     fn = dirname / 'counts_gg.txt'
     if write:
         np.savetxt(fn, counts)
     else:
         counts_ref = np.loadtxt(fn)
         assert np.allclose(counts, counts_ref)
-    
+
     # gs
     particles = [create_cucount_particles(catalog) for catalog in catalogs]
     wattrs = WeightAttrs(spin=(0, 2))

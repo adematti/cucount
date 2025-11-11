@@ -17,12 +17,18 @@ namespace ffi = xla::ffi;
 static SelectionAttrs sattrs;
 static BinAttrs battrs;
 static WeightAttrs wattrs;
+static IndexValue index_value[2];
 
 
 void set_attrs_py(BinAttrs_py& battrs_py, const WeightAttrs_py& wattrs_py = WeightAttrs_py(), const SelectionAttrs_py& sattrs_py = SelectionAttrs_py()) {
     battrs = battrs_py.data();
     wattrs = wattrs_py.data();
     sattrs = sattrs_py.data();
+}
+
+
+void set_index_value_py(const size_t iparticle, const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0) {
+    index_value[iparticle] = get_index_value(size_spin, size_individual_weight, size_bitwise_weight);
 }
 
 
@@ -34,10 +40,10 @@ void set_mem_buffer(DeviceMemoryBuffer *membuffer, ffi::ResultBuffer<ffi::F64> b
 }
 
 
-Particles get_ffi_particles(ffi::Buffer<ffi::F64> positions, ffi::Buffer<ffi::F64> weights) {
+Particles get_ffi_particles(ffi::Buffer<ffi::F64> positions, ffi::Buffer<ffi::F64> values) {
     Particles particles;
     particles.positions = positions.typed_data();
-    particles.weights = weights.typed_data();
+    particles.values = values.typed_data();
     particles.size = positions.dimensions().front();
     return particles;
 }
@@ -46,17 +52,17 @@ Particles get_ffi_particles(ffi::Buffer<ffi::F64> positions, ffi::Buffer<ffi::F6
 
 ffi::Error count2Impl(cudaStream_t stream,
                       ffi::Buffer<ffi::F64> positions1,
-                      ffi::Buffer<ffi::F64> weights1,
+                      ffi::Buffer<ffi::F64> values1,
                       ffi::Buffer<ffi::F64> positions2,
-                      ffi::Buffer<ffi::F64> weights2,
+                      ffi::Buffer<ffi::F64> values2,
                       ffi::ResultBuffer<ffi::F64> counts,
                       ffi::ResultBuffer<ffi::F64> buffer) {
 
     Particles list_particles[MAX_NMESH];
     Mesh list_mesh[MAX_NMESH];
     for (size_t imesh=0; imesh < MAX_NMESH; imesh++) list_particles[imesh].size = 0;
-    list_particles[0] = get_ffi_particles(positions1, weights1);
-    list_particles[1] = get_ffi_particles(positions2, weights2);
+    list_particles[0] = get_ffi_particles(positions1, values1);
+    list_particles[1] = get_ffi_particles(positions2, values2);
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
     membuffer.nblocks = 256;
@@ -108,17 +114,20 @@ PYBIND11_MODULE(ffi_cucount, m) {
         .def_property_readonly("shape", &BinAttrs_py::shape)
         .def_property_readonly("size", &BinAttrs_py::size)
         .def_property_readonly("ndim", &BinAttrs_py::ndim)
-        .def_readwrite("var", &BinAttrs_py::var)
-        .def_readwrite("min", &BinAttrs_py::min)
-        .def_readwrite("max", &BinAttrs_py::max)
-        .def_readwrite("step", &BinAttrs_py::step);
+        .def_property_readonly("var", &BinAttrs_py::var)
+        .def_property_readonly("min", &BinAttrs_py::min)
+        .def_property_readonly("max", &BinAttrs_py::max)
+        .def_property_readonly("step", &BinAttrs_py::step);
 
     py::class_<SelectionAttrs_py>(m, "SelectionAttrs", py::module_local())
         .def(py::init<py::kwargs>()) // Accept Python kwargs
         .def_property_readonly("ndim", &SelectionAttrs_py::ndim)
-        .def_readwrite("var", &SelectionAttrs_py::var)
-        .def_readwrite("min", &SelectionAttrs_py::min)
-        .def_readwrite("max", &SelectionAttrs_py::max);
+        .def_property_readonly("var", &SelectionAttrs_py::var)
+        .def_property_readonly("min", &SelectionAttrs_py::min)
+        .def_property_readonly("max", &SelectionAttrs_py::max);
+
+    py::class_<WeightAttrs_py>(m, "WeightAttrs", py::module_local())
+        .def(py::init<py::kwargs>()); // Accept Python kwargs
 
     m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
 
@@ -126,6 +135,12 @@ PYBIND11_MODULE(ffi_cucount, m) {
         py::arg("battrs"),
         py::arg("wattrs") = WeightAttrs_py(), // Default value
         py::arg("sattrs") = SelectionAttrs_py()); // Default value
+
+    m.def("set_index_value", &set_index_value_py, "Set value indicess",
+        py::arg("iparticle"),
+        py::arg("size_spin") = 0,
+        py::arg("size_individual_weight") = 0,
+        py::arg("size_bitwise_weight") = 0)
 
     m.def("count2", []() { return EncapsulateFfiCall(count2ffi); });
 }

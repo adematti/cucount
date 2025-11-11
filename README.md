@@ -85,6 +85,7 @@ particles2 = Particles(positions2, weights2)
 battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
 
 counts = count2(particles1, particles2, battrs=battrs)
+# counts is a dictionary with key "weight"
 ```
 
 ---

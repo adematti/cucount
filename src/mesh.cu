@@ -6,6 +6,7 @@
 //#include <thrust/scan.h>
 #include "common.h"
 #include "utils.h"
+y
 
 // Function to calculate the Cartesian distance
 __device__ FLOAT cartesian_distance(const FLOAT *position) {
@@ -60,6 +61,7 @@ __device__ size_t angular_to_cell_index(const MeshAttrs mattrs, const FLOAT cth,
     return iphi + icth * mattrs.meshsize[1];
 }
 
+
 __device__ size_t cartesian_to_cell_index(const MeshAttrs mattrs, const FLOAT* position) {
     size_t index = 0;
     for (size_t axis = 0; axis < NDIM; axis++) {
@@ -69,6 +71,7 @@ __device__ size_t cartesian_to_cell_index(const MeshAttrs mattrs, const FLOAT* p
     }
     return index;
 }
+
 
 __device__ void _find_extent(const MeshAttrs mattrs, const FLOAT *position, FLOAT *extent) {
 
@@ -244,9 +247,10 @@ __global__ void count_particles_kernel(const MeshAttrs mattrs, const Particles p
     size_t tid = threadIdx.x;
     size_t stride = gridDim.x * blockDim.x;
     size_t gid = tid + blockIdx.x * blockDim.x;
+    IndexValue index_value = particles.index_value;
 
     for (size_t i = gid; i < particles.size; i += stride) {
-        if (particles.weights[i] == 0.) continue;
+        if ((index_value.size_individual_weight) && (particles.values[index_value.start_individual_weight] == 0.)) continue;
         const FLOAT *position = &(particles.positions[NDIM * i]);
         index[i] = _get_cell_index(mattrs, position);
         my_atomicAddSizet(&(mesh.nparticles[index[i]]), 1);
@@ -259,10 +263,12 @@ __global__ void fill_particles_kernel(const Particles particles, const size_t *i
     size_t tid = threadIdx.x;
     size_t stride = gridDim.x * blockDim.x;
     size_t gid = tid + blockIdx.x * blockDim.x;
+    IndexValue index_value = particles.index_value;
 
     for (size_t i = gid; i < particles.size; i += stride) {
-        if (particles.weights[i] == 0.) continue;  // skip particles with zero weight; they count for nothing
+        if ((index_value.size_individual_weight) && (particles.values[index_value.start_individual_weight] == 0.)) continue;  // skip particles with zero weight; they count for nothing
         const FLOAT* position = &(particles.positions[NDIM * i]);
+        const FLOAT *value = &(particles.values[index_value.size * i]);
         FLOAT sposition[NDIM];
         FLOAT r = cartesian_distance(position);
         for (size_t axis = 0; axis < NDIM; axis++) sposition[axis] = position[axis] / r;
@@ -275,7 +281,9 @@ __global__ void fill_particles_kernel(const Particles particles, const size_t *i
             mesh.positions[NDIM * offset + axis] = position[axis];
             mesh.spositions[NDIM * offset + axis] = sposition[axis];
         }
-        mesh.weights[offset] = particles.weights[i];
+        for (size_t ivalue = 0; ivalue < index_value.size; axis++) {
+            mesh.values[index_value.size * offset + ivalue] = value[ivalue];
+        }
 
         // Copy spin values if present
         if (particles.spin_values != NULL && mesh.spin_values != NULL) {
@@ -301,6 +309,7 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         const Particles particles = list_particles[imesh];
         if (particles.size == 0) continue;
         Mesh &mesh = list_mesh[imesh];
+        mesh.index_value = particles.index_value;
         mesh.size = 1;
         for (size_t axis = 0; axis < NDIM; axis++) mesh.size *= mattrs.meshsize[axis];
         // Allocate memory for mesh variables
@@ -311,19 +320,7 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         CUDA_CHECK(cudaMemset(mesh.cumnparticles, 0, mesh.size * sizeof(size_t)));
         mesh.positions = (FLOAT*) my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
         mesh.spositions = (FLOAT*) my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
-        mesh.weights = (FLOAT*) my_device_malloc(particles.size * sizeof(FLOAT), buffer);
-        // Allocate spin fields if present in particles
-        if (particles.spin_values != NULL) {
-            mesh.spin_values = (FLOAT*) my_device_malloc(2 * particles.size * sizeof(FLOAT), buffer);
-        } else {
-            mesh.spin_values = NULL;
-        }
-        if (particles.sky_coords != NULL) {
-            mesh.sky_coords = (FLOAT*) my_device_malloc(2 * particles.size * sizeof(FLOAT), buffer);
-        } else {
-            mesh.sky_coords = NULL;
-        }
-
+        mesh.values = (FLOAT*) my_device_malloc(particles.index_value.size * particles.size * sizeof(FLOAT), buffer);
         // Assign particle positions to boxes
         CUDA_CHECK(cudaDeviceSynchronize());
         count_particles_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(mattrs, particles, index, mesh);
