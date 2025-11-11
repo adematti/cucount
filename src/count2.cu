@@ -363,7 +363,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             atomicAdd(&(counts[ibin + battrs.size]), weight * cross_plus);         // cross_plus
             atomicAdd(&(counts[ibin + 2 * battrs.size]), weight * cross_cross);    // cross_cross
 
-        } else if (spin_vals2 != NULL && spin2 != 0) {  // Correlation spin2 non-zero for second tracer
+        } else if (spin_vals2 != NULL && wattrs.spin[1] != 0) {  // Correlation spin2 non-zero for second tracer
             FLOAT s1_2 = spin_vals2[0], s2_2 = spin_vals2[1];  // spin_values of second tracer
             FLOAT splus, scross;
 
@@ -468,7 +468,7 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh me
                     FLOAT *sky_coords2 = (mesh2.sky_coords != NULL) ? &(mesh2.sky_coords[2 * (cum2 + jj)]) : NULL;
 
                     add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                              weight1, weights2[jj], spin_vals1, spin_vals2, sky_coords1, sky_coords2, wattrs);
+                              weight1, weights2[jj], spin_vals1, spin_vals2, sky_coords1, sky_coords2, battrs, wattrs);
                 }
             }
         }
@@ -595,8 +595,8 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaEventRecord(start, stream));
 
     CUDA_CHECK(cudaDeviceSynchronize());
-    if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, list_mesh[0], list_mesh[1], device_wattrs, device_battrs);
-    else count2_cartesian_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, list_mesh[0], list_mesh[1], device_wattrs, device_battrs);
+    if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, csize, list_mesh[0], list_mesh[1], device_battrs, device_wattrs);
+    else count2_cartesian_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, csize, list_mesh[0], list_mesh[1], device_battrs, device_wattrs);
 
     CUDA_CHECK(cudaDeviceSynchronize());
     reduce_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, csize);

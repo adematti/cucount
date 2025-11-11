@@ -146,7 +146,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     // Free allocated memory
     for (size_t i = 0; i < 2; i++) free_device_particles(&(list_particles[i]));
     // Perform the computation
-    count2(counts, list_mesh, mattrs, sattrs, battrs, wattrs.spin[0], wattrs.spin[1], membuffer, stream);
+    count2(counts, list_mesh, mattrs, sattrs, battrs, wattrs, membuffer, stream);
 
     CUDA_CHECK(cudaMemcpy(counts_ptr, counts, output_size * sizeof(FLOAT), cudaMemcpyDeviceToHost));
     my_device_free(counts, membuffer);

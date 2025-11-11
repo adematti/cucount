@@ -19,7 +19,7 @@ static BinAttrs battrs;
 static WeightAttrs wattrs;
 
 
-void set_attrs_py(BinAttrs_py& battrs_py, const WeightAttrs_py& sattrs_py = WeightAttrs_py(), const SelectionAttrs_py& sattrs_py = SelectionAttrs_py()) {
+void set_attrs_py(BinAttrs_py& battrs_py, const WeightAttrs_py& wattrs_py = WeightAttrs_py(), const SelectionAttrs_py& sattrs_py = SelectionAttrs_py()) {
     battrs = battrs_py.data();
     wattrs = wattrs_py.data();
     sattrs = sattrs_py.data();
