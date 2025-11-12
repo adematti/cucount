@@ -525,7 +525,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     float elapsed_time;
 
     // Determine output array size based on spin parameters
-    size_t csize = get_count2_names(list_mesh[0].index_value, list_mesh[1].index_value, NULL) * battrs.size;
+    size_t csize = get_count2_size(list_mesh[0].index_value, list_mesh[1].index_value, NULL) * battrs.size;
 
     // Initialize histograms
     CUDA_CHECK(cudaMemset(counts, 0, csize * sizeof(FLOAT)));

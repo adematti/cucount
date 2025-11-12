@@ -129,7 +129,7 @@ struct DeviceMemoryBuffer {
 
 IndexValue get_index_value(int size_spin, int size_individual_weight, int size_bitwise_weight);
 
-size_t get_count2_names(IndexValue index_value1, IndexValue index_value2, char names[][SIZE_NAME]);
+size_t get_count2_size(IndexValue index_value1, IndexValue index_value2, char names[][SIZE_NAME]);
 
 void* my_device_malloc(size_t nbytes, DeviceMemoryBuffer* buffer);
 

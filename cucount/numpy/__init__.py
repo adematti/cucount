@@ -56,10 +56,12 @@ class Particles(object):
                 weights = weights[:, np.newaxis]
             values.append(weights)
             kwargs.update(size_individual_weight=weights.shape[1])
-        values = np.concatenate(values, axis=1) if values else None
         self.positions = positions
-        self.values = values
+        self.values = self._get_values(values)
         self.index_value = IndexValue(**kwargs)
+
+    def _get_values(self, values):
+        return np.concatenate(values, axis=1) if values else None
 
     @property
     def size(self):

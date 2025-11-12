@@ -11,19 +11,25 @@ jax.ffi.register_ffi_target('count2', ffi_cucount.count2())
 
 
 IndexValue = tree_util.register_pytree_node_class(numpy.IndexValue)
-Particles = tree_util.register_pytree_node_class(numpy.Particles)
+
+@tree_util.register_pytree_node_class
+class Particles(numpy.Particles):
+
+    def _get_values(self, values):
+        return jnp.concatenate(values, axis=1) if values else None
+
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 
-def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs, sattrs: SelectionAttrs=SelectionAttrs()):
+def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=WeightAttrs(), sattrs: SelectionAttrs=SelectionAttrs()):
     assert len(particles) == 2
     assert jax.config.read('jax_enable_x64'), 'for cucount you have to enable float64'
     ffi_cucount.set_attrs(battrs, wattrs=wattrs, sattrs=sattrs)
     for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value)
     dtype = jnp.float64
-    bshape = tuple(battrs.shape)
-    bsize = battrs.size
-    res_type = jax.ShapeDtypeStruct(bsize, dtype)
+    bsize, bshape = battrs.size, tuple(battrs.shape)
+    names = ffi_cucount.get_count2_names()
+    res_type = jax.ShapeDtypeStruct((len(names) * bsize,), dtype)
     ndim2 = sum(p.positions.shape[1] for p in particles)
     nvalues2 = sum(p.index_value.size for p in particles)
     # Max values
@@ -43,4 +49,6 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs, sattrs:
     buffer_type = jax.ShapeDtypeStruct((size,), dtype)
     call = jax.ffi.ffi_call('count2', (res_type, buffer_type))
     args = sum(([particle.positions, particle.values] for particle in particles), start=[])
-    return call(*args)[0]
+    counts = call(*args)[0]
+    return {name: counts[icount * bsize:(icount + 1) * bsize].reshape(bshape) for icount, name in enumerate(names)}
+        

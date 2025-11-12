@@ -95,7 +95,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     MeshAttrs mattrs;
 
     char names[MAX_NWEIGHT][SIZE_NAME];
-    size_t ncounts = get_count2_names(list_particles[0].index_value, list_particles[1].index_value, names);
+    size_t ncounts = get_count2_size(list_particles[0].index_value, list_particles[1].index_value, names);
     size_t csize = ncounts * battrs.size;
 
     // Create a numpy array to store the results

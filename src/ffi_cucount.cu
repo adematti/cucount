@@ -17,7 +17,7 @@ namespace ffi = xla::ffi;
 static SelectionAttrs sattrs;
 static BinAttrs battrs;
 static WeightAttrs wattrs;
-static IndexValue index_value[2];
+static IndexValue index_value[2] = {0};
 
 
 void set_attrs_py(BinAttrs_py& battrs_py, const WeightAttrs_py& wattrs_py = WeightAttrs_py(), const SelectionAttrs_py& sattrs_py = SelectionAttrs_py()) {
@@ -29,6 +29,15 @@ void set_attrs_py(BinAttrs_py& battrs_py, const WeightAttrs_py& wattrs_py = Weig
 
 void set_index_value_py(const size_t iparticle, const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0) {
     index_value[iparticle] = get_index_value(size_spin, size_individual_weight, size_bitwise_weight);
+}
+
+
+std::vector<std::string> get_count2_names_py() {
+    char names[MAX_NWEIGHT][SIZE_NAME];
+    size_t ncounts = get_count2_size(index_value[0], index_value[1], names);
+    std::vector<std::string> toret;
+    for (size_t icount = 0; icount < ncounts; icount++) toret.push_back(names[icount]);
+    return toret;
 }
 
 
@@ -142,6 +151,11 @@ PYBIND11_MODULE(ffi_cucount, m) {
         py::arg("size_spin") = 0,
         py::arg("size_individual_weight") = 0,
         py::arg("size_bitwise_weight") = 0);
+
+    // Expose helper to get output names
+    m.def("get_count2_names",
+          &get_count2_names_py,
+          "Return list of output names for count2.");
 
     m.def("count2", []() { return EncapsulateFfiCall(count2ffi); });
 }

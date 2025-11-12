@@ -52,7 +52,6 @@ def get_catalogs(write=False):
 
 def test(write=False):
     from cucount.numpy import BinAttrs, WeightAttrs, Particles, count2
-    import treecorr
 
     def get_cartesian(ra, dec):
         """Convert RA/Dec to unit sphere Cartesian coordinates"""
@@ -87,38 +86,95 @@ def test(write=False):
 
     # gg
     particles = [create_cucount_particles(catalog, with_spin=False) for catalog in catalogs]
-    counts = count2(*particles, battrs=battrs)['weight']
+    counts_ref = counts = count2(*particles, battrs=battrs)['weight']
     fn = dirname / 'counts_gg.txt'
-    if write:
-        np.savetxt(fn, counts)
-    else:
-        counts_ref = np.loadtxt(fn)
-        assert np.allclose(counts, counts_ref)
+    if write: np.savetxt(fn, counts)
+    else: counts_ref = np.loadtxt(fn)
+    assert np.allclose(counts, counts_ref)
 
     # gs
     particles = [create_cucount_particles(catalogs[0], with_spin=False),
                 create_cucount_particles(catalogs[1], with_spin=True)]
     wattrs = WeightAttrs(spin=(0, 2))
     counts = count2(*particles, battrs=battrs, wattrs=wattrs)
-    counts = np.column_stack(list(counts.values()))
+    counts_ref = counts = np.column_stack(list(counts.values()))
     fn = dirname / 'counts_gs.txt'
-    if write:
-        np.savetxt(fn, counts)
-    else:
-        counts_ref = np.loadtxt(fn)
-        assert np.allclose(counts, counts_ref)
+    if write: np.savetxt(fn, counts)
+    else: counts_ref = np.loadtxt(fn)
+    assert np.allclose(counts, counts_ref)
 
     # ss
     particles = [create_cucount_particles(catalog, with_spin=True) for catalog in catalogs]
     wattrs = WeightAttrs(spin=(2, 2))
     counts = count2(*particles, battrs=battrs, wattrs=wattrs)
-    counts = np.column_stack(list(counts.values()))
+    counts_ref = counts = np.column_stack(list(counts.values()))
     fn = dirname / 'counts_ss.txt'
-    if write:
-        np.savetxt(fn, counts)
-    else:
-        counts_ref = np.loadtxt(fn)
-        assert np.allclose(counts, counts_ref)
+    if write: np.savetxt(fn, counts)
+    else: counts_ref = np.loadtxt(fn)
+    assert np.allclose(counts, counts_ref)
+
+
+def test_jax(write=False):
+    from cucount.jax import BinAttrs, WeightAttrs, Particles, count2
+    from jax import config
+    config.update('jax_enable_x64', True)
+
+    def get_cartesian(ra, dec):
+        """Convert RA/Dec to unit sphere Cartesian coordinates"""
+        conv = np.pi / 180.
+        theta, phi = dec * conv, ra * conv
+        x = np.cos(theta) * np.cos(phi)
+        y = np.cos(theta) * np.sin(phi)
+        z = np.sin(theta)
+        return np.column_stack([x, y, z])
+
+    def create_cucount_particles(catalog, with_spin=False):
+        ra, dec, e1, e2, weights = catalog
+        # Convert to 3D unit sphere Cartesian coordinates
+        positions = get_cartesian(ra, dec)
+        kwargs = dict()
+        if with_spin:
+            kwargs.update(spin_values=-np.column_stack([e1, e2]))
+        return Particles(positions, weights, **kwargs)
+
+    def create_treecorr_catalog(catalog):
+        ra, dec, e1, e2, weights = catalog
+        return treecorr.Catalog(ra=ra, dec=dec, w=weights, g1=e1, g2=e2, ra_units='deg', dec_units='deg')
+
+    edges = np.logspace(-3., -1., 30)
+    battrs = BinAttrs(theta=edges * np.pi / 180.)
+    catalogs = get_catalogs(write=write)
+
+    # Convert theta edges to arcmin for TreeCorr
+    min_sep = edges[0] * 60.0
+    max_sep = edges[-1] * 60.0
+    nbins = len(edges) - 1
+
+    # gg
+    particles = [create_cucount_particles(catalog, with_spin=False) for catalog in catalogs]
+    counts_ref = counts = count2(*particles, battrs=battrs)['weight']
+    fn = dirname / 'counts_gg.txt'
+    counts_ref = np.loadtxt(fn)
+    assert np.allclose(counts, counts_ref)
+
+    # gs
+    particles = [create_cucount_particles(catalogs[0], with_spin=False),
+                create_cucount_particles(catalogs[1], with_spin=True)]
+    wattrs = WeightAttrs(spin=(0, 2))
+    counts = count2(*particles, battrs=battrs, wattrs=wattrs)
+    counts_ref = counts = np.column_stack(list(counts.values()))
+    fn = dirname / 'counts_gs.txt'
+    counts_ref = np.loadtxt(fn)
+    assert np.allclose(counts, counts_ref)
+
+    # ss
+    particles = [create_cucount_particles(catalog, with_spin=True) for catalog in catalogs]
+    wattrs = WeightAttrs(spin=(2, 2))
+    counts = count2(*particles, battrs=battrs, wattrs=wattrs)
+    counts_ref = counts = np.column_stack(list(counts.values()))
+    fn = dirname / 'counts_ss.txt'
+    counts_ref = np.loadtxt(fn)
+    assert np.allclose(counts, counts_ref)
 
 
 def test_treecorr():
@@ -191,4 +247,5 @@ def test_treecorr():
 if __name__ == '__main__':
 
     #test(write=True)
-    test()
+    #test()
+    test_jax()
