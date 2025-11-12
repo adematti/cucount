@@ -6,7 +6,7 @@
 //#include <thrust/scan.h>
 #include "common.h"
 #include "utils.h"
-y
+
 
 // Function to calculate the Cartesian distance
 __device__ FLOAT cartesian_distance(const FLOAT *position) {
@@ -281,20 +281,8 @@ __global__ void fill_particles_kernel(const Particles particles, const size_t *i
             mesh.positions[NDIM * offset + axis] = position[axis];
             mesh.spositions[NDIM * offset + axis] = sposition[axis];
         }
-        for (size_t ivalue = 0; ivalue < index_value.size; axis++) {
+        for (size_t ivalue = 0; ivalue < index_value.size; ivalue++) {
             mesh.values[index_value.size * offset + ivalue] = value[ivalue];
-        }
-
-        // Copy spin values if present
-        if (particles.spin_values != NULL && mesh.spin_values != NULL) {
-            mesh.spin_values[2 * offset] = particles.spin_values[2 * i];         // e1 (or s1)
-            mesh.spin_values[2 * offset + 1] = particles.spin_values[2 * i + 1]; // e2 (or s2)
-        }
-
-        // Copy sky coordinates if present
-        if (particles.sky_coords != NULL && mesh.sky_coords != NULL) {
-            mesh.sky_coords[2 * offset] = particles.sky_coords[2 * i];         // RA
-            mesh.sky_coords[2 * offset + 1] = particles.sky_coords[2 * i + 1]; // Dec
         }
     }
 }

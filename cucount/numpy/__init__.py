@@ -2,6 +2,7 @@ from dataclasses import dataclass, asdict
 
 import numpy as np
 
+import cucountlib
 from cucountlib.cucount import BinAttrs, WeightAttrs, SelectionAttrs, setup_logging
 
 
@@ -45,17 +46,17 @@ class Particles(object):
     def __init__(self, positions, weights=None, spin_values=None):
         # To check/modify when adding new weighting scheme
         values, kwargs = [], {}
-        if weights is not None:
-            if weights.ndim == 1:
-                weights = weights[:, np.newaxis]
-            values.append(weights)
-            kwargs.update(size_individual_weight=weights.shape[1])
         if spin_values is not None:
             if spin_values.ndim == 1:
                 spin_values = spin_values[:, np.newaxis]
             values.append(spin_values)
             kwargs.update(size_spin=spin_values.shape[1])
-        values = np.column_stack(values, axis=1) if values else None
+        if weights is not None:
+            if weights.ndim == 1:
+                weights = weights[:, np.newaxis]
+            values.append(weights)
+            kwargs.update(size_individual_weight=weights.shape[1])
+        values = np.concatenate(values, axis=1) if values else None
         self.positions = positions
         self.values = values
         self.index_value = IndexValue(**kwargs)

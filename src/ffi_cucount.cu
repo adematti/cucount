@@ -40,11 +40,12 @@ void set_mem_buffer(DeviceMemoryBuffer *membuffer, ffi::ResultBuffer<ffi::F64> b
 }
 
 
-Particles get_ffi_particles(ffi::Buffer<ffi::F64> positions, ffi::Buffer<ffi::F64> values) {
+Particles get_ffi_particles(ffi::Buffer<ffi::F64> positions, ffi::Buffer<ffi::F64> values, IndexValue index_value) {
     Particles particles;
     particles.positions = positions.typed_data();
     particles.values = values.typed_data();
     particles.size = positions.dimensions().front();
+    particles.index_value = index_value;
     return particles;
 }
 
@@ -61,8 +62,8 @@ ffi::Error count2Impl(cudaStream_t stream,
     Particles list_particles[MAX_NMESH];
     Mesh list_mesh[MAX_NMESH];
     for (size_t imesh=0; imesh < MAX_NMESH; imesh++) list_particles[imesh].size = 0;
-    list_particles[0] = get_ffi_particles(positions1, values1);
-    list_particles[1] = get_ffi_particles(positions2, values2);
+    list_particles[0] = get_ffi_particles(positions1, values1, index_value[0]);
+    list_particles[1] = get_ffi_particles(positions2, values2, index_value[1]);
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
     membuffer.nblocks = 256;
@@ -114,17 +115,17 @@ PYBIND11_MODULE(ffi_cucount, m) {
         .def_property_readonly("shape", &BinAttrs_py::shape)
         .def_property_readonly("size", &BinAttrs_py::size)
         .def_property_readonly("ndim", &BinAttrs_py::ndim)
-        .def_property_readonly("var", &BinAttrs_py::var)
-        .def_property_readonly("min", &BinAttrs_py::min)
-        .def_property_readonly("max", &BinAttrs_py::max)
-        .def_property_readonly("step", &BinAttrs_py::step);
+        .def_readonly("var", &BinAttrs_py::var)
+        .def_readonly("min", &BinAttrs_py::min)
+        .def_readonly("max", &BinAttrs_py::max)
+        .def_readonly("step", &BinAttrs_py::step);
 
     py::class_<SelectionAttrs_py>(m, "SelectionAttrs", py::module_local())
         .def(py::init<py::kwargs>()) // Accept Python kwargs
         .def_property_readonly("ndim", &SelectionAttrs_py::ndim)
-        .def_property_readonly("var", &SelectionAttrs_py::var)
-        .def_property_readonly("min", &SelectionAttrs_py::min)
-        .def_property_readonly("max", &SelectionAttrs_py::max);
+        .def_readonly("var", &SelectionAttrs_py::var)
+        .def_readonly("min", &SelectionAttrs_py::min)
+        .def_readonly("max", &SelectionAttrs_py::max);
 
     py::class_<WeightAttrs_py>(m, "WeightAttrs", py::module_local())
         .def(py::init<py::kwargs>()); // Accept Python kwargs
@@ -136,11 +137,11 @@ PYBIND11_MODULE(ffi_cucount, m) {
         py::arg("wattrs") = WeightAttrs_py(), // Default value
         py::arg("sattrs") = SelectionAttrs_py()); // Default value
 
-    m.def("set_index_value", &set_index_value_py, "Set value indicess",
+    m.def("set_index_value", &set_index_value_py, "Set value indices",
         py::arg("iparticle"),
         py::arg("size_spin") = 0,
         py::arg("size_individual_weight") = 0,
-        py::arg("size_bitwise_weight") = 0)
+        py::arg("size_bitwise_weight") = 0);
 
     m.def("count2", []() { return EncapsulateFfiCall(count2ffi); });
 }

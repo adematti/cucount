@@ -334,18 +334,19 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
     FLOAT pair_weight = 1.;
     if (index_value1.size_individual_weight) pair_weight *= value1[index_value1.start_individual_weight];
     if (index_value2.size_individual_weight) pair_weight *= value2[index_value2.start_individual_weight];
+
     // TODO: add bitwise and angular upweights here
     FLOAT weight[MAX_NWEIGHT];
     size_t nweight = 1;
     FLOAT splus1, scross1, splus2, scross2;
-    if (index_value1.size_spin) compute_spin_projection_cartesian(sposition1, sposition2, value1[index_value1.start_spin], wattrs.spin[0], &splus1, &scross1);
-    if (index_value2.size_spin) compute_spin_projection_cartesian(sposition1, sposition2, value2[index_value1.start_spin], wattrs.spin[1], &splus2, &scross2);
+    if (index_value1.size_spin) compute_spin_projection_cartesian(sposition1, sposition2, &(value1[index_value1.start_spin]), wattrs.spin[0], &splus1, &scross1);
+    if (index_value2.size_spin) compute_spin_projection_cartesian(sposition1, sposition2, &(value2[index_value2.start_spin]), wattrs.spin[1], &splus2, &scross2);
 
     if (index_value1.size_spin && index_value2.size_spin) {
         nweight = 3;
         weight[0] = pair_weight * splus1 * splus2;
         weight[1] = pair_weight * scross1 * splus2;
-        weight[1] = pair_weight * scross1 * scross2;
+        weight[2] = pair_weight * scross1 * scross2;
     }
     else if (index_value1.size_spin) {
         nweight = 2;
@@ -362,7 +363,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         weight[0] = pair_weight;
     }
     if (i == battrs.ndim) {
-        for (size_t iweight; iweight < nweight; iweight++) {
+        for (size_t iweight = 0; iweight < nweight; iweight++) {
             atomicAdd(&(counts[ibin + iweight * battrs.size]), weight[iweight]);
         }
     }
@@ -376,7 +377,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             else ell = ill * ellstep + ellmin;
             size_t ibin_loc = ibin * battrs.shape[i] + ill;
             FLOAT leg = (2 * ell + 1) * legendre_cache[ell];
-            for (size_t iweight; iweight < nweight; iweight++) {
+            for (size_t iweight = 0; iweight < nweight; iweight++) {
                 atomicAdd(&(counts[ibin_loc + iweight * battrs.size]), weight[iweight] * leg);
             }
         }
@@ -395,7 +396,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
                 else k = ik * battrs.step[i] + battrs.min[i];
                 size_t ibin_loc = (ibin * battrs.shape[i] + ik) * battrs.shape[i + 1] + ill;
                 FLOAT leg_bessel = leg * get_bessel(ell, k * s);
-                for (size_t iweight; iweight < nweight; iweight++) {
+                for (size_t iweight = 0; iweight < nweight; iweight++) {
                     atomicAdd(&(counts[ibin_loc + iweight * battrs.size]), weight[iweight] * leg_bessel);
                 }
             }
@@ -421,7 +422,7 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh me
     for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
         FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
         FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
-        FLOAT *value1 = &(mesh1.spositions[mesh1.nvalues * ii]);
+        FLOAT *value1 = &(mesh1.values[mesh1.index_value.size * ii]);
         int bounds[2 * NDIM];
         set_angular_bounds(sposition1, bounds);
         for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
@@ -433,13 +434,13 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh me
                 size_t cum2 = mesh2.cumnparticles[icell];
                 FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);
                 FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
-                FLOAT *values2 = &(mesh2.values[mesh2.nvalues * cum2]);
+                FLOAT *values2 = &(mesh2.values[mesh2.index_value.size * cum2]);
                 for (size_t jj = 0; jj < np2; jj++) {
                     if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
                         continue;
                     }
                     add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                               value1, values2[mesh2.nvalues * jj], mesh1.index_value, mesh2.index_value, battrs, wattrs);
+                               value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs);
                 }
             }
         }
@@ -464,7 +465,7 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh 
     for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
         FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
         FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
-        FLOAT *value1 = &(mesh1.spositions[mesh1.nvalues * ii]);
+        FLOAT *value1 = &(mesh1.values[mesh1.index_value.size * ii]);
         int bounds[2 * NDIM];
         set_cartesian_bounds(position1, bounds);
         //printf("%d %d %d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
@@ -478,13 +479,13 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh 
                     size_t cum2 = mesh2.cumnparticles[icell];
                     FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);
                     FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
-                    FLOAT *values2 = &(mesh2.values[mesh2.nvalues * cum2]);
+                    FLOAT *values2 = &(mesh2.values[mesh2.index_value.size * cum2]);
                     for (size_t jj = 0; jj < np2; jj++) {
                         if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
                             continue;
                         }
                         add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                        value1, values2[mesh2.nvalues * jj], mesh1.index_value, mesh2.index_value, battrs, wattrs);
+                                   value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs);
                     }
                 }
             }

@@ -23,7 +23,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs, sattrs:
     dtype = jnp.float64
     bshape = tuple(battrs.shape)
     bsize = battrs.size
-    res_type = jax.ShapeDtypeStruct(bshape, dtype)
+    res_type = jax.ShapeDtypeStruct(bsize, dtype)
     ndim2 = sum(p.positions.shape[1] for p in particles)
     nvalues2 = sum(p.index_value.size for p in particles)
     # Max values

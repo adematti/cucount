@@ -59,64 +59,8 @@ typedef struct {
     size_t start_spin, size_spin, start_individual_weight, size_individual_weight, start_bitwise_weight, size_bitwise_weight, size;
 } IndexValue;
 
-
-IndexValue get_index_value(int size_spin, int size_individual_weight, int size_bitwise_weight) {
-    // To check/modify when adding new weighting scheme
-    IndexValue index_value = {0};  // sets everything to 0
-    if (size_spin) {
-        index_value.size_spin = size_spin;
-        index_value.size += size_spin;
-    }
-    if (size_individual_weight) {
-        index_value.start_individual_weight = index_value.size;
-        index_value.size_individual_weight = size_individual_weight;
-        index_value.size += size_individual_weight;
-    }
-    if (size_bitwise_weight) {
-        index_value.start_bitwise_weight = index_value.size;
-        index_value.size_bitwise_weight = size_bitwise_weight;
-        index_value.size += size_bitwise_weight;
-    }
-    return index_value;
-}
-
-
 #define MAX_NWEIGHT 4
 #define SIZE_NAME 32
-
-
-size_t get_count2_names(IndexValue index_value1, IndexValue index_value2,
-                        char names[][SIZE_NAME])
-{
-    // To check/modify when adding new weighting scheme
-    int s1 = (index_value1.size_spin > 0);
-    int s2 = (index_value2.size_spin > 0);
-    size_t n = 1 + s1 + s2;
-
-    if (names == NULL) {
-        return n;
-    }
-    /* clear first buffers to be safe */
-    size_t i;
-    for (i = 0; i < MAX_NWEIGHT; ++i) {
-        names[i][0] = '\0';
-    }
-
-    if (s1 && s2) {
-        strncpy(names[0], "weight_plus_plus", SIZE_NAME-1);
-        strncpy(names[1], "weight_plus_cross", SIZE_NAME-1);
-        strncpy(names[2], "weight_cross_cross", SIZE_NAME-1);
-    } else if (s1 ^ s2) {
-        strncpy(names[0], "weight_plus", SIZE_NAME-1);
-        strncpy(names[1], "weight_cross", SIZE_NAME-1);
-    } else {
-        strncpy(names[0], "weight", SIZE_NAME-1);
-    }
-
-    return n;
-}
-
-
 
 typedef struct {
     size_t size;
@@ -182,6 +126,10 @@ struct DeviceMemoryBuffer {
     size_t meshsize;
 };
 
+
+IndexValue get_index_value(int size_spin, int size_individual_weight, int size_bitwise_weight);
+
+size_t get_count2_names(IndexValue index_value1, IndexValue index_value2, char names[][SIZE_NAME]);
 
 void* my_device_malloc(size_t nbytes, DeviceMemoryBuffer* buffer);
 

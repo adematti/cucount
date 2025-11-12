@@ -63,13 +63,14 @@ def test(write=False):
         z = np.sin(theta)
         return np.column_stack([x, y, z])
 
-    def create_cucount_particles(catalog):
+    def create_cucount_particles(catalog, with_spin=False):
         ra, dec, e1, e2, weights = catalog
         # Convert to 3D unit sphere Cartesian coordinates
         positions = get_cartesian(ra, dec)
-        # Sky coordinates for spin projections (RA, Dec in radians)
-        sky_coords = np.column_stack([ra * np.pi/180, dec * np.pi/180])
-        return Particles(positions, weights, sky_coords=sky_coords, spin_values=-np.column_stack([e1, e2]))
+        kwargs = dict()
+        if with_spin:
+            kwargs.update(spin_values=-np.column_stack([e1, e2]))
+        return Particles(positions, weights, **kwargs)
 
     def create_treecorr_catalog(catalog):
         ra, dec, e1, e2, weights = catalog
@@ -85,7 +86,7 @@ def test(write=False):
     nbins = len(edges) - 1
 
     # gg
-    particles = [create_cucount_particles(catalog) for catalog in catalogs]
+    particles = [create_cucount_particles(catalog, with_spin=False) for catalog in catalogs]
     counts = count2(*particles, battrs=battrs)['weight']
     fn = dirname / 'counts_gg.txt'
     if write:
@@ -95,7 +96,8 @@ def test(write=False):
         assert np.allclose(counts, counts_ref)
 
     # gs
-    particles = [create_cucount_particles(catalog) for catalog in catalogs]
+    particles = [create_cucount_particles(catalogs[0], with_spin=False),
+                create_cucount_particles(catalogs[1], with_spin=True)]
     wattrs = WeightAttrs(spin=(0, 2))
     counts = count2(*particles, battrs=battrs, wattrs=wattrs)
     counts = np.column_stack(list(counts.values()))
@@ -107,7 +109,7 @@ def test(write=False):
         assert np.allclose(counts, counts_ref)
 
     # ss
-    particles = [create_cucount_particles(catalog) for catalog in catalogs]
+    particles = [create_cucount_particles(catalog, with_spin=True) for catalog in catalogs]
     wattrs = WeightAttrs(spin=(2, 2))
     counts = count2(*particles, battrs=battrs, wattrs=wattrs)
     counts = np.column_stack(list(counts.values()))

@@ -31,6 +31,7 @@ struct Particles_py {
         : positions(positions_), values(py::array_t<FLOAT>()) {
 
         this->index_value = get_index_value(size_spin, size_individual_weight, size_bitwise_weight);
+        //printf("%d %d %d %d\n", this->index_value.start_spin, this->index_value.size_spin, this->index_value.start_individual_weight, this->index_value.size_individual_weight);
 
         // Ensure positions are C-contiguous
         if (!is_contiguous(this->positions)) this->positions = py::array_t<FLOAT>(this->positions.attr("copy")());
@@ -39,10 +40,9 @@ struct Particles_py {
         if (this->index_value.size) {
             if (py::isinstance<py::none>(values_)) {
                 throw std::invalid_argument(
-                    "Particles_py: non-trivial values are indicated with size_*, but input values are empty")
-                );
+                    "Particles_py: non-trivial values are indicated with size_*, but input values are empty");
             }
-            auto array = py::cast<py::array_t<FLOAT>>(weights_);
+            auto array = py::cast<py::array_t<FLOAT>>(values_);
             if (!is_contiguous(array)) array = py::array_t<FLOAT>(array.attr("copy")());
             if (array.shape(0) != npositions) {
                 throw std::invalid_argument(
@@ -71,7 +71,7 @@ struct Particles_py {
         particles.index_value = index_value;
         particles.size = size();
         particles.positions = positions.mutable_data();
-        if (values.data() != nullptr) particles.values = values;
+        if (values.data() != nullptr) particles.values = values.mutable_data();
         return particles;
     }
 };
@@ -145,26 +145,26 @@ PYBIND11_MODULE(cucount, m) {
          py::arg("size_individual_weight") = 0,
          py::arg("size_bitwise_weight") = 0)
     .def_property_readonly("size", &Particles_py::size)
-    .def_property_readonly("positions", &Particles_py::positions)
-    .def_property_readonly("values", &Particles_py::values)
-    .def_property_readonly("index_value", &Particles_py::index_value);
+    .def_readonly("positions", &Particles_py::positions)
+    .def_readonly("values", &Particles_py::values)
+    .def_readonly("index_value", &Particles_py::index_value);
 
     py::class_<BinAttrs_py>(m, "BinAttrs", py::module_local())
         .def(py::init<py::kwargs>()) // Accept Python kwargs
         .def_property_readonly("shape", &BinAttrs_py::shape)
         .def_property_readonly("size", &BinAttrs_py::size)
         .def_property_readonly("ndim", &BinAttrs_py::ndim)
-        .def_property_readonly("var", &BinAttrs_py::var)
-        .def_property_readonly("min", &BinAttrs_py::min)
-        .def_property_readonly("max", &BinAttrs_py::max)
-        .def_property_readonly("step", &BinAttrs_py::step);
+        .def_readonly("var", &BinAttrs_py::var)
+        .def_readonly("min", &BinAttrs_py::min)
+        .def_readonly("max", &BinAttrs_py::max)
+        .def_readonly("step", &BinAttrs_py::step);
 
     py::class_<SelectionAttrs_py>(m, "SelectionAttrs", py::module_local())
         .def(py::init<py::kwargs>()) // Accept Python kwargs
         .def_property_readonly("ndim", &SelectionAttrs_py::ndim)
-        .def_property_readonly("var", &SelectionAttrs_py::var)
-        .def_property_readonly("min", &SelectionAttrs_py::min)
-        .def_property_readonly("max", &SelectionAttrs_py::max);
+        .def_readonly("var", &SelectionAttrs_py::var)
+        .def_readonly("min", &SelectionAttrs_py::min)
+        .def_readonly("max", &SelectionAttrs_py::max);
 
     py::class_<WeightAttrs_py>(m, "WeightAttrs", py::module_local())
         .def(py::init<py::kwargs>()); // Accept Python kwargs
