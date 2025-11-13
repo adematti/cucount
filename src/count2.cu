@@ -83,19 +83,29 @@ __device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
         FLOAT offset = device_mattrs.boxcenter[axis] - device_mattrs.boxsize[axis] / 2;
         int index = (int) ((position[axis] - offset) * device_mattrs.meshsize[axis] / device_mattrs.boxsize[axis]);
         int delta = (int) (device_mattrs.smax / device_mattrs.boxsize[axis] * device_mattrs.meshsize[axis]) + 1;
-        bounds[2 * axis] = MAX(index - delta, 0);
-        bounds[2 * axis + 1] = MIN(index + delta, device_mattrs.meshsize[axis] - 1);
+        bounds[2 * axis] = index - delta;
+        bounds[2 * axis + 1] = index + delta;
+        if (device_mattrs.periodic) {
+            bounds[2 * axis] = MAX(bounds[2 * axis], 0);
+            bounds[2 * axis + 1] = MIN(bounds[2 * axis + 1], device_mattrs.meshsize[axis] - 1);
+        };
         //bounds[2 * axis] = 0;
         //bounds[2 * axis + 1] = device_mattrs.meshsize[axis] - 1;
     }
 }
 
-__device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
-    for (size_t axis = 0; axis < NDIM; axis++) add[axis] = position1[axis] + position2[axis];
+__device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2, const FLOAT *boxsize) {
+    for (size_t axis = 0; axis < NDIM; axis++) {
+        add[axis] = position1[axis] + position2[axis];
+        if (boxsize != NULL) add[axis] %= boxsize[axis];
+    }
 }
 
-__device__ inline void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2) {
-    for (size_t axis = 0; axis < NDIM; axis++) diff[axis] = position1[axis] - position2[axis];
+__device__ inline void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2, const FLOAT *boxsize) {
+    for (size_t axis = 0; axis < NDIM; axis++) {
+        diff[axis] = position1[axis] - position2[axis];
+        if (boxsize != NULL) diff[axis] %= boxsize[axis];
+    }
 }
 
 __device__ inline FLOAT dot(const FLOAT *position1, const FLOAT *position2) {
@@ -129,31 +139,25 @@ __device__ inline void compute_spin_projection_cartesian(
         const FLOAT zhat[3] = {0.0, 0.0, 1.0};
 
         // Compute east and north basis at r1
-        FLOAT east[3] = {
-            zhat[1]*r1[2] - zhat[2]*r1[1],
-            zhat[2]*r1[0] - zhat[0]*r1[2],
-            zhat[0]*r1[1] - zhat[1]*r1[0]
-        };
-        FLOAT east_norm = rsqrtf(east[0]*east[0] + east[1]*east[1] + east[2]*east[2]);
+        FLOAT east[3] = {zhat[1] * r1[2] - zhat[2] * r1[1],
+                         zhat[2] * r1[0] - zhat[0] * r1[2],
+                         zhat[0] * r1[1] - zhat[1] * r1[0]};
+        FLOAT east_norm = rsqrtf(east[0] * east[0] + east[1] * east[1] + east[2] * east[2]);
         east[0] *= east_norm; east[1] *= east_norm; east[2] *= east_norm;
 
-        FLOAT north[3] = {
-            r1[1]*east[2] - r1[2]*east[1],
-            r1[2]*east[0] - r1[0]*east[2],
-            r1[0]*east[1] - r1[1]*east[0]
-        };
+        FLOAT north[3] = {r1[1] * east[2] - r1[2] * east[1],
+                          r1[2] * east[0] - r1[0] * east[2],
+                          r1[0] * east[1] - r1[1] * east[0]};
 
         // Project r2 into tangent plane at r1
-        FLOAT dot12 = r1[0]*r2[0] + r1[1]*r2[1] + r1[2]*r2[2];
-        FLOAT p[3] = {
-            r2[0] - dot12 * r1[0],
-            r2[1] - dot12 * r1[1],
-            r2[2] - dot12 * r1[2]
-        };
+        FLOAT dot12 = r1[0] * r2[0] + r1[1] * r2[1] + r1[2] * r2[2];
+        FLOAT p[3] = {r2[0] - dot12 * r1[0],
+                      r2[1] - dot12 * r1[1],
+                      r2[2] - dot12 * r1[2]};
 
         // Position angle (no need for normalization of p)
-        FLOAT pe = p[0]*east[0] + p[1]*east[1] + p[2]*east[2];
-        FLOAT pn = p[0]*north[0] + p[1]*north[1] + p[2]*north[2];
+        FLOAT pe = p[0] * east[0] + p[1] * east[1] + p[2] * east[2];
+        FLOAT pn = p[0] * north[0] + p[1] * north[1] + p[2] * north[2];
         FLOAT phi = atan2(pe, pn);
 
         FLOAT sphi = sin(spin * phi);
@@ -239,10 +243,14 @@ __device__ FLOAT get_bessel(int ell, FLOAT x) {
 }
 
 
-__device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2, FLOAT *value1, FLOAT *value2, IndexValue index_value1, IndexValue index_value2, BinAttrs battrs, WeightAttrs wattrs) {
+__device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2,
+                                  FLOAT *value1, FLOAT *value2, IndexValue index_value1, IndexValue index_value2,
+                                  BinAttrs battrs, WeightAttrs wattrs) {
     int ibin = 0;
     FLOAT diff[NDIM];
-    difference(diff, position2, position1);
+    FLOAT *boxsize = NULL;
+    if (device_mattrs.periodic) boxsize = device_mattrs.boxisze;
+    difference(diff, position2, position1, boxsize);
     const FLOAT s2 = dot(diff, diff);
     const FLOAT DEFAULT_VALUE = -1000.;
     FLOAT s = DEFAULT_VALUE;
@@ -251,7 +259,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
     LOS_TYPE los = LOS_NONE;
     VAR_TYPE var = VAR_NONE;
     size_t ellmin, ellmax, ellstep;
-
+    // First find bins!
     bool REQUIRED_S = 0, REQUIRED_MU = 0, REQUIRED_MU2 = 0;
     size_t i = 0;
     for (i = 0; i < battrs.ndim; i++) {
@@ -288,12 +296,19 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             if (REQUIRED_MU) mu = d / s;
             else mu2 = (d * d) / s2;
         }
-        else {
+        else if (los == LOS_MIDPOINT) {
             FLOAT vlos[NDIM];
-            addition(vlos, position1, position2);
+            addition(vlos, position1, position2, boxsize);
             d = dot(diff, vlos);
             if (REQUIRED_MU) mu = d / sqrt(dot(vlos, vlos)) / s;
             else mu2 = d * d / dot(vlos, vlos) / s2;
+        }
+        else {
+            if (los == LOS_X) d = diff[0];
+            else if (los == LOS_Y) d = diff[1];
+            else if (los == LOS_Z) d = diff[2];
+            if (REQUIRED_MU) mu = d / s;
+            else mu2 = (d * d) / s2;
         }
         if (s == 0) {
             mu = 0.;
@@ -314,14 +329,14 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             value = mu;
         }
         if ((var == VAR_S) || (var == VAR_THETA) || (var == VAR_MU)) {
-            int ibin_loc = 0;
-            if (battrs.asize[i] > 0) {
+            int ibin_loc = 0;  // int and not size_t as can go negative
+            if (battrs.asize[i] > 0) {  // custom binning
                 if ((value >= battrs.array[i][battrs.asize[i] - 1]) || (value < battrs.array[i][0])) return;
                 for (ibin_loc = battrs.asize[i] - 1; ibin_loc >= 0; ibin_loc--) {
                     if (value >= battrs.array[i][ibin_loc]) break;
                 }
             }
-            else {
+            else {  // linear binning
                 ibin_loc = (int) (floor((value - battrs.min[i]) / battrs.step[i]));
             }
             if ((ibin_loc >= 0) && (ibin_loc < battrs.shape[i])) ibin = ibin * battrs.shape[i] + ibin_loc;
@@ -331,39 +346,86 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             break;
         }
     }
+    // Then find weight!
     FLOAT pair_weight = 1.;
     if (index_value1.size_individual_weight) pair_weight *= value1[index_value1.start_individual_weight];
     if (index_value2.size_individual_weight) pair_weight *= value2[index_value2.start_individual_weight];
 
     // TODO: add bitwise and angular upweights here
+    BitwiseWeight bitwise = wattrs.bitwise;
+    if (bitwise.size) {
+        FLOAT pair_bweight = 1.;
+        int nbits = bitwise.noffset;
+        int nbits1 = 0, nbits2 = 0;
+        for (size_t iweight = 0; iweight < bitwise.size; iweight++) {
+            INT bweight1 = *((INT *) &(value1[index_value1.start_bitwise_weight + iweight]));  // reinterpret float as int
+            INT bweight2 = *((INT *) &(value2[index_value2.start_bitwise_weight + iweight]));
+            nbits += POPCOUNT(bweight1 & bweight2);
+            if (bitwise.p_nbits) {
+                nbits1 += POPCOUNT(bweight1);
+                nbits2 += POPCOUNT(bweight2);
+            }
+        }
+        if (nbits != 0) {
+            pair_bweight = bitwise.nrealizations / nbits;
+            if (bitwise.p_nbits) {
+                pair_bweight /= bitwise.p_correction_bits[nbits1 * bitwise.p_nbits + nbits2];
+            }
+        }
+        pair_weight *= pair_bweight;
+    }
+    AngularWeight angular = wattrs.angular;
+    if (angular.size) {
+        FLOAT pair_aweight = 1.;
+        FLOAT costheta = dot(sposition1, sposition2);
+        if (costheta > angular.sep[angular.size - 1] || (costheta <= angular.sep[0])) {
+            ;
+        }
+        else {
+            for (size_t ibin_loc = 0; ibin_loc < angular.size - 1; ibin_loc++) {
+                if(costheta <= angular.sep[ibin_loc + 1]) { // ]min, max], as costheta instead of theta
+                    FLOAT frac = (costheta - angular.sep[ibin_loc]) / (angular.sep[ibin_loc + 1] - angular.sep[ibin_loc]);
+                    pair_aweight *= (1 - frac) * angular.weight[ibin_loc] + frac * angular.weight[ibin_loc + 1];
+                    break;
+                }
+            }
+        }
+        pair_weight *= pair_aweight;
+    }
+
+    if (index_value1.size_negative_weight && index_value2.size_negative_weight) {
+        FLOAT pair_nweight = value1[index_value1.start_negative_weight] * value2[index_value2.start_negative_weight];
+        pair_weight -= pair_nweight;
+    }
+
     FLOAT weight[MAX_NWEIGHT];
-    size_t nweight = 1;
+    size_t wsize = 1;
     FLOAT splus1, scross1, splus2, scross2;
     if (index_value1.size_spin) compute_spin_projection_cartesian(sposition1, sposition2, &(value1[index_value1.start_spin]), wattrs.spin[0], &splus1, &scross1);
     if (index_value2.size_spin) compute_spin_projection_cartesian(sposition1, sposition2, &(value2[index_value2.start_spin]), wattrs.spin[1], &splus2, &scross2);
 
     if (index_value1.size_spin && index_value2.size_spin) {
-        nweight = 3;
+        wsize = 3;
         weight[0] = pair_weight * splus1 * splus2;
         weight[1] = pair_weight * scross1 * splus2;
         weight[2] = pair_weight * scross1 * scross2;
     }
     else if (index_value1.size_spin) {
-        nweight = 2;
+        wsize = 2;
         weight[0] = pair_weight * splus1;
         weight[1] = pair_weight * scross1;
     }
     else if (index_value2.size_spin) {
-        nweight = 2;
+        wsize = 2;
         weight[0] = pair_weight * splus2;
         weight[1] = pair_weight * scross2;
     }
     else { // no spin
-        nweight = 1;
+        wsize = 1;
         weight[0] = pair_weight;
     }
     if (i == battrs.ndim) {
-        for (size_t iweight = 0; iweight < nweight; iweight++) {
+        for (size_t iweight = 0; iweight < wsize; iweight++) {
             atomicAdd(&(counts[ibin + iweight * battrs.size]), weight[iweight]);
         }
     }
@@ -377,7 +439,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             else ell = ill * ellstep + ellmin;
             size_t ibin_loc = ibin * battrs.shape[i] + ill;
             FLOAT leg = (2 * ell + 1) * legendre_cache[ell];
-            for (size_t iweight = 0; iweight < nweight; iweight++) {
+            for (size_t iweight = 0; iweight < wsize; iweight++) {
                 atomicAdd(&(counts[ibin_loc + iweight * battrs.size]), weight[iweight] * leg);
             }
         }
@@ -396,7 +458,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
                 else k = ik * battrs.step[i] + battrs.min[i];
                 size_t ibin_loc = (ibin * battrs.shape[i] + ik) * battrs.shape[i + 1] + ill;
                 FLOAT leg_bessel = leg * get_bessel(ell, k * s);
-                for (size_t iweight = 0; iweight < nweight; iweight++) {
+                for (size_t iweight = 0; iweight < wsize; iweight++) {
                     atomicAdd(&(counts[ibin_loc + iweight * battrs.size]), weight[iweight] * leg_bessel);
                 }
             }
@@ -470,11 +532,12 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh 
         set_cartesian_bounds(position1, bounds);
         //printf("%d %d %d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
         for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
-            int ix_n = ix * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
+            int ix_n = (ix % device_mattrs.meshsize[0]) * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
             for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
-                int iy_n = iy * device_mattrs.meshsize[2];
+                int iy_n = (iy % device_mattrs.meshsize[1]) *  device_mattrs.meshsize[2];
                 for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
-                    int icell = ix_n + iy_n + iz;
+                    int iz_n = iz % device_mattrs.meshsize[2];
+                    int icell = ix_n + iy_n + iz_n;
                     int np2 = mesh2.nparticles[icell];
                     size_t cum2 = mesh2.cumnparticles[icell];
                     FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);

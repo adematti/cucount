@@ -3,7 +3,7 @@ from jax import numpy as jnp
 from jax import tree_util
 
 from cucountlib import ffi_cucount
-from cucountlib.ffi_cucount import BinAttrs, WeightAttrs, SelectionAttrs, setup_logging
+from cucountlib.numpy import BinAttrs, WeightAttrs, SelectionAttrs, setup_logging
 from cucount import numpy
 
 
@@ -11,12 +11,7 @@ jax.ffi.register_ffi_target('count2', ffi_cucount.count2())
 
 
 IndexValue = tree_util.register_pytree_node_class(numpy.IndexValue)
-
-@tree_util.register_pytree_node_class
-class Particles(numpy.Particles):
-
-    def _get_values(self, values):
-        return jnp.concatenate(values, axis=1) if values else None
+Particles = tree_util.register_pytree_node_class(numpy.Particles)
 
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
@@ -24,8 +19,8 @@ jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=WeightAttrs(), sattrs: SelectionAttrs=SelectionAttrs()):
     assert len(particles) == 2
     assert jax.config.read('jax_enable_x64'), 'for cucount you have to enable float64'
-    ffi_cucount.set_attrs(battrs, wattrs=wattrs, sattrs=sattrs)
-    for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value)
+    ffi_cucount.set_attrs(battrs._to_c(), wattrs=wattrs._to_c(), sattrs=sattrs._to_c())
+    for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value._to_c())
     dtype = jnp.float64
     bsize, bshape = battrs.size, tuple(battrs.shape)
     names = ffi_cucount.get_count2_names()
@@ -48,7 +43,18 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=WeightAt
     size += nblocks * bsize
     buffer_type = jax.ShapeDtypeStruct((size,), dtype)
     call = jax.ffi.ffi_call('count2', (res_type, buffer_type))
-    args = sum(([particle.positions, particle.values] for particle in particles), start=[])
+
+    def concatenate(values):
+        if len(values) == 0:
+            return None
+        cvalues = []
+        for value in values:
+            if value.ndim == 1: value = value[:, jnp.newaxis]
+            if jnp.issubdtype(value.dtype, jnp.integer):
+                value = value.view(jnp.float64)
+            cvalues.append(value)
+        return jnp.concatenate(cvalues, axis=1)
+
+    args = sum(([particle.positions, concatenate(particle.values)] for particle in particles), start=[])
     counts = call(*args)[0]
     return {name: counts[icount * bsize:(icount + 1) * bsize].reshape(bshape) for icount, name in enumerate(names)}
-        

@@ -44,6 +44,9 @@ LOS_TYPE string_to_los_type(const std::string& los_name) {
     if (los_name == "firstpoint") return LOS_FIRSTPOINT;
     if (los_name == "endpoint") return LOS_ENDPOINT;
     if (los_name == "midpoint") return LOS_MIDPOINT;
+    if (los_name == "x") return LOS_X;
+    if (los_name == "y") return LOS_Y;
+    if (los_name == "z") return LOS_Z;
     throw std::invalid_argument("Invalid LOS_TYPE string: " + los_name);
 }
 
@@ -264,6 +267,14 @@ struct SelectionAttrs_py {
 // Expose the WeightAttrs struct to Python
 struct WeightAttrs_py {
     std::vector<size_t> spin;
+    // New members for 'bitwise' and 'angular' options
+    FLOAT bitwise_default = 0.0;
+    FLOAT bitwise_num = 0.0;
+    size_t bitwise_noffset = 0;
+    py::array_t<FLOAT> bitwise_p_correction_nbits;
+
+    std::vector<FLOAT> angular_sep;
+    std::vector<FLOAT> angular_weight;
 
     // Default constructor
     WeightAttrs_py() {}
@@ -283,16 +294,87 @@ struct WeightAttrs_py {
                     throw std::invalid_argument("Invalid type for 'spin' (expected iterable)");
                 }
             }
+            else if (var_name == "angular") {
+                // Accept either dict {'sep': array, 'weight': array} or tuple (sep, weight)
+                auto sep, weight;
+                if (py::isinstance<py::dict>(item.second)) {
+                    py::dict d = py::cast<py::dict>(item.second);
+                    if (!d.contains("sep") || !d.contains("weight")) {
+                        throw std::invalid_argument("'angular' dict must contain keys 'sep' and 'weight'");
+                    }
+                    sep = py::cast<py::array_t<FLOAT>>(d["sep"]);
+                    weight = py::cast<py::array_t<FLOAT>>(d["weight"]);
+                }
+                else if (py::isinstance<py::tuple>(item.second)) {
+                    py::tuple t = py::cast<py::tuple>(item.second);
+                    if (t.size() != 2) {
+                        throw std::invalid_argument("'angular' tuple must have length 2: (sep, weight)");
+                    }
+                    sep = py::cast<py::array_t<FLOAT>>(t[0]);
+                    weight = py::cast<py::array_t<FLOAT>>(t[1]);
+                }
+                else {
+                    throw std::invalid_argument("Invalid type for 'angular' (expected dict or tuple)");
+                }
+                if (sep.size() != weight.size()) {
+                        throw std::invalid_argument("'angular' arrays 'sep' and 'weight' must have the same length");
+                    }
+                    // copy into vectors
+                    angular_sep.assign(sep.data(), sep.data() + sep.size());
+                    angular_weight.assign(weight.data(), weight.data() + weight.size());
+                }
+            }
+            else if (var_name == "bitwise") {
+                // Expect a dict: {'num': float, 'noffset': int, 'p_correction_nbits': 2D array}
+                if (!py::isinstance<py::dict>(item.second)) {
+                    throw std::invalid_argument("'bitwise' must be provided as a dict with keys 'num','noffset','p_correction_nbits'");
+                }
+                py::dict d = py::cast<py::dict>(item.second);
+
+                // keys are optional -- use existing defaults if absent
+                if (d.contains("default")) bitwise_default = py::cast<double>(d["default"]);
+                if (d.contains("nrealizations")) bitwise_nrealizations = py::cast<double>(d["nrealizations"]);
+                if (d.contains("noffset")) bitwise_noffset = py::cast<size_t>(d["noffset"]);
+                if (d.contains("p_correction_nbits")) {
+                    auto pcorr = py::cast<py::array_t<FLOAT>>(d["p_correction_nbits"]);
+                    if (pcorr.ndim() != 2) {
+                        throw std::invalid_argument("'p_correction_nbits' must be a 2D array");
+                    }
+                    if (pcorr.shape(1) != pcorr.shape(0)) {
+                        throw std::invalid_argument("'p_correction_nbits' must be a square array");
+                    }
+                    bitwise_p_correction_nbits = py::array_t<FLOAT>(pcorr.attr("copy")());
+                }
+            }
             else {
-                throw std::invalid_argument("Invalid argument " + var_name);
+                throw std::invalid_argument("Invalid argument '" + var_name + "' for WeightAttrs");
             }
         }
     }
 
     WeightAttrs data() const {
-        WeightAttrs wattrs;
+        WeightAttrs wattrs = {0};
         for (size_t i = 0; i < MAX_NMESH; i++) wattrs.spin[i] = 0;
-        for (size_t i = 0; i < spin.size(); i++) wattrs.spin[i] = spin[i];
+        for (size_t i = 0; i < spin.size() && i < MAX_NMESH; i++) wattrs.spin[i] = spin[i];
+
+        // -- Angular weight --
+        if (angular_sep.size()) {
+            wattrs.angular.size = angular_sep.size();
+            // allocate C memory for sep and weight (caller must free when appropriate)
+            wattrs.angular.sep = angular_sep.mutable_data();
+            wattrs.angular.weight = angular_weight.mutable_data();
+        }
+
+        // -- Bitwise weight --
+        wattrs.bitwise.default = bitwise_default;
+        wattrs.bitwise.nrealizations = bitwise_nrealizations;
+        wattrs.bitwise.noffset = bitwise_noffset;
+
+        // If user provided a 2D array, copy it flattened (row-major)
+        if (bitwise_p_correction_nbits.size()) {
+            wattrs.bitwise.p_nbits = bitwise_p_correction_nbits.shape(0);
+            wattrs.bitwise.p_correction_nbits = bitwise_p_correction_nbits.mutable_data();
+        }
         return wattrs;
     }
 };
@@ -300,6 +382,7 @@ struct WeightAttrs_py {
 
 void prepare_mesh_attrs(MeshAttrs *mattrs, BinAttrs battrs, SelectionAttrs sattrs) {
 
+    mattrs->periodic = false;
     for (size_t axis = 0; axis < NDIM; axis++) {
         mattrs->meshsize[axis] = 0;
         mattrs->boxsize[axis] = 0.;
@@ -322,7 +405,6 @@ void prepare_mesh_attrs(MeshAttrs *mattrs, BinAttrs battrs, SelectionAttrs sattr
         mattrs->type = MESH_CARTESIAN;
         mattrs->smax = battrs.max[0];
     }
-
 }
 
 #endif

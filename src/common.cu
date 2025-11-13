@@ -3,7 +3,8 @@
 #include <cuda.h>
 #include "common.h"
 
-IndexValue get_index_value(int size_spin, int size_individual_weight, int size_bitwise_weight) {
+
+IndexValue get_index_value(int size_spin, int size_individual_weight, int size_bitwise_weight, int size_negative_weight) {
     // To check/modify when adding new weighting scheme
     IndexValue index_value = {0};  // sets everything to 0
     if (size_spin) {
@@ -19,6 +20,11 @@ IndexValue get_index_value(int size_spin, int size_individual_weight, int size_b
         index_value.start_bitwise_weight = index_value.size;
         index_value.size_bitwise_weight = size_bitwise_weight;
         index_value.size += size_bitwise_weight;
+    }
+    if (size_negative_weight) {
+        index_value.start_negative_weight = index_value.size;
+        index_value.size_negative_weight = size_negative_weight;
+        index_value.size += size_negative_weight;
     }
     return index_value;
 }

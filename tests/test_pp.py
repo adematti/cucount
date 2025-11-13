@@ -1,7 +1,8 @@
 import numpy as np
 from scipy import special
 
-from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs
+from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs, WeightAttrs, popcount, reformat_bitarrays, joint_occurences
+
 
 @np.vectorize
 def spherical_bessel(x, ell=0):
@@ -76,19 +77,19 @@ def dotproduct_normalized(position1, position2):
     return dotproduct(position1, position2) / (norm(position1) * norm(position2))
 
 
-def wiip(weights, nrealizations=None, noffset=1, default_value=0.):
-    denom = noffset + utils.popcount(*weights)
+def wiip(weights, nrealizations=None, noffset=1, default=0.):
+    denom = noffset + popcount(*weights)
     mask = denom == 0
     denom[mask] = 1.
     toret = nrealizations / denom
-    toret[mask] = default_value
+    toret[mask] = default
     return toret
 
 
-def wpip_single(weights1, weights2, nrealizations=None, noffset=1, default_value=0., correction=None):
+def wpip_single(weights1, weights2, nrealizations=None, noffset=1, default=0., correction=None):
     denom = noffset + sum(bin(w1 & w2).count('1') for w1, w2 in zip(weights1, weights2))
     if denom == 0:
-        weight = default_value
+        weight = default
     else:
         weight = nrealizations / denom
         if correction is not None:
@@ -97,15 +98,15 @@ def wpip_single(weights1, weights2, nrealizations=None, noffset=1, default_value
     return weight
 
 
-def wiip_single(weights, nrealizations=None, noffset=1, default_value=0.):
-    denom = noffset + utils.popcount(*weights)
-    return default_value if denom == 0 else nrealizations / denom
+def wiip_single(weights, nrealizations=None, noffset=1, default=0.):
+    denom = noffset + popcount(*weights)
+    return default if denom == 0 else nrealizations / denom
 
 
-def get_weight(xyz1, xyz2, weights1, weights2, n_bitwise_weights=0, twopoint_weights=None, nrealizations=None, noffset=1, default_value=0., correction=None, weight_type='auto'):
+def get_weight(xyz1, xyz2, weights1, weights2, n_bitwise_weights=0, twopoint_weights=None, nrealizations=None, noffset=1, default=0., correction=None, weight_type='auto'):
     weight = 1
     if nrealizations is not None:
-        weight *= wpip_single(weights1[:n_bitwise_weights], weights2[:n_bitwise_weights], nrealizations=nrealizations, noffset=noffset, default_value=default_value, correction=correction)
+        weight *= wpip_single(weights1[:n_bitwise_weights], weights2[:n_bitwise_weights], nrealizations=nrealizations, noffset=noffset, default=default, correction=correction)
     if twopoint_weights is not None:
         sep_twopoint_weights = twopoint_weights.sep
         twopoint_weights = twopoint_weights.weight
@@ -115,10 +116,10 @@ def get_weight(xyz1, xyz2, weights1, weights2, n_bitwise_weights=0, twopoint_wei
             frac = (costheta - sep_twopoint_weights[ind_costheta]) / (sep_twopoint_weights[ind_costheta + 1] - sep_twopoint_weights[ind_costheta])
             weight *= (1 - frac) * twopoint_weights[ind_costheta] + frac * twopoint_weights[ind_costheta + 1]
     if weight_type == 'inverse_bitwise_minus_individual':
-        # print(1./nrealizations * weight, 1./nrealizations * wiip_single(weights1[:n_bitwise_weights], nrealizations=nrealizations, noffset=noffset, default_value=default_value)\
-        #          * wiip_single(weights2[:n_bitwise_weights], nrealizations=nrealizations, noffset=noffset, default_value=default_value))
-        weight -= wiip_single(weights1[:n_bitwise_weights], nrealizations=nrealizations, noffset=noffset, default_value=default_value)\
-                  * wiip_single(weights2[:n_bitwise_weights], nrealizations=nrealizations, noffset=noffset, default_value=default_value)
+        # print(1./nrealizations * weight, 1./nrealizations * wiip_single(weights1[:n_bitwise_weights], nrealizations=nrealizations, noffset=noffset, default=default)\
+        #          * wiip_single(weights2[:n_bitwise_weights], nrealizations=nrealizations, noffset=noffset, default=default))
+        weight -= wiip_single(weights1[:n_bitwise_weights], nrealizations=nrealizations, noffset=noffset, default=default)\
+                  * wiip_single(weights2[:n_bitwise_weights], nrealizations=nrealizations, noffset=noffset, default=default)
     for w1, w2 in zip(weights1[n_bitwise_weights:], weights2[n_bitwise_weights:]):
         weight *= w1 * w2
     return weight
@@ -248,16 +249,16 @@ def test_thetacut():
 
         setdefaultnone(weight_attrs, 'nrealizations', n_bitwise_weights * 64 + 1)
         setdefaultnone(weight_attrs, 'noffset', 1)
-        set_default_value = 'default_value' in weight_attrs
-        if set_default_value:
-            for w in data1[3:3 + n_bitwise_weights] + data2[3:3 + n_bitwise_weights]: w[:] = 0  # set to zero to make sure default_value is used
-        setdefaultnone(weight_attrs, 'default_value', 0)
+        set_default = 'default' in weight_attrs
+        if set_default:
+            for w in data1[3:3 + n_bitwise_weights] + data2[3:3 + n_bitwise_weights]: w[:] = 0  # set to zero to make sure default is used
+        setdefaultnone(weight_attrs, 'default', 0)
         data1_ref, data2_ref = data1.copy(), data2.copy()
         # data1_ref = [mpi.gather(d, mpiroot=None, mpicomm=mpicomm) for d in data1_ref]
         # data2_ref = [mpi.gather(d, mpiroot=None, mpicomm=mpicomm) for d in data2_ref]
 
         def dataiip(data):
-            kwargs = {name: weight_attrs[name] for name in ['nrealizations', 'noffset', 'default_value']}
+            kwargs = {name: weight_attrs[name] for name in ['nrealizations', 'noffset', 'default']}
             return data[:3] + [wiip(data[3:3 + n_bitwise_weights], **kwargs)] + data[3 + n_bitwise_weights:]
 
         if n_bitwise_weights == 0:
@@ -287,7 +288,7 @@ def test_thetacut():
             nalways = weight_attrs.get('nalways', 0)
             noffset = weight_attrs.get('noffset', 1)
             nrealizations = weight_attrs['nrealizations']
-            joint = utils.joint_occurences(nrealizations, noffset=weight_attrs['noffset'] + nalways, default_value=weight_attrs['default_value'])
+            joint = joint_occurences(nrealizations, noffset=weight_attrs['noffset'] + nalways, default=weight_attrs['default'])
             correction = np.zeros((nrealizations,) * 2, dtype='f8')
             for c1 in range(correction.shape[0]):
                 for c2 in range(correction.shape[1]):
@@ -308,7 +309,7 @@ def test_thetacut():
         if bitwise_type is not None and n_bitwise_weights > 0:
 
             def update_bit_type(data):
-                return data[:3] + utils.reformat_bitarrays(*data[3:3 + n_bitwise_weights], dtype=bitwise_type) + data[3 + n_bitwise_weights:]
+                return data[:3] + reformat_bitarrays(*data[3:3 + n_bitwise_weights], dtype=bitwise_type) + data[3 + n_bitwise_weights:]
 
             data1 = update_bit_type(data1)
             data2 = update_bit_type(data2)
@@ -356,27 +357,30 @@ def test_thetacut():
 
 
 def test_corrfunc_smu():
-    import os
     import time
     edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
     size = int(1e7)
     boxsize = (3000,) * 3
+    sep = np.linspace(0.8, 1., 100)
+    twopoint_weights = (sep, 1. + np.linspace(0., 1., sep.size))
 
-    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=0, seed=42)
-    positions1, weights1 = np.column_stack(data1[:3]), data1[3]
-    positions2, weights2 = np.column_stack(data2[:3]), data2[3]
+    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=4, seed=42)
+    positions1, weights1 = np.column_stack(data1[:3]), data1[3:]
+    positions2, weights2 = np.column_stack(data2[:3]), data2[3:]
 
     t0 = time.time()
     particles1 = Particles(positions1, weights1)
     particles2 = Particles(positions2, weights2)
+    wattrs = WeightAttrs(bitwise=dict(nrealizations=data1[3:]), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
     los = 'midpoint'
     battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-    test = count2(particles1, particles2, battrs=battrs)['weight']
+    test = count2(particles1, particles2, battrs=battrs, wattrs=wattrs)['weight']
     print('cucount', time.time() - t0)
 
     from pycorr import TwoPointCounter
     t0 = time.time()
-    ref = TwoPointCounter('smu', edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los, position_type='pos', nthreads=1, gpu=True)
+    ref = TwoPointCounter('smu', edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los, position_type='pos',
+                          weight_attrs={'normalization': 'counter'}, twopoint_weights=twopoint_weights, nthreads=1, gpu=True)
     print('Corrfunc', time.time() - t0)
     tol = {'atol': 1e-8, 'rtol': 1e-5}
     #print(test.ravel())

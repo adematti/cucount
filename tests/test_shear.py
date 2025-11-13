@@ -71,18 +71,9 @@ def test(write=False):
             kwargs.update(spin_values=-np.column_stack([e1, e2]))
         return Particles(positions, weights, **kwargs)
 
-    def create_treecorr_catalog(catalog):
-        ra, dec, e1, e2, weights = catalog
-        return treecorr.Catalog(ra=ra, dec=dec, w=weights, g1=e1, g2=e2, ra_units='deg', dec_units='deg')
-
     edges = np.logspace(-3., -1., 30)
     battrs = BinAttrs(theta=edges * np.pi / 180.)
     catalogs = get_catalogs(write=write)
-
-    # Convert theta edges to arcmin for TreeCorr
-    min_sep = edges[0] * 60.0
-    max_sep = edges[-1] * 60.0
-    nbins = len(edges) - 1
 
     # gg
     particles = [create_cucount_particles(catalog, with_spin=False) for catalog in catalogs]
@@ -137,18 +128,9 @@ def test_jax(write=False):
             kwargs.update(spin_values=-np.column_stack([e1, e2]))
         return Particles(positions, weights, **kwargs)
 
-    def create_treecorr_catalog(catalog):
-        ra, dec, e1, e2, weights = catalog
-        return treecorr.Catalog(ra=ra, dec=dec, w=weights, g1=e1, g2=e2, ra_units='deg', dec_units='deg')
-
     edges = np.logspace(-3., -1., 30)
     battrs = BinAttrs(theta=edges * np.pi / 180.)
     catalogs = get_catalogs(write=write)
-
-    # Convert theta edges to arcmin for TreeCorr
-    min_sep = edges[0] * 60.0
-    max_sep = edges[-1] * 60.0
-    nbins = len(edges) - 1
 
     # gg
     particles = [create_cucount_particles(catalog, with_spin=False) for catalog in catalogs]

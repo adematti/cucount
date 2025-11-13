@@ -5,6 +5,8 @@
 #define _CUCOUNT_COMMON_
 
 #define FLOAT double
+#define INT long
+#define POPCOUNT __popcll
 #define NDIM 3
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))  // maximum of two numbers
@@ -26,7 +28,7 @@ void log_message(LogLevel level, const char *format, ...);
 
 typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
 typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
-typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT} LOS_TYPE;
+typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT, LOS_X, LOS_Y, LOS_Z} LOS_TYPE;
 
 
 #define atomicAddSizet(address, val)                            \
@@ -56,8 +58,10 @@ typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT} LOS_TYPE;
 
 typedef struct {
     // To check/modify when adding new weighting scheme
-    size_t start_spin, size_spin, start_individual_weight, size_individual_weight, start_bitwise_weight, size_bitwise_weight, size;
+    size_t start_spin, size_spin, start_individual_weight, size_individual_weight, start_bitwise_weight, size_bitwise_weight,
+    start_negative_weight, size_negative_weight, size;
 } IndexValue;
+
 
 #define MAX_NWEIGHT 4
 #define SIZE_NAME 32
@@ -109,11 +113,31 @@ typedef struct {
     FLOAT boxcenter[NDIM];
     FLOAT smax;
     MESH_TYPE type;
+    bool periodic;
 } MeshAttrs;
 
 
 typedef struct {
+    FLOAT default;
+    FLOAT nrealizations;
+    int noffset;
+    size_t p_nbits;
+    FLOAT *p_correction_nbits;
+} BitwiseWeight;
+
+
+typedef struct {
+    FLOAT *sep;
+    FLOAT *weight;
+    size_t size;
+} AngularWeight;
+
+
+// To check/modify when adding new weighting scheme
+typedef struct {
     size_t spin[MAX_NMESH];
+    BitwiseWeight bitwise;
+    AngularWeight angular;
 } WeightAttrs;
 
 
@@ -146,7 +170,6 @@ void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, int mode);
 void free_device_particles(Particles *particles);
 
 void free_device_mesh(Mesh *mesh);
-
 
 void copy_particles_to_host(Particles particles, Particles *host_particles, int mode);
 
