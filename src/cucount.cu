@@ -27,10 +27,10 @@ struct Particles_py {
 
     // Single constructor accepting optional sky_coords and spin_values (can be None)
     Particles_py(py::array_t<FLOAT> positions_, py::array_t<FLOAT> values_ = py::none(),
-        const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0)
+        const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0, const int size_negative_weight = 0)
         : positions(positions_), values(py::array_t<FLOAT>()) {
 
-        this->index_value = get_index_value(size_spin, size_individual_weight, size_bitwise_weight);
+        this->index_value = get_index_value(size_spin, size_individual_weight, size_bitwise_weight, size_negative_weight);
         //printf("%d %d %d %d\n", this->index_value.start_spin, this->index_value.size_spin, this->index_value.start_individual_weight, this->index_value.size_individual_weight);
 
         // Ensure positions are C-contiguous
@@ -78,7 +78,7 @@ struct Particles_py {
 
 
 py::object count2_py(Particles_py& particles1, Particles_py& particles2,
-               BinAttrs_py& battrs_py, const WeightAttrs_py& wattrs_py = WeightAttrs_py(), const SelectionAttrs_py& sattrs_py = SelectionAttrs_py()) {
+               BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(), const SelectionAttrs_py sattrs_py = SelectionAttrs_py()) {
 
     DeviceMemoryBuffer *membuffer = NULL;
     Particles list_particles[MAX_NMESH];
@@ -129,7 +129,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     // Return appropriate result based on spin parameters
     for (size_t icount = 0; icount < ncounts; icount++) {
         py::array_t<FLOAT> array_py({(ssize_t)battrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr + icount * battrs.size, counts_py);
-        result[names[icount]] = array_py;
+        result[names[icount]] = array_py.attr("reshape")(battrs_py.shape()).cast<py::array_t<FLOAT>>();
     }
     return result;
 }
@@ -138,12 +138,13 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
 // Bind the function and structs to Python
 PYBIND11_MODULE(cucount, m) {
     py::class_<Particles_py>(m, "Particles", py::module_local())
-    .def(py::init<py::array_t<FLOAT>, py::array_t<FLOAT>, int, int, int>(),
+    .def(py::init<py::array_t<FLOAT>, py::array_t<FLOAT>, int, int, int, int>(),
          py::arg("positions"),
          py::arg("values") = py::none(),
          py::arg("size_spin") = 0,
          py::arg("size_individual_weight") = 0,
-         py::arg("size_bitwise_weight") = 0)
+         py::arg("size_bitwise_weight") = 0,
+         py::arg("size_negative_weight") = 0)
     .def_property_readonly("size", &Particles_py::size)
     .def_readonly("positions", &Particles_py::positions)
     .def_readonly("values", &Particles_py::values)

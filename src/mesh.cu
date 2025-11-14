@@ -206,7 +206,7 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs, DeviceMe
 
         size_t meshsize = 1;
         if (mattrs->meshsize[0] == 0) {
-            int nside1 = (int) (16.0 * pow(volume, 1. / 3.) / mattrs->smax);
+            int nside1 = (int) (4.0 * pow(volume, 1. / 3.) / mattrs->smax);
             // This imposes total mesh.size < mean(particles.size)
             int nside2 = (int) pow(0.5 * nparticles, 1. / 3.);
             if ((buffer) && (buffer->size > 0)) nside2 = MIN(nside2, (int)(pow(buffer->meshsize, 1. / 3.)));

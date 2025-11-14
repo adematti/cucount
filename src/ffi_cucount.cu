@@ -20,15 +20,15 @@ static WeightAttrs wattrs;
 static IndexValue index_value[2] = {0};
 
 
-void set_attrs_py(BinAttrs_py& battrs_py, const WeightAttrs_py& wattrs_py = WeightAttrs_py(), const SelectionAttrs_py& sattrs_py = SelectionAttrs_py()) {
+void set_attrs_py(BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(), const SelectionAttrs_py sattrs_py = SelectionAttrs_py()) {
     battrs = battrs_py.data();
     wattrs = wattrs_py.data();
     sattrs = sattrs_py.data();
 }
 
 
-void set_index_value_py(const size_t iparticle, const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0) {
-    index_value[iparticle] = get_index_value(size_spin, size_individual_weight, size_bitwise_weight);
+void set_index_value_py(const size_t iparticle, const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0, const int size_negative_weight = 0) {
+    index_value[iparticle] = get_index_value(size_spin, size_individual_weight, size_bitwise_weight, size_negative_weight);
 }
 
 
@@ -150,7 +150,8 @@ PYBIND11_MODULE(ffi_cucount, m) {
         py::arg("iparticle"),
         py::arg("size_spin") = 0,
         py::arg("size_individual_weight") = 0,
-        py::arg("size_bitwise_weight") = 0);
+        py::arg("size_bitwise_weight") = 0,
+        py::arg("size_negative_weight") = 0);
 
     // Expose helper to get output names
     m.def("get_count2_names",

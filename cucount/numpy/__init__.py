@@ -22,43 +22,42 @@ class AngularWeight(object):
     def tree_unflatten(cls, aux_data, children):
         return cls(*children)
 
-    def keys(self):
-        return asdict(self).keys()
-
-    def __getitem__(self, key):
-        return getattr(self, key)
-
     def _to_c(self):
-        return dict(self)
+        sep = np.cos(np.radians(self.sep))
+        argsort = np.argsort(sep)
+        state = {'sep': sep[argsort].copy(), 'weight': self.weight[argsort].copy()}
+        return state
 
 
 @dataclass(init=False)
 class BitwiseWeight(object):
 
-    default: float = 0.
+    default_value: float = 0.
     nrealizations: float = 0.
     noffset: int = 0
     nalways: int = 0
     p_correction_nbits: np.ndarray = None
 
-    def __init__(self, nrealizations, default=0., noffset=None, nalways=0, p_correction_nbits=True):
-        if not isinstance(nrealizations, numbers.Number):
-            nrealizations = get_nrealizations_from_bitwise_weights(nrealizations)
-        self.default = default
+    def __init__(self, weights=None, nrealizations=None, default_value=0., noffset=None, nalways=0, p_correction_nbits=True):
+        if weights is not None:
+            max_bits = sum(weight.dtype.itemsize for weight in weights) * 8
+            if nrealizations is None: nrealizations = 1 + max_bits
+        else:
+            assert nrealizations is not None
+            max_bits = nrealizations
+        self.default_value = default_value
         self.nrealizations = nrealizations
         self.noffset = 1 if noffset is None else noffset
         self.nalways = nalways
-        if size_bitwise_weights is None:
-            size_bitwise_weights = nrealizations
         if isinstance(p_correction_nbits, bool):
             if p_correction_nbits:
-                joint = joint_occurences(nrealizations, noffset=noffset + nalways, default=default)
-                p_correction_nbits = np.ones((1 + size_bitwise_weights,) * 2, dtype=np.float64)
-                cmin, cmax = nalways, min(nrealizations - noffset, size_bitwise_weights* 8)
+                joint = joint_occurences(self.nrealizations, noffset=self.noffset + self.nalways, default_value=self.default_value)
+                p_correction_nbits = np.ones((1 + max_bits,) * 2, dtype=np.float64)
+                cmin, cmax = self.nalways, min(self.nrealizations - self.noffset, max_bits)
                 for c1 in range(cmin, 1 + cmax):
                     for c2 in range(cmin, 1 + cmax):
-                        p_correction_nbits[c1, c2] = joint[c1 - nalways][c2 - nalways] if c2 <= c1 else joint[c2 - nalways][c1 - nalways]
-                        p_correction_nbits[c1, c2] /= (nrealizations / (noffset + c1) * nrealizations / (noffset + c2))
+                        p_correction_nbits[c1, c2] = joint[c1 - self.nalways][c2 - self.nalways] if c2 <= c1 else joint[c2 - self.nalways][c1 - self.nalways]
+                        p_correction_nbits[c1, c2] /= (self.nrealizations / (self.noffset + c1) * self.nrealizations / (self.noffset + c2))
             else:
                 p_correction_nbits = None
         self.p_correction_nbits = p_correction_nbits
@@ -71,7 +70,7 @@ class BitwiseWeight(object):
         # children must be array-like objects that JAX can handle
         children = (self.p_correction_nbits,)
         # aux_data must be a pure-Python (picklable) structure with the remaining fields
-        aux_data = {name: getattr(self, name) for name in ['default', 'num', 'noffset']}
+        aux_data = {name: getattr(self, name) for name in ['nrealizations', 'default_value', 'noffset', 'nalways']}
         return children, aux_data
 
     @classmethod
@@ -88,11 +87,11 @@ class BitwiseWeight(object):
         denom[mask] = 1
         toret = np.empty_like(denom, dtype=np.float64)
         toret[...] = self.nrealizations / denom
-        toret[mask] = self.default
+        toret[mask] = self.default_value
         return toret
 
     def _to_c(self):
-        state = dict(self)
+        state = asdict(self)
         state.pop('nalways')
         return state
 
@@ -100,9 +99,9 @@ class BitwiseWeight(object):
 @dataclass(init=False)
 class WeightAttrs(object):
 
-    spin = None
-    angular = None
-    bitwise = None
+    spin: tuple = None
+    angular: AngularWeight = None
+    bitwise: BitwiseWeight = None
 
     def __init__(self, spin=None, angular=None, bitwise=None):
         self.spin = spin
@@ -117,17 +116,24 @@ class WeightAttrs(object):
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         angular, bitwise = children
-        return cls(*aux_data, angular=angular, bitwise=bitwise)
+        return cls(**aux_data, angular=angular, bitwise=bitwise)
 
-    def _to_c(self):
-        state = asdict(self)
+    def _to_c(self):        
+        state = {}
         for name in ['angular', 'bitwise']:
-            state[name] = state[name]._to_c()
+            value = getattr(self, name)
+            if value is not None:
+                state[name] = value._to_c()
         for name in ['spin']:
-            if state[name] is None: state.pop(name)
+            value = getattr(self, name)
+            if value is not None:
+                state[name] = value
         return cucountlib.cucount.WeightAttrs(**state)
 
 
+from cucountlib.cucount import SelectionAttrs, BinAttrs
+
+'''
 @dataclass(init=False)
 class SelectionAttrs(object):
 
@@ -136,11 +142,10 @@ class SelectionAttrs(object):
         Provide selection:
         - theta = (min, max)
         """
-        self.__dict__.udpate(**kwargs)
+        self.__dict__.update(**kwargs)
 
     def _to_c(self):
-        state = asdict(self)
-        return cucountlib.cucount.SelectionAttrs(**state)
+        return cucountlib.cucount.SelectionAttrs(**self.__dict__)
 
 
 @dataclass(init=False)
@@ -153,12 +158,11 @@ class BinAttrs(object):
         - mu = (edge array or (min, max, step), line-of-sight (midpoint, firstpoint, endpoint, x, y, z))
         - theta = edge array or (min, max, step)
         """
-        self.__dict__.udpate(**kwargs)
+        self.__dict__.update(**kwargs)
 
     def _to_c(self):
-        state = asdict(self)
-        return cucountlib.cucount.BinAttrs(**state)
-
+        return cucountlib.cucount.BinAttrs(**self.__dict__)
+'''
 
 
 @dataclass
@@ -168,6 +172,7 @@ class IndexValue(object):
     size_spin: int = 0
     size_individual_weight: int = 0
     size_bitwise_weight: int = 0
+    size_negative_weight: int = 0
 
     def tree_flatten(self):
         # Only used by JAX; kept here for API consistency
@@ -251,7 +256,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=WeightAt
         return np.concatenate(cvalues, axis=1)
 
     particles = [cucountlib.cucount.Particles(p.positions, values=concatenate(p.values), **p.index_value._to_c()) for p in particles]
-    return cucountlib.cucount.count2(*particles, battrs=battrs._to_c(), wattrs=wattrs._to_c(), sattrs=sattrs._to_c())
+    return cucountlib.cucount.count2(*particles, battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
 
 
 
@@ -355,7 +360,7 @@ def pascal_triangle(n_rows):
 from functools import lru_cache
 
 @lru_cache(maxsize=10, typed=False)
-def joint_occurences(nrealizations=128, max_occurences=None, noffset=1, default=0):
+def joint_occurences(nrealizations=128, max_occurences=None, noffset=1, default_value=0):
     """
     Return expected value of inverse counts, i.e. eq. 21 of arXiv:1912.08803.
 
@@ -372,7 +377,7 @@ def joint_occurences(nrealizations=128, max_occurences=None, noffset=1, default=
         The offset added to the bitwise count, typically 0 or 1.
         See "zero truncated estimator" and "efficient estimator" of arXiv:1912.08803.
 
-    default : float, default=0.
+    default_value : float, default=0.
         The default value of pairwise weights if the denominator is zero (defaulting to 0).
 
     Returns
@@ -390,7 +395,7 @@ def joint_occurences(nrealizations=128, max_occurences=None, noffset=1, default=
 
     def fk(c12):
         if c12 == 0:
-            return default
+            return default_value
         return nrealizations / c12
 
     toret = []

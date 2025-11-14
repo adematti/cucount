@@ -229,5 +229,5 @@ def test_treecorr():
 if __name__ == '__main__':
 
     #test(write=True)
-    #test()
-    test_jax()
+    test()
+    #test_jax()

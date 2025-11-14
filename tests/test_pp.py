@@ -364,14 +364,14 @@ def test_corrfunc_smu():
     sep = np.linspace(0.8, 1., 100)
     twopoint_weights = (sep, 1. + np.linspace(0., 1., sep.size))
 
-    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=4, seed=42)
+    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=6, seed=44)
     positions1, weights1 = np.column_stack(data1[:3]), data1[3:]
     positions2, weights2 = np.column_stack(data2[:3]), data2[3:]
 
     t0 = time.time()
     particles1 = Particles(positions1, weights1)
     particles2 = Particles(positions2, weights2)
-    wattrs = WeightAttrs(bitwise=dict(nrealizations=data1[3:]), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
+    wattrs = WeightAttrs(bitwise=dict(weights=data1[3:]), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
     los = 'midpoint'
     battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
     test = count2(particles1, particles2, battrs=battrs, wattrs=wattrs)['weight']
@@ -464,6 +464,6 @@ def test_readme():
 if __name__ == '__main__':
 
     #test_thetacut()
-    #test_corrfunc_smu()
+    test_corrfunc_smu()
     #test_jax(distributed=True)
-    test_readme()
+    #test_readme()

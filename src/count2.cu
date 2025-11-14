@@ -85,7 +85,7 @@ __device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
         int delta = (int) (device_mattrs.smax / device_mattrs.boxsize[axis] * device_mattrs.meshsize[axis]) + 1;
         bounds[2 * axis] = index - delta;
         bounds[2 * axis + 1] = index + delta;
-        if (device_mattrs.periodic) {
+        if (device_mattrs.periodic == 0) {
             bounds[2 * axis] = MAX(bounds[2 * axis], 0);
             bounds[2 * axis + 1] = MIN(bounds[2 * axis + 1], device_mattrs.meshsize[axis] - 1);
         };
@@ -94,17 +94,17 @@ __device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
     }
 }
 
-__device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2, const FLOAT *boxsize) {
+__device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
     for (size_t axis = 0; axis < NDIM; axis++) {
         add[axis] = position1[axis] + position2[axis];
-        if (boxsize != NULL) add[axis] %= boxsize[axis];
+        if (device_mattrs.periodic) add[axis] = fmod(add[axis], device_mattrs.boxsize[axis]);
     }
 }
 
-__device__ inline void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2, const FLOAT *boxsize) {
+__device__ inline void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2) {
     for (size_t axis = 0; axis < NDIM; axis++) {
         diff[axis] = position1[axis] - position2[axis];
-        if (boxsize != NULL) diff[axis] %= boxsize[axis];
+        if (device_mattrs.periodic) diff[axis] = fmod(diff[axis], device_mattrs.boxsize[axis]);
     }
 }
 
@@ -248,9 +248,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
                                   BinAttrs battrs, WeightAttrs wattrs) {
     int ibin = 0;
     FLOAT diff[NDIM];
-    FLOAT *boxsize = NULL;
-    if (device_mattrs.periodic) boxsize = device_mattrs.boxisze;
-    difference(diff, position2, position1, boxsize);
+    difference(diff, position2, position1);
     const FLOAT s2 = dot(diff, diff);
     const FLOAT DEFAULT_VALUE = -1000.;
     FLOAT s = DEFAULT_VALUE;
@@ -298,7 +296,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         }
         else if (los == LOS_MIDPOINT) {
             FLOAT vlos[NDIM];
-            addition(vlos, position1, position2, boxsize);
+            addition(vlos, position1, position2);
             d = dot(diff, vlos);
             if (REQUIRED_MU) mu = d / sqrt(dot(vlos, vlos)) / s;
             else mu2 = d * d / dot(vlos, vlos) / s2;
@@ -351,13 +349,12 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
     if (index_value1.size_individual_weight) pair_weight *= value1[index_value1.start_individual_weight];
     if (index_value2.size_individual_weight) pair_weight *= value2[index_value2.start_individual_weight];
 
-    // TODO: add bitwise and angular upweights here
     BitwiseWeight bitwise = wattrs.bitwise;
-    if (bitwise.size) {
-        FLOAT pair_bweight = 1.;
+    if (index_value1.size_bitwise_weight && index_value2.size_bitwise_weight) {
+        FLOAT pair_bweight = bitwise.default_value;
         int nbits = bitwise.noffset;
         int nbits1 = 0, nbits2 = 0;
-        for (size_t iweight = 0; iweight < bitwise.size; iweight++) {
+        for (size_t iweight = 0; iweight < index_value1.size_bitwise_weight; iweight++) {
             INT bweight1 = *((INT *) &(value1[index_value1.start_bitwise_weight + iweight]));  // reinterpret float as int
             INT bweight2 = *((INT *) &(value2[index_value2.start_bitwise_weight + iweight]));
             nbits += POPCOUNT(bweight1 & bweight2);
@@ -369,7 +366,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         if (nbits != 0) {
             pair_bweight = bitwise.nrealizations / nbits;
             if (bitwise.p_nbits) {
-                pair_bweight /= bitwise.p_correction_bits[nbits1 * bitwise.p_nbits + nbits2];
+                pair_bweight /= bitwise.p_correction_nbits[nbits1 * bitwise.p_nbits + nbits2];
             }
         }
         pair_weight *= pair_bweight;

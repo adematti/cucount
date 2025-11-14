@@ -118,7 +118,7 @@ typedef struct {
 
 
 typedef struct {
-    FLOAT default;
+    FLOAT default_value;
     FLOAT nrealizations;
     int noffset;
     size_t p_nbits;
@@ -151,7 +151,7 @@ struct DeviceMemoryBuffer {
 };
 
 
-IndexValue get_index_value(int size_spin, int size_individual_weight, int size_bitwise_weight);
+IndexValue get_index_value(int size_spin, int size_individual_weight, int size_bitwise_weight, int size_negative_weight);
 
 size_t get_count2_size(IndexValue index_value1, IndexValue index_value2, char names[][SIZE_NAME]);
 

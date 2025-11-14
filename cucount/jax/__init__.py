@@ -3,7 +3,7 @@ from jax import numpy as jnp
 from jax import tree_util
 
 from cucountlib import ffi_cucount
-from cucountlib.numpy import BinAttrs, WeightAttrs, SelectionAttrs, setup_logging
+from cucount.numpy import BinAttrs, WeightAttrs, SelectionAttrs, setup_logging
 from cucount import numpy
 
 
@@ -19,7 +19,7 @@ jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=WeightAttrs(), sattrs: SelectionAttrs=SelectionAttrs()):
     assert len(particles) == 2
     assert jax.config.read('jax_enable_x64'), 'for cucount you have to enable float64'
-    ffi_cucount.set_attrs(battrs._to_c(), wattrs=wattrs._to_c(), sattrs=sattrs._to_c())
+    ffi_cucount.set_attrs(battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
     for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value._to_c())
     dtype = jnp.float64
     bsize, bshape = battrs.size, tuple(battrs.shape)
