@@ -17,16 +17,17 @@ jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 
 def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=WeightAttrs(), sattrs: SelectionAttrs=SelectionAttrs()):
-    assert len(particles) == 2
     assert jax.config.read('jax_enable_x64'), 'for cucount you have to enable float64'
+    assert len(particles) == 2
+    wattrs.check(*particles)
     ffi_cucount.set_attrs(battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
     for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value._to_c())
     dtype = jnp.float64
     bsize, bshape = battrs.size, tuple(battrs.shape)
     names = ffi_cucount.get_count2_names()
     res_type = jax.ShapeDtypeStruct((len(names) * bsize,), dtype)
-    ndim2 = sum(p.positions.shape[1] for p in particles)
-    nvalues2 = sum(p.index_value.size for p in particles)
+    ndim2 = sum(particle.positions.shape[1] for particle in particles)
+    nvalues2 = sum(particle.index_value.size for particle in particles)
     # Max values
     nblocks = 256
     meshsize = sum(particle.size + 100 for particle in particles)

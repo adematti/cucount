@@ -28,6 +28,12 @@ class AngularWeight(object):
         state = {'sep': sep[argsort].copy(), 'weight': self.weight[argsort].copy()}
         return state
 
+    def __call__(self, sep):
+        """Return value of weights for given separation in degrees."""
+        costheta = np.cos(np.radians(sep))
+        state = self._to_c()
+        return np.interp(costheta, state['sep'], state['weight'], left=1., right=1.)
+
 
 @dataclass(init=False)
 class BitwiseWeight(object):
@@ -81,13 +87,15 @@ class BitwiseWeight(object):
         p_correction_nbits = children[0]
         return cls(**aux_data, p_correction_nbits=p_correction_nbits)
 
-    def weight_iip(self, bitwise_weights):
-        denom = self.noffset + sum(popcount(weight) for weight in bitwise_weights)
+    def __call__(self, *bitwise_weights):
+        """Return value of weights."""
+        denom = self.noffset + sum(popcount(np.bitwise_and.reduce(weights)) for weights in zip(*bitwise_weights))
         mask = denom == 0
-        denom[mask] = 1
-        toret = np.empty_like(denom, dtype=np.float64)
-        toret[...] = self.nrealizations / denom
-        toret[mask] = self.default_value
+        toret = self.nrealizations / np.where(mask, 1., denom)
+        if len(bitwise_weights) > 1:
+            c = tuple(sum(popcount(weight) for weight in weights) for weights in bitwise_weights)
+            toret /= self.p_correction_nbits[c]
+        toret = np.where(mask, self.default_value, toret)
         return toret
 
     def _to_c(self):
@@ -118,7 +126,7 @@ class WeightAttrs(object):
         angular, bitwise = children
         return cls(**aux_data, angular=angular, bitwise=bitwise)
 
-    def _to_c(self):        
+    def _to_c(self):
         state = {}
         for name in ['angular', 'bitwise']:
             value = getattr(self, name)
@@ -129,6 +137,35 @@ class WeightAttrs(object):
             if value is not None:
                 state[name] = value
         return cucountlib.cucount.WeightAttrs(**state)
+
+    def check(self, *particles):
+        if not particles:
+            return
+        if self.spin is not None:
+            assert all(particle.get('spin') for particle in particles), 'WeightAttrs.spin is not None, so Particles must have spin values'
+        nbitwises = [len(particle.get('bitwise_weight')) for particle in particles]
+        if any(nbitwises):
+            assert self.bitwise is not None, 'Particles have bitwise weights, so provide bitwise to WeightAttrs'
+        if self.bitwise is not None:
+            assert all(nbitwise == nbitwises[0] for nbitwise in nbitwises), 'WeightAttrs.bitwise is not None, so Particles must have same bitwise weights'
+
+    def __call__(self, *particles):
+        """Return value of all weights."""
+        weight = 1.
+        for particle in particles:
+            for value in particle.get('individual_weight'): weight *= value
+        if self.bitwise:
+            weight *= self.bitwise(*[particle.get('bitwise_weight') for particle in particles])
+        if self.angular:
+            angular = self.angular(0.)
+            weight *= angular
+        negatives = [particle.get('negative_weight') for particle in particles]
+        if all(negatives):
+            negative = 1.
+            for _ in negatives:
+                for value in _: negative *= value
+            weight2 -= negative
+        return weight
 
 
 from cucountlib.cucount import SelectionAttrs, BinAttrs
@@ -165,20 +202,26 @@ class BinAttrs(object):
 '''
 
 
-@dataclass
+@dataclass(init=False)
 class IndexValue(object):
     # To check/modify when adding new weighting scheme
+    _fields = ['spin', 'individual_weight', 'bitwise_weight', 'negative_weight']
 
-    size_spin: int = 0
-    size_individual_weight: int = 0
-    size_bitwise_weight: int = 0
-    size_negative_weight: int = 0
+    sizes: dict = None
+
+    def __init__(self, **kwargs):
+        sizes = {name: 0 for name in self._fields}
+        for name, size in kwargs.items():
+            if name not in sizes:
+                raise ValueError(f'{name} is not supported; options are {list(sizes)}')
+            sizes[name] = size
+        self.sizes = sizes
 
     def tree_flatten(self):
         # Only used by JAX; kept here for API consistency
         # Return flattenable children and auxiliary data (non-flattenable)
         children = tuple()
-        aux_data = asdict(self)
+        aux_data = self.sizes
         return children, aux_data
 
     @classmethod
@@ -186,11 +229,22 @@ class IndexValue(object):
         return cls(**aux_data)
 
     def _to_c(self):
-        return asdict(self)
+        return {f'size_{name}': value for name, value in self.sizes().items()}
 
     @property
     def size(self):
-        return self.size_spin + self.size_individual_weight + self.size_bitwise_weight + self.size_negative_weight
+        return sum(self.sizes.values())
+
+    def _get_slices(self):
+        sizes = [self.sizes[name] for name in self._fields]
+        cumsum = np.insert(np.cumsum(sizes, axis=0), 0, 0)
+        return {name: slice(cumsum[i], cumsum[i + 1], 1) for i, name in enumerate(self._fields)}
+
+    def get(self, name, return_type=list):
+        sl = self._get_slices()[name]
+        if return_type is list:
+            return list(range(sl.start, sl.stop))
+        return sl
 
 
 @dataclass(init=False)
@@ -229,6 +283,9 @@ class Particles(object):
     def size(self):
         return self.positions.shape[0]
 
+    def get(self, name):
+        return self.values[self.index_value.get(name, return_type=slice)]
+
     def tree_flatten(self):
         # Only used by JAX; kept here for API consistency
         # Return flattenable children and auxiliary data (non-flattenable)
@@ -243,6 +300,7 @@ class Particles(object):
 
 def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=WeightAttrs(), sattrs: SelectionAttrs=SelectionAttrs()):
     assert len(particles) == 2
+    wattrs.check(*particles)
 
     def concatenate(values):
         if len(values) == 0:
@@ -257,11 +315,6 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=WeightAt
 
     particles = [cucountlib.cucount.Particles(p.positions, values=concatenate(p.values), **p.index_value._to_c()) for p in particles]
     return cucountlib.cucount.count2(*particles, battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
-
-
-
-def get_nrealizations_from_bitwise_weights(bitwise_weights):
-    return sum(weight.dtype.itemsize for weight in bitwise_weights) * 8 + 1
 
 
 # Create a lookup table for set bits per byte
