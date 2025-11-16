@@ -38,6 +38,19 @@ VAR_TYPE string_to_var_type(const std::string& var_name) {
     throw std::invalid_argument("Invalid VAR_TYPE string: " + var_name);
 }
 
+// inverse mapping for VAR_TYPE -> string
+std::string var_type_to_string(VAR_TYPE v) {
+    switch (v) {
+        case VAR_NONE: return "";
+        case VAR_S: return "s";
+        case VAR_MU: return "mu";
+        case VAR_THETA: return "theta";
+        case VAR_POLE: return "pole";
+        case VAR_K: return "k";
+        default: return "";
+    }
+}
+
 
 LOS_TYPE string_to_los_type(const std::string& los_name) {
     if (los_name == "") return LOS_NONE;
@@ -190,6 +203,14 @@ struct BinAttrs_py {
         return var.size();
     }
 
+    // Return list of variable names in the same order as `var`
+    std::vector<std::string> varnames() const {
+        std::vector<std::string> out;
+        out.reserve(var.size());
+        for (auto v : var) out.push_back(var_type_to_string(v));
+        return out;
+    }
+
     BinAttrs data() {
         BinAttrs battrs;
         auto sizes = shape();
@@ -238,6 +259,14 @@ struct SelectionAttrs_py {
 
     size_t ndim() const {
         return var.size();
+    }
+
+    // Return list of variable names in the same order as `var`
+    std::vector<std::string> varnames() const {
+        std::vector<std::string> out;
+        out.reserve(var.size());
+        for (auto v : var) out.push_back(var_type_to_string(v));
+        return out;
     }
 
     SelectionAttrs data() const {

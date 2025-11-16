@@ -1,6 +1,6 @@
 # cucount: CUDA-Powered Pair Counts
 
-**cucount** is a high-performance CUDA implementation for computing pair counts, optimized for GPUs. It provides both NumPy and JAX interfaces depending on your workflow.
+**cucount** is a high-performance CUDA implementation for computing pair counts (positions - spins), optimized for GPUs. It provides both NumPy and JAX interfaces depending on your workflow.
 
 > ⚠️ A CUDA-capable GPU is required.
 
@@ -131,7 +131,7 @@ counts = count2_parallel(particles1, particles2)
 
 ## 🛠️ TODO
 
-- Implement global line-of-sight and periodic boundary conditions.
+- Implement periodic boundary conditions.
 
 ---
 

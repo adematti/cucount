@@ -141,6 +141,8 @@ class WeightAttrs(object):
     def check(self, *particles):
         if not particles:
             return
+        for particle in particles:
+            assert all(value.shape[0] == particle.size for value in particle.values), "All input value arrays should be of same length as positions"
         if self.spin is not None:
             assert all(particle.get('spin') for particle in particles), 'WeightAttrs.spin is not None, so Particles must have spin values'
         nbitwises = [len(particle.get('bitwise_weight')) for particle in particles]
@@ -168,38 +170,36 @@ class WeightAttrs(object):
         return weight
 
 
-from cucountlib.cucount import SelectionAttrs, BinAttrs
-
-'''
-@dataclass(init=False)
-class SelectionAttrs(object):
-
-    def __init__(self, **kwargs):
-        """
-        Provide selection:
-        - theta = (min, max)
-        """
-        self.__dict__.update(**kwargs)
-
-    def _to_c(self):
-        return cucountlib.cucount.SelectionAttrs(**self.__dict__)
+class SelectionAttrs(cucountlib.cucount.SelectionAttrs):
+    """
+    Provide selection:
+    - theta = (min, max)  # in degrees
+    """
 
 
-@dataclass(init=False)
-class BinAttrs(object):
 
-    def __init__(self, **kwargs):
-        """
-        Provide binning:
-        - s = edge array or (min, max, step)
-        - mu = (edge array or (min, max, step), line-of-sight (midpoint, firstpoint, endpoint, x, y, z))
-        - theta = edge array or (min, max, step)
-        """
-        self.__dict__.update(**kwargs)
+class BinAttrs(cucountlib.cucount.BinAttrs):
+    """
+    Provide binning:
+    - s = edge array or (min, max, step)
+    - mu = (edge array or (min, max, step), line-of-sight (midpoint, firstpoint, endpoint, x, y, z))
+    - theta = edge array or (min, max, step)
+    """
+    def edges(self, name=None):
+        if name is None:
+            return {coord: self.array[icoord] for icoord, coord in enumerate(self.varnames)}
+        index = self.varnames.index(name)
+        return self.array[index]
 
-    def _to_c(self):
-        return cucountlib.cucount.BinAttrs(**self.__dict__)
-'''
+    def coords(self, name=None):
+        def mid(array, name):
+            if name in ['pole', 'k']:
+                return array
+            return (array[:-1] + array[1:]) / 2.
+        if name is None:
+            return {coord: mid(self.array[icoord], coord) for icoord, coord in enumerate(self.varnames)}
+        index = self.varnames.index(name)
+        return mid(self.array[index], name)
 
 
 @dataclass(init=False)
@@ -216,6 +216,10 @@ class IndexValue(object):
                 raise ValueError(f'{name} is not supported; options are {list(sizes)}')
             sizes[name] = size
         self._sizes = sizes
+
+    def clone(self, **kwargs):
+        """Copy and update."""
+        return self.__class__(**(self._sizes | kwargs))
 
     def tree_flatten(self):
         # Only used by JAX; kept here for API consistency
@@ -235,11 +239,6 @@ class IndexValue(object):
     def size(self):
         return sum(self._sizes.values())
 
-    def _get_slices(self):
-        sizes = [self._sizes[name] for name in self._fields]
-        cumsum = np.insert(np.cumsum(sizes, axis=0), 0, 0)
-        return {name: slice(cumsum[i], cumsum[i + 1], 1) for i, name in enumerate(self._fields)}
-
     def get(self, name, return_type=list):
         sizes = [self._sizes[name] for name in self._fields]
         cumsum = np.insert(np.cumsum(sizes, axis=0), 0, 0)
@@ -250,6 +249,95 @@ class IndexValue(object):
         return sl
 
 
+def _make_list_weights(weights):
+    if weights is None:
+        return []
+    if not isinstance(weights, (tuple, list)): # individual weights, bitwise weights
+        weights = [weights]
+    return list(weights)
+
+
+def _format_values(weights=None, spin_values=None, index_value=None, np=np):
+    values, kwargs = [], {}
+    if spin_values is not None:
+        if spin_values.ndim == 1:
+            spin_values = spin_values[:, np.newaxis]
+        values.append(spin_values.astype(np.float64))
+        kwargs.update(spin=spin_values.shape[1])
+    if weights is not None:
+        weights = _make_list_weights(weights)
+        individual_weights, bitwise_weights, negative_weights = [], [], []
+        for weight in weights:
+            if np.issubdtype(weight.dtype, np.integer):
+                bitwise_weights += reformat_bitarrays(weight, dtype=np.uint64, copy=True, np=np)
+            else:
+                weight = weight.astype(np.float64)
+                if bitwise_weights:
+                    negative_weights.append(weight)  # if coming afer bitwise weight, assumed to be negative weight
+                else:
+                    individual_weights.append(weight)  # else, positive weight
+        values += individual_weights
+        values += bitwise_weights
+        values += negative_weights
+        kwargs.update(individual_weight=len(individual_weights),
+                      bitwise_weight=len(bitwise_weights),
+                      negative_weight=len(negative_weights))
+    if isinstance(index_value, dict):
+        kwargs.update(**index_value)
+    if not isinstance(index_value, IndexValue):
+        index_value = IndexValue(**index_value)
+    return values, index_value
+
+
+def _concatenate_values(values, np=np):
+    if len(values) == 0:
+        return None
+    cvalues = []
+    for value in values:
+        if value.ndim == 1: value = value[:, np.newaxis]
+        if np.issubdtype(value.dtype, np.integer):
+            value = value.view(np.float64)
+        cvalues.append(value)
+    return np.concatenate(cvalues, axis=1)
+
+
+def sky_to_cartesian(rdd, degree=True, dtype=np.float64, np=np):
+    """
+    Transform RA, Dec, distance into Cartesian coordinates.
+
+    Parameters
+    ----------
+    rdd : array of shape (3, N), list of 3 arrays
+        Right ascension, declination and distance.
+
+    degree : default=True
+        Whether RA, Dec are in degrees (``True``) or radians (``False``).
+
+    Returns
+    -------
+    positions : list of 3 arrays
+        Positions x, y, z in cartesian coordinates.
+    """
+    conversion = 1.
+    if degree: conversion = np.pi / 180.
+    ra, dec, dist = rdd
+    cos_dec = np.cos(dec * conversion)
+    x = dist * cos_dec * np.cos(ra * conversion)
+    y = dist * cos_dec * np.sin(ra * conversion)
+    z = dist * np.sin(dec * conversion)
+    return [np.asarray(xx, dtype=dtype) for xx in [x, y, z]]
+
+
+def _format_positions(positions, positions_type='pos', np=np):
+    if positions_type == 'pos':
+        positions = positions.astype(np.float64)
+    elif positions_type == 'rdd':
+        positions = np.column_stack(sky_to_cartesian(positions, np=np))
+    elif positions_type == 'xyz':
+        positions = np.column_stack(positions)
+    return positions
+
+
 @dataclass(init=False)
 class Particles(object):
 
@@ -257,34 +345,23 @@ class Particles(object):
     values: np.ndarray
     index_value: IndexValue
 
-    def __init__(self, positions, weights=None, spin_values=None, position_type='pos'):
+    def __init__(self, positions, weights=None, spin_values=None, positions_type='pos', index_value=None):
         # To check/modify when adding new weighting scheme
-        values, kwargs = [], {}
-        if spin_values is not None:
-            if spin_values.ndim == 1:
-                spin_values = spin_values[:, np.newaxis]
-            values.append(spin_values.astype(np.float64))
-            kwargs.update(spin=spin_values.shape[1])
-        if weights is not None:
-            if not isinstance(weights, (tuple, list)): # individual weights, bitwise weights
-                weights = [weights]
-            individual_weights, bitwise_weights = [], []
-            for weight in weights:
-                if np.issubdtype(weight.dtype, np.integer):
-                    bitwise_weights += reformat_bitarrays(weight, dtype=np.uint64, copy=True)
-                else:
-                    individual_weights.append(weight.astype(np.float64))
-            values += individual_weights
-            values += bitwise_weights
-            kwargs.update(individual_weight=len(individual_weights),
-                          bitwise_weight=len(bitwise_weights))
-        self.positions = positions.astype(np.float64)
-        self.values = values
-        self.index_value = IndexValue(**kwargs)
+        self.values, self.index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=np)
+        self.positions = _format_positions(positions, positions_type=positions_type, np=np)
 
     @property
     def size(self):
         return self.positions.shape[0]
+
+    def clone(self, **kwargs):
+        """Copy and replace positions, weights, spin_values, etc."""
+        kwargs.setdefault('positions', self.positions)
+        if 'weights' not in kwargs and 'spin_values' not in kwargs:
+            kwargs.setdefault('index_value', self.index_value)  # preserve index_value
+        kwargs.setdefault('weights', self.weights)
+        kwargs.setdefault('spin_values', self.spin_values)
+        return self.__class__(**kwargs)
 
     def get(self, name):
         return self.values[self.index_value.get(name, return_type=slice)]
@@ -302,23 +379,35 @@ class Particles(object):
 
 
 def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None):
+    """
+    Perform two-point pair counts using the native cucount library.
+
+    This is a thin frontend that prepares Python-side Particles and Weight/Selection
+    attributes and calls the underlying cucountlib.cucount.count2 implementation
+    (GPU-accelerated C/C++/CUDA).
+
+    Parameters
+    ----------
+    *particles : Particles
+        Exactly two Particles instances to correlate (positions, optional weights/spin/bitwise).
+    battrs : BinAttrs
+        Binning specification (edges/shape) for the pair counts.
+    wattrs : WeightAttrs, optional
+        Weight attributes (spin, angular, bitwise). If None, a default WeightAttrs()
+        (no weights) is used.
+    sattrs : SelectionAttrs, optional
+        Selection attributes to restrict pairs. If None, defaults to SelectionAttrs().
+
+    Returns
+    -------
+    result : dict
+        Output of the native count2 call. A dict of named arrays (e.g. weight, weight_plus, weight_cross, etc.).
+    """
     assert len(particles) == 2
     if wattrs is None: wattrs = WeightAttrs()
     if sattrs is None: sattrs = SelectionAttrs()
     wattrs.check(*particles)
-
-    def concatenate(values):
-        if len(values) == 0:
-            return None
-        cvalues = []
-        for value in values:
-            if value.ndim == 1: value = value[:, np.newaxis]
-            if np.issubdtype(value.dtype, np.integer):
-                value = value.view(np.float64)
-            cvalues.append(value)
-        return np.concatenate(cvalues, axis=1)
-
-    particles = [cucountlib.cucount.Particles(p.positions, values=concatenate(p.values), **p.index_value._to_c()) for p in particles]
+    particles = [cucountlib.cucount.Particles(p.positions, values=_concatenate_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
     return cucountlib.cucount.count2(*particles, battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
 
 
@@ -338,7 +427,7 @@ def popcount(*arrays):
     return toret
 
 
-def reformat_bitarrays(*arrays, dtype=np.uint64, copy=True):
+def reformat_bitarrays(*arrays, dtype=np.uint64, copy=True, np=np):
     """
     Reformat input integer arrays into list of arrays of type ``dtype``.
     If, e.g. 6 arrays of type ``np.uint8`` are input, and ``dtype`` is ``np.uint32``,

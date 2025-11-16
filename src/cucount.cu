@@ -155,6 +155,7 @@ PYBIND11_MODULE(cucount, m) {
         .def_property_readonly("shape", &BinAttrs_py::shape)
         .def_property_readonly("size", &BinAttrs_py::size)
         .def_property_readonly("ndim", &BinAttrs_py::ndim)
+        .def_property_readonly("varnames", &BinAttrs_py::varnames, "Return list of variable names in order (e.g. ['s','mu'])")
         .def_readonly("var", &BinAttrs_py::var)
         .def_readonly("min", &BinAttrs_py::min)
         .def_readonly("max", &BinAttrs_py::max)
