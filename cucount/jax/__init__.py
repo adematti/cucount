@@ -16,9 +16,11 @@ Particles = tree_util.register_pytree_node_class(numpy.Particles)
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 
-def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=WeightAttrs(), sattrs: SelectionAttrs=SelectionAttrs()):
+def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None):
     assert jax.config.read('jax_enable_x64'), 'for cucount you have to enable float64'
     assert len(particles) == 2
+    if wattrs is None: wattrs = WeightAttrs()
+    if sattrs is None: sattrs = SelectionAttrs()
     wattrs.check(*particles)
     ffi_cucount.set_attrs(battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
     for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value._to_c())

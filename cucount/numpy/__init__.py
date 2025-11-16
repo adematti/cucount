@@ -215,13 +215,13 @@ class IndexValue(object):
             if name not in sizes:
                 raise ValueError(f'{name} is not supported; options are {list(sizes)}')
             sizes[name] = size
-        self.sizes = sizes
+        self._sizes = sizes
 
     def tree_flatten(self):
         # Only used by JAX; kept here for API consistency
         # Return flattenable children and auxiliary data (non-flattenable)
         children = tuple()
-        aux_data = self.sizes
+        aux_data = self._sizes
         return children, aux_data
 
     @classmethod
@@ -229,19 +229,22 @@ class IndexValue(object):
         return cls(**aux_data)
 
     def _to_c(self):
-        return {f'size_{name}': value for name, value in self.sizes().items()}
+        return {f'size_{name}': value for name, value in self._sizes.items()}
 
     @property
     def size(self):
-        return sum(self.sizes.values())
+        return sum(self._sizes.values())
 
     def _get_slices(self):
-        sizes = [self.sizes[name] for name in self._fields]
+        sizes = [self._sizes[name] for name in self._fields]
         cumsum = np.insert(np.cumsum(sizes, axis=0), 0, 0)
         return {name: slice(cumsum[i], cumsum[i + 1], 1) for i, name in enumerate(self._fields)}
 
     def get(self, name, return_type=list):
-        sl = self._get_slices()[name]
+        sizes = [self._sizes[name] for name in self._fields]
+        cumsum = np.insert(np.cumsum(sizes, axis=0), 0, 0)
+        sls = {name: slice(cumsum[i], cumsum[i + 1], 1) for i, name in enumerate(self._fields)}
+        sl = sls[name]
         if return_type is list:
             return list(range(sl.start, sl.stop))
         return sl
@@ -254,14 +257,14 @@ class Particles(object):
     values: np.ndarray
     index_value: IndexValue
 
-    def __init__(self, positions, weights=None, spin_values=None):
+    def __init__(self, positions, weights=None, spin_values=None, position_type='pos'):
         # To check/modify when adding new weighting scheme
         values, kwargs = [], {}
         if spin_values is not None:
             if spin_values.ndim == 1:
                 spin_values = spin_values[:, np.newaxis]
             values.append(spin_values.astype(np.float64))
-            kwargs.update(size_spin=spin_values.shape[1])
+            kwargs.update(spin=spin_values.shape[1])
         if weights is not None:
             if not isinstance(weights, (tuple, list)): # individual weights, bitwise weights
                 weights = [weights]
@@ -273,8 +276,8 @@ class Particles(object):
                     individual_weights.append(weight.astype(np.float64))
             values += individual_weights
             values += bitwise_weights
-            kwargs.update(size_individual_weight=len(individual_weights),
-                          size_bitwise_weight=len(bitwise_weights))
+            kwargs.update(individual_weight=len(individual_weights),
+                          bitwise_weight=len(bitwise_weights))
         self.positions = positions.astype(np.float64)
         self.values = values
         self.index_value = IndexValue(**kwargs)
@@ -298,8 +301,10 @@ class Particles(object):
         return cls(*children)
 
 
-def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=WeightAttrs(), sattrs: SelectionAttrs=SelectionAttrs()):
+def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None):
     assert len(particles) == 2
+    if wattrs is None: wattrs = WeightAttrs()
+    if sattrs is None: sattrs = SelectionAttrs()
     wattrs.check(*particles)
 
     def concatenate(values):
