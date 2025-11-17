@@ -49,10 +49,10 @@ def generate_catalogs(size=100, boxsize=(1000,) * 3, offset=(1000., 0., 0.), n_i
     for i in range(2):
         positions = [o + rng.uniform(0., 1., size) * b for o, b in zip(offset, boxsize)]
         weights = []
+        weights += [rng.uniform(0.5, 1., size) for i in range(n_individual_weights)]
         # weights = utils.pack_bitarrays(*[rng.randint(0, 2, size) for i in range(64 * n_bitwise_weights)], dtype=np.uint64)
         # weights = utils.pack_bitarrays(*[rng.randint(0, 2, size) for i in range(33)], dtype=np.uint64)
-        # weights = [rng.randint(0, 0xffffffff, size, dtype=np.uint64) for i in range(n_bitwise_weights)]
-        weights += [rng.uniform(0.5, 1., size) for i in range(n_individual_weights)]
+        weights += [rng.randint(0, 0xffffffff, size, dtype=np.uint64) for i in range(n_bitwise_weights)]
         toret.append(positions + weights)
     return toret
 
@@ -364,16 +364,19 @@ def test_corrfunc_smu():
     sep = np.linspace(0.8, 1., 100)
     twopoint_weights = (sep, 1. + np.linspace(0., 1., sep.size))
 
-    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=6, seed=44)
+    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=2, seed=44)
     positions1, weights1 = np.column_stack(data1[:3]), data1[3:]
     positions2, weights2 = np.column_stack(data2[:3]), data2[3:]
 
     t0 = time.time()
     particles1 = Particles(positions1, weights1)
+    print(particles1.index_value)
     particles2 = Particles(positions2, weights2)
-    wattrs = WeightAttrs(bitwise=dict(weights=data1[3:]), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
+    wattrs = WeightAttrs(bitwise=dict(weights=particles1.get('bitwise_weight')), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
     los = 'midpoint'
     battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+    assert np.allclose(battrs.edges('s'), edges[0])
+    assert np.allclose(battrs.edges('mu'), edges[1])
     test = count2(particles1, particles2, battrs=battrs, wattrs=wattrs)['weight']
     print('cucount', time.time() - t0)
 
@@ -403,13 +406,13 @@ def test_jax(distributed=False):
         battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
         return count2(particles1, particles2, battrs=battrs)['weight']
 
+    import jax
+    from jax import config
+    config.update('jax_enable_x64', True) 
     #res_numpy = count_numpy()
+    if distributed: jax.distributed.initialize()
 
     def count_jax():
-        import jax
-        if distributed: jax.distributed.initialize()
-        from jax import config
-        config.update('jax_enable_x64', True)
         from jax.experimental.shard_map import shard_map
         from jax.sharding import Mesh, PartitionSpec as P
 
@@ -423,10 +426,22 @@ def test_jax(distributed=False):
             sharding_mesh = Mesh(jax.devices(), ('x',))
             count = shard_map(lambda *particles: jax.lax.psum(count2(*particles, battrs=battrs), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))
         toret = count(particles1, particles2)
-        if distributed: jax.distributed.shutdown()
+        return toret['weight']
+
+    def count_jax2():
+        from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs, create_sharding_mesh, setup_logging
+        #setup_logging("error")
+        particles1 = Particles(positions1, weights1)
+        particles2 = Particles(positions2, weights2)
+        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+        with create_sharding_mesh():
+            toret = count2(particles1, particles2, battrs=battrs)
         return toret['weight']
 
     res_jax = count_jax()
+    res_jax2 = count_jax2()
+    if distributed: jax.distributed.shutdown()
+    assert np.allclose(res_jax2, res_jax)
     #assert np.allclose(res_jax, res_numpy)
 
 
@@ -461,9 +476,38 @@ def test_readme():
     print(counts.sum(axis=-1))
 
 
+def test_popcount():
+    # Create a lookup table for set bits per byte
+    _popcount_lookuptable = np.array([bin(i).count('1') for i in range(256)], dtype=np.int32)
+
+    def popcount_ref(*arrays):
+        """
+        Return number of 1 bits in each value of input array.
+        Inspired from https://github.com/numpy/numpy/issues/16325.
+        """
+        # if not np.issubdtype(array.dtype, np.unsignedinteger):
+        #     raise ValueError('input array must be an unsigned int dtype')
+        toret = _popcount_lookuptable[arrays[0].view((np.uint8, (arrays[0].dtype.itemsize,)))].sum(axis=-1)
+        for array in arrays[1:]: toret += popcount(array)
+        return toret
+
+    from jax import numpy as jnp
+
+    def popcount(*arrays):
+        return sum(jnp.bitwise_count(array) for array in arrays)
+
+    rng = np.random.RandomState(seed=42)
+    size = 100
+    arrays = [rng.randint(0, 0xffffffff, size, dtype=np.uint64) for i in range(6)]
+    count_ref = popcount_ref(*arrays)
+    count = popcount(*arrays)
+    assert np.allclose(count, count_ref)
+
+
 if __name__ == '__main__':
 
     #test_thetacut()
     test_corrfunc_smu()
     #test_jax(distributed=True)
     #test_readme()
+    #test_popcount()

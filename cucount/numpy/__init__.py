@@ -1,4 +1,6 @@
 import numbers
+import functools
+import operator
 from dataclasses import dataclass, asdict
 
 import numpy as np
@@ -12,6 +14,7 @@ class AngularWeight(object):
 
     sep: np.ndarray
     weight: np.ndarray
+    _np = np
 
     def tree_flatten(self):
         children = (self.sep, self.weight)
@@ -23,16 +26,16 @@ class AngularWeight(object):
         return cls(*children)
 
     def _to_c(self):
-        sep = np.cos(np.radians(self.sep))
-        argsort = np.argsort(sep)
+        sep = self._np.cos(self._np.radians(self.sep))
+        argsort = self._np.argsort(sep)
         state = {'sep': sep[argsort].copy(), 'weight': self.weight[argsort].copy()}
         return state
 
     def __call__(self, sep):
         """Return value of weights for given separation in degrees."""
-        costheta = np.cos(np.radians(sep))
+        costheta = self._np.cos(self._np.radians(sep))
         state = self._to_c()
-        return np.interp(costheta, state['sep'], state['weight'], left=1., right=1.)
+        return self._np.interp(costheta, state['sep'], state['weight'], left=1., right=1.)
 
 
 @dataclass(init=False)
@@ -43,9 +46,11 @@ class BitwiseWeight(object):
     noffset: int = 0
     nalways: int = 0
     p_correction_nbits: np.ndarray = None
+    _np = np
 
     def __init__(self, weights=None, nrealizations=None, default_value=0., noffset=None, nalways=0, p_correction_nbits=True):
         if weights is not None:
+            assert all(np.issubdtype(weight.dtype, np.integer) for weight in weights)
             max_bits = sum(weight.dtype.itemsize for weight in weights) * 8
             if nrealizations is None: nrealizations = 1 + max_bits
         else:
@@ -89,11 +94,11 @@ class BitwiseWeight(object):
 
     def __call__(self, *bitwise_weights):
         """Return value of weights."""
-        denom = self.noffset + sum(popcount(np.bitwise_and.reduce(weights)) for weights in zip(*bitwise_weights))
+        denom = self.noffset + sum(popcount(functools.reduce(operator.and_, weights), np=self._np) for weights in zip(*bitwise_weights))
         mask = denom == 0
-        toret = self.nrealizations / np.where(mask, 1., denom)
-        if len(bitwise_weights) > 1:
-            c = tuple(sum(popcount(weight) for weight in weights) for weights in bitwise_weights)
+        toret = self.nrealizations / self._np.where(mask, 1., denom)
+        if len(bitwise_weights) > 1 and self.p_correction_nbits is not None:
+            c = tuple(sum(popcount(weight, np=self._np) for weight in weights) for weights in bitwise_weights)
             toret /= self.p_correction_nbits[c]
         toret = np.where(mask, self.default_value, toret)
         return toret
@@ -101,6 +106,8 @@ class BitwiseWeight(object):
     def _to_c(self):
         state = asdict(self)
         state.pop('nalways')
+        for name in ['p_correction_nbits']:
+            if state[name] is None: state.pop(name)
         return state
 
 
@@ -177,7 +184,6 @@ class SelectionAttrs(cucountlib.cucount.SelectionAttrs):
     """
 
 
-
 class BinAttrs(cucountlib.cucount.BinAttrs):
     """
     Provide binning:
@@ -186,10 +192,14 @@ class BinAttrs(cucountlib.cucount.BinAttrs):
     - theta = edge array or (min, max, step)
     """
     def edges(self, name=None):
+        def edge(array, name):
+            if name in ['pole', 'k']:
+                return array
+            return np.column_stack([array[:-1], array[1:]])
         if name is None:
-            return {coord: self.array[icoord] for icoord, coord in enumerate(self.varnames)}
+            return {coord: edge(self.array[icoord], coord) for icoord, coord in enumerate(self.varnames)}
         index = self.varnames.index(name)
-        return self.array[index]
+        return edge(self.array[index], name)
 
     def coords(self, name=None):
         def mid(array, name):
@@ -206,8 +216,6 @@ class BinAttrs(cucountlib.cucount.BinAttrs):
 class IndexValue(object):
     # To check/modify when adding new weighting scheme
     _fields = ['spin', 'individual_weight', 'bitwise_weight', 'negative_weight']
-
-    sizes: dict = None
 
     def __init__(self, **kwargs):
         sizes = {name: 0 for name in self._fields}
@@ -239,14 +247,19 @@ class IndexValue(object):
     def size(self):
         return sum(self._sizes.values())
 
-    def get(self, name, return_type=list):
+    def __call__(self, name=None, return_type=list):
         sizes = [self._sizes[name] for name in self._fields]
         cumsum = np.insert(np.cumsum(sizes, axis=0), 0, 0)
         sls = {name: slice(cumsum[i], cumsum[i + 1], 1) for i, name in enumerate(self._fields)}
-        sl = sls[name]
         if return_type is list:
-            return list(range(sl.start, sl.stop))
-        return sl
+            sls = {name: list(range(sl.start, sl.stop)) for name, sl in sls.items()}
+        if name is None:
+            return sls
+        return sls[name]
+
+    def __repr__(self):
+        s = ', '.join(f'{k}={v}' for k, v in self._sizes.items())
+        return f'{self.__class__.__name__}({s})'
 
 
 def _make_list_weights(weights):
@@ -260,10 +273,17 @@ def _make_list_weights(weights):
 def _format_values(weights=None, spin_values=None, index_value=None, np=np):
     values, kwargs = [], {}
     if spin_values is not None:
-        if spin_values.ndim == 1:
-            spin_values = spin_values[:, np.newaxis]
-        values.append(spin_values.astype(np.float64))
-        kwargs.update(spin=spin_values.shape[1])
+        spin_values = _make_list_weights(spin_values)
+        _spin_values = []
+        for value in spin_values:
+            value = value.astype(np.float64)
+            if value.ndim == 2:
+                _spin_values += list(value.T)
+            else:
+                assert value.ndim == 1, 'Only 1D or 2D arrays are supported for spin values'
+                _spin_values.append(value)
+        values += _spin_values
+        kwargs.update(spin=len(_spin_values))
     if weights is not None:
         weights = _make_list_weights(weights)
         individual_weights, bitwise_weights, negative_weights = [], [], []
@@ -272,6 +292,7 @@ def _format_values(weights=None, spin_values=None, index_value=None, np=np):
                 bitwise_weights += reformat_bitarrays(weight, dtype=np.uint64, copy=True, np=np)
             else:
                 weight = weight.astype(np.float64)
+                assert weight.ndim == 1, 'Only 1D arrays are supported for weights'
                 if bitwise_weights:
                     negative_weights.append(weight)  # if coming afer bitwise weight, assumed to be negative weight
                 else:
@@ -285,7 +306,7 @@ def _format_values(weights=None, spin_values=None, index_value=None, np=np):
     if isinstance(index_value, dict):
         kwargs.update(**index_value)
     if not isinstance(index_value, IndexValue):
-        index_value = IndexValue(**index_value)
+        index_value = IndexValue(**kwargs)
     return values, index_value
 
 
@@ -331,8 +352,10 @@ def sky_to_cartesian(rdd, degree=True, dtype=np.float64, np=np):
 def _format_positions(positions, positions_type='pos', np=np):
     if positions_type == 'pos':
         positions = positions.astype(np.float64)
-    elif positions_type == 'rdd':
+    elif positions_type == 'rdd':  # RA, Dec, distance
         positions = np.column_stack(sky_to_cartesian(positions, np=np))
+    elif positions_type == 'rd':
+        positions = np.column_stack(sky_to_cartesian(list(positions) + [np.ones_like(positions[0])], np=np))
     elif positions_type == 'xyz':
         positions = np.column_stack(positions)
     return positions
@@ -359,12 +382,19 @@ class Particles(object):
         kwargs.setdefault('positions', self.positions)
         if 'weights' not in kwargs and 'spin_values' not in kwargs:
             kwargs.setdefault('index_value', self.index_value)  # preserve index_value
-        kwargs.setdefault('weights', self.weights)
-        kwargs.setdefault('spin_values', self.spin_values)
+        kwargs.setdefault('weights', self.get('weights'))
+        kwargs.setdefault('spin_values', self.get('spin') or None)
         return self.__class__(**kwargs)
 
     def get(self, name):
-        return self.values[self.index_value.get(name, return_type=slice)]
+        if name == 'positions':
+            return self.positions
+        if name == 'weights':
+            weights = []
+            for name, sl in self.index_value(return_type=slice).items():
+                if name != 'spin': weights.append(self.values[sl])
+            return weights
+        return self.values[self.index_value(name, return_type=slice)]
 
     def tree_flatten(self):
         # Only used by JAX; kept here for API consistency
@@ -375,7 +405,9 @@ class Particles(object):
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        return cls(*children)
+        new = cls.__new__(cls)
+        new.positions, new.values, new.index_value = children
+        return new
 
 
 def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None):
@@ -415,17 +447,17 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
 _popcount_lookuptable = np.array([bin(i).count('1') for i in range(256)], dtype=np.int32)
 
 
-def popcount(*arrays):
+def popcount(*arrays, np=np):
     """
     Return number of 1 bits in each value of input array.
     Inspired from https://github.com/numpy/numpy/issues/16325.
     """
-    # if not np.issubdtype(array.dtype, np.unsignedinteger):
-    #     raise ValueError('input array must be an unsigned int dtype')
-    toret = _popcount_lookuptable[arrays[0].view((np.uint8, (arrays[0].dtype.itemsize,)))].sum(axis=-1)
-    for array in arrays[1:]: toret += popcount(array)
-    return toret
-
+    try:
+        _popcount = np.bitwise_count
+    except AttributeError:
+        def _popcount(array):
+            return _popcount_lookuptable[array.view((np.uint8, (array.dtype.itemsize,)))].sum(axis=-1)
+    return sum(_popcount(array) for array in arrays)
 
 def reformat_bitarrays(*arrays, dtype=np.uint64, copy=True, np=np):
     """

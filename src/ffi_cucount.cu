@@ -128,7 +128,8 @@ PYBIND11_MODULE(ffi_cucount, m) {
         .def_readonly("var", &BinAttrs_py::var)
         .def_readonly("min", &BinAttrs_py::min)
         .def_readonly("max", &BinAttrs_py::max)
-        .def_readonly("step", &BinAttrs_py::step);
+        .def_readonly("step", &BinAttrs_py::step) // The lambda approach is safer to avoid exposing internal mutable containers
+        .def_property_readonly("array", [](const BinAttrs_py &b) -> std::vector<py::array_t<FLOAT>> {return b.array;});
 
     py::class_<SelectionAttrs_py>(m, "SelectionAttrs", py::module_local())
         .def(py::init<py::kwargs>()) // Accept Python kwargs

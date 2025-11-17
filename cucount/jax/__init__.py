@@ -8,11 +8,12 @@ import jax
 from jax import numpy as jnp
 from jax import tree_util
 from jax.experimental.shard_map import shard_map
-from jax import sharding, mesh_utils
+from jax import sharding
+from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
 from cucountlib import ffi_cucount
-from cucount.numpy import BinAttrs, WeightAttrs, SelectionAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, setup_logging
+from cucount.numpy import BinAttrs, SelectionAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, setup_logging
 from cucount import numpy
 
 
@@ -26,7 +27,7 @@ def create_sharding_mesh(device_mesh_shape=None):
         device_mesh_shape = (count,)
     device_mesh_shape = tuple(s for s in device_mesh_shape if s > 1)
     devices = mesh_utils.create_device_mesh(device_mesh_shape)
-    return sharding.Mesh(devices, axis_names=('x', 'y'))
+    return sharding.Mesh(devices, axis_names=list('xyz'[:len(device_mesh_shape)]))
 
 
 def get_sharding_mesh():
@@ -81,7 +82,32 @@ def make_array_from_process_local_data(per_host_array, per_host_size=None, pad=0
     return jax.make_array_from_process_local_data(sharding, per_host_array)
 
 
-IndexValue = tree_util.register_pytree_node_class(numpy.IndexValue)
+@tree_util.register_pytree_node_class
+class AngularWeight(numpy.AngularWeight):
+
+    _np = jnp
+
+
+@tree_util.register_pytree_node_class
+class BitwiseWeight(numpy.BitwiseWeight):
+
+    _np = jnp
+
+
+@tree_util.register_pytree_node_class
+class WeightAttrs(numpy.WeightAttrs):
+
+    def __init__(self, spin=None, angular=None, bitwise=None):
+        self.spin = spin
+        self.angular = AngularWeight(**angular) if isinstance(angular, dict) else angular
+        self.bitwise = BitwiseWeight(**bitwise) if isinstance(bitwise, dict) else bitwise
+
+
+@tree_util.register_pytree_node_class
+class IndexValue(numpy.IndexValue):
+
+    pass
+
 
 
 @tree_util.register_pytree_node_class
@@ -91,14 +117,15 @@ class Particles(numpy.Particles):
     def __init__(self, positions, weights=None, spin_values=None, positions_type='pos', index_value=None, exchange=False, sharding_mesh=None):
         self.positions = _format_positions(positions, positions_type=positions_type, np=jnp)
         with_sharding = bool(sharding_mesh.axis_names)
-        if with_sharding and exchange:  # weights required to pad with 0
-            weights = [jnp.ones_like(self.positions, shape=self.positions.shape[0])] + _make_list_weights(weights)
         self.values, self.index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=jnp)
-        self.exchanged = False
+        if not self.index_value('individual_weight'):
+            # Let's add weights in any case (required arguments to count2)
+            weights = [jnp.ones_like(self.positions, shape=self.positions.shape[0])] + _make_list_weights(weights)
+            self.values, self.index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=jnp)
+
         if with_sharding and exchange:
             self.positions = make_array_from_process_local_data(positions, pad=0, sharding_mesh=sharding_mesh)
             self.values = [make_array_from_process_local_data(value, pad=0, sharding_mesh=sharding_mesh) for value in self.values]
-            self.exchanged = True
 
 
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
