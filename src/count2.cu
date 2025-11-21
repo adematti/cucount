@@ -211,31 +211,35 @@ __device__ void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int 
 }
 
 
-#define BESSEL_XMIN 0.01
+#define BESSEL_XMIN 0.1
 
 
 __device__ FLOAT get_bessel(int ell, FLOAT x) {
     if (x < BESSEL_XMIN) {
+        FLOAT x2 = x * x;
         switch (ell) {
             case 0:
-                return 1. - x * x / 6. + x * x * x * x / 120.;
+                return 1. - x2 / 6. + x2 * x2 / 120. - x2 * x2 * x2 / 5040.;
             case 2:
-                return x * x / 15. - x * x * x * x / 210.;
+                return x2 / 15. - x2 * x2 / 210. + x2 * x2 * x2 / 11340.;
             case 4:
-                return x * x * x * x / 945.;
+                return x2 * x2 / 945.- x2 * x2 * x2 / 10395.;
             default:
                 return 0.0;  // optionally handle unsupported ℓ values
         }
     } else {
-        FLOAT x2 = x * x;
+        FLOAT invx  = 1.0 / x;
+        FLOAT invx2 = invx * invx;
         switch (ell) {
             case 0:
-                return sin(x) / x;
+                return sin(x) * invx;
             case 2:
-                return (3.0 / (x2) - 1.0) * sin(x) / x - 3.0 * cos(x) / (x2);
+                return (3.0 * invx2 - 1.0) * sin(x) * invx - 3.0 * cos(x) * invx2;
             case 4:
-                return (105.0 / (x2 * x2) - 45.0 / x2 + 1.0) * sin(x) / x
-                     - (105.0 / (x2 * x) - 10.0 / x) * cos(x);
+                FLOAT invx3 = invx2 * invx;
+                FLOAT invx4 = invx2 * invx2;
+                //return sin(x) * (invx - 45.0 * invx3 + 105.0 * invx4) - cos(x) * (10.0 * invx - 105.0 * invx3);
+                return 5 * (2 * invx2 - 21 * invx4) * cos(x) + (invx - 45 * invx3 + 105 * invx2 * invx3) * sin(x);
             default:
                 return 0.0;
         }
@@ -321,7 +325,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             value = s;
         }
         if (var == VAR_THETA) {
-            value = acos(dot(sposition1, sposition2));
+            value = acos(dot(sposition1, sposition2)) / DTORAD;
         }
         if (var == VAR_MU) {
             value = mu;
@@ -442,18 +446,32 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         }
     }
     else if ((i == battrs.ndim - 2) && (battrs.var[i] == VAR_K) && (battrs.var[i + 1] == VAR_POLE)) {
+        // i = index of K dimension, ip = index of POLE dimension
+        size_t ik_dim = i;
+        size_t ip_dim = i + 1;
         FLOAT legendre_cache[MAX_POLE + 1];
         set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
-        for (int ill = 0; ill < battrs.shape[i]; ill++) {
-            size_t ell;
-            if (battrs.asize[i] > 0) ell = (size_t) battrs.array[i][ill];
-            else ell = ill * ellstep + ellmin;
-            FLOAT leg = pow(-1, ell / 2) * (2 * ell + 1) * legendre_cache[ell];
-            for (int ik = 0; ik < battrs.shape[i]; ik++) {
+        size_t nk = battrs.shape[ik_dim];
+        size_t npole = battrs.shape[ip_dim];
+        for (size_t ill = 0; ill < npole; ill++) {
+            int ell;
+            if (battrs.asize[ip_dim] > 0) {
+                // custom ell list stored in battrs.array[ip_dim]
+                ell = (int) battrs.array[ip_dim][ill];
+            } else {
+                ell = ill * ((int) ellstep) + ((int) ellmin);
+            }
+            // precompute factor that depends only on ell
+            FLOAT leg = (((ell / 2) & 1) ? -1.0 : 1.0) * (2 * ell + 1) * legendre_cache[ell];
+            for (size_t ik = 0; ik < nk; ik++) {
                 FLOAT k = 0.;
-                if (battrs.asize[i] > 0) k = battrs.array[i][ik];
-                else k = ik * battrs.step[i] + battrs.min[i];
-                size_t ibin_loc = (ibin * battrs.shape[i] + ik) * battrs.shape[i + 1] + ill;
+                if (battrs.asize[ik_dim] > 0) {
+                    // custom k edges / centers in battrs.array[ik_dim]
+                    k = battrs.array[ik_dim][ik];
+                } else {
+                    k = ik * battrs.step[ik_dim] + battrs.min[ik_dim];
+                }
+                size_t ibin_loc = (ibin * nk + ik) * npole + ill;
                 FLOAT leg_bessel = leg * get_bessel(ell, k * s);
                 for (size_t iweight = 0; iweight < wsize; iweight++) {
                     atomicAdd(&(counts[ibin_loc + iweight * battrs.size]), weight[iweight] * leg_bessel);
@@ -597,13 +615,33 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     BinAttrs device_battrs = battrs;
     for (size_t i = 0; i < battrs.ndim; i++) {
         if (battrs.asize[i] > 0) {
-            // printf("ALLOCATING bin %d with size %d\n", i, battrs.asize[i]);
-            FLOAT *array = (FLOAT*) my_device_malloc(battrs.asize[i] * sizeof(FLOAT), buffer);
-            CUDA_CHECK(cudaMemcpy(array, battrs.array[i], battrs.asize[i] * sizeof(FLOAT), cudaMemcpyHostToDevice));
-            device_battrs.array[i] = array;
+            //printf("ALLOCATING bin %d with size %d %d\n", i, battrs.asize[i], battrs.shape[i]);
+            FLOAT *device_array = (FLOAT*) my_device_malloc(battrs.asize[i] * sizeof(FLOAT), buffer);
+            CUDA_CHECK(cudaMemcpy(device_array, battrs.array[i], battrs.asize[i] * sizeof(FLOAT), cudaMemcpyHostToDevice));
+            device_battrs.array[i] = device_array;
         }
     }
     WeightAttrs device_wattrs = wattrs;
+    if (wattrs.angular.size) {
+        FLOAT *device_sep = (FLOAT*) my_device_malloc(wattrs.angular.size * sizeof(FLOAT), buffer);
+        FLOAT *device_weight = (FLOAT*) my_device_malloc(wattrs.angular.size * sizeof(FLOAT), buffer);
+        CUDA_CHECK(cudaMemcpy(device_sep, wattrs.angular.sep, wattrs.angular.size * sizeof(FLOAT), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(device_weight, wattrs.angular.weight, wattrs.angular.size * sizeof(FLOAT), cudaMemcpyHostToDevice));
+        device_wattrs.angular.sep = device_sep;
+        device_wattrs.angular.weight = device_weight;
+    } else {
+        device_wattrs.angular.sep = NULL;
+        device_wattrs.angular.weight = NULL;
+    }
+
+    // Bitwise correction table: p_correction_nbits
+    if (wattrs.bitwise.p_nbits) {
+        FLOAT *device_p_correction_nbits = (FLOAT*) my_device_malloc(wattrs.bitwise.p_nbits * wattrs.bitwise.p_nbits * sizeof(FLOAT), buffer);
+        CUDA_CHECK(cudaMemcpy(device_p_correction_nbits, wattrs.bitwise.p_correction_nbits, wattrs.bitwise.p_nbits * wattrs.bitwise.p_nbits * sizeof(FLOAT), cudaMemcpyHostToDevice));
+        device_wattrs.bitwise.p_correction_nbits = device_p_correction_nbits;
+    } else {
+        device_wattrs.bitwise.p_correction_nbits = NULL;
+    }
 
     // allocate histogram arrays
     // printf("ALLOCATING histogram\n");
@@ -633,6 +671,13 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
 
     for (size_t i = 0; i < battrs.ndim; i++) {
         if (battrs.asize[i] > 0) my_device_free(device_battrs.array[i], buffer);
+    }
+    if (wattrs.angular.size) {
+        my_device_free(device_wattrs.angular.sep, buffer);
+        my_device_free(device_wattrs.angular.weight, buffer);
+    }
+    if (wattrs.bitwise.p_nbits) {
+        my_device_free(device_wattrs.bitwise.p_correction_nbits, buffer);
     }
 
     // Destroy CUDA events

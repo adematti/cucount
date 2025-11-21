@@ -25,7 +25,13 @@ def spherical_bessel(x, ell=0):
         x2 = x * x
         x4 = x2 * x2
         if (absx < threshold_even): return x4 / 945
-        return 5 * (2 * x2 - 21) * COS(x) / x4 + (x4 - 45 * x2 + 105) * SIN(x) / (x * x4)
+        invx = 1 / x
+        invx2 = invx**2
+        invx3 = invx2 * invx
+        invx4 = invx2 * invx2
+        #return SIN(x) * (invx - 45.0 * invx3 + 105.0 * invx4) - COS(x) * (10.0 * invx - 105.0 * invx3);
+        return 5 * (2 * invx2 - 21 * invx4) * COS(x) + (invx - 45 * invx3 + 105 * invx2 * invx3) * SIN(x);
+        #return 5 * (2 * x2 - 21) * COS(x) / x4 + (x4 - 45 * x2 + 105) * SIN(x) / (x * x4)
     if (ell == 1):
         if (absx < threshold_odd): return x / 3 - x * x * x / 30
         return SIN(x) / (x * x) - COS(x) / x
@@ -40,6 +46,8 @@ def test_legendre_bessel():
     mu = np.linspace(-1., 1., 1000)
     x = np.geomspace(1e-9, 100, 1000)
     for ell in range(5):
+        print(ell)
+        
         assert np.allclose(spherical_bessel(x, ell), special.spherical_jn(ell, x, derivative=False), atol=1e-7, rtol=1e-3)
 
 
@@ -53,6 +61,7 @@ def generate_catalogs(size=100, boxsize=(1000,) * 3, offset=(1000., 0., 0.), n_i
         # weights = utils.pack_bitarrays(*[rng.randint(0, 2, size) for i in range(64 * n_bitwise_weights)], dtype=np.uint64)
         # weights = utils.pack_bitarrays(*[rng.randint(0, 2, size) for i in range(33)], dtype=np.uint64)
         weights += [rng.randint(0, 0xffffffff, size, dtype=np.uint64) for i in range(n_bitwise_weights)]
+        #weights += [np.full(size, 0xffffffff, dtype=np.uint64) for i in range(n_bitwise_weights)]
         toret.append(positions + weights)
     return toret
 
@@ -359,9 +368,9 @@ def test_thetacut():
 def test_corrfunc_smu():
     import time
     edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
-    size = int(1e7)
+    size = int(1e6) # int(1e7)
     boxsize = (3000,) * 3
-    sep = np.linspace(0.8, 1., 100)
+    sep = np.linspace(0., 0.1, 100)
     twopoint_weights = (sep, 1. + np.linspace(0., 1., sep.size))
 
     data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=2, seed=44)
@@ -370,13 +379,12 @@ def test_corrfunc_smu():
 
     t0 = time.time()
     particles1 = Particles(positions1, weights1)
-    print(particles1.index_value)
     particles2 = Particles(positions2, weights2)
     wattrs = WeightAttrs(bitwise=dict(weights=particles1.get('bitwise_weight')), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
     los = 'midpoint'
     battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-    assert np.allclose(battrs.edges('s'), edges[0])
-    assert np.allclose(battrs.edges('mu'), edges[1])
+    assert np.allclose(battrs.edges('s'), np.column_stack([edges[0][:-1], edges[0][1:]]))
+    assert np.allclose(battrs.edges('mu'), np.column_stack([edges[1][:-1], edges[1][1:]]))
     test = count2(particles1, particles2, battrs=battrs, wattrs=wattrs)['weight']
     print('cucount', time.time() - t0)
 
@@ -388,6 +396,82 @@ def test_corrfunc_smu():
     tol = {'atol': 1e-8, 'rtol': 1e-5}
     #print(test.ravel())
     assert np.allclose(test, ref.wcounts, **tol)
+
+
+def test_corrfunc_theta():
+    import time
+    size = int(1e6) # int(1e7)
+    boxsize = (3000,) * 3
+    sep = np.linspace(0., 0.1, 100)
+    twopoint_weights = (sep, 1. + np.linspace(0., 1., sep.size))
+
+    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=2, seed=44)
+    positions1, weights1 = np.column_stack(data1[:3]), data1[3:]
+    positions2, weights2 = np.column_stack(data2[:3]), data2[3:]
+
+    t0 = time.time()
+    particles1 = Particles(positions1, weights1)
+    particles2 = Particles(positions2, weights2)
+    wattrs = WeightAttrs(bitwise=dict(weights=particles1.get('bitwise_weight')), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
+    #theta = 10**np.arange(-5, -1 + 0.1, 0.1)
+    theta = np.linspace(1e-5, 0.2, 10)
+    battrs = BinAttrs(theta=theta)
+    test = count2(particles1, particles2, battrs=battrs, wattrs=wattrs)['weight']
+    print('cucount', time.time() - t0)
+
+    from pycorr import TwoPointCounter
+    t0 = time.time()
+    ref = TwoPointCounter('theta', edges=theta, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, position_type='pos',
+                          weight_attrs={'normalization': 'counter'}, twopoint_weights=twopoint_weights, nthreads=64)
+    print('Corrfunc', time.time() - t0)
+    tol = {'atol': 1e-8, 'rtol': 1e-5}
+    assert np.allclose(test, ref.wcounts, **tol)
+
+
+
+def test_spectrum():
+    import jax
+    from jax import config
+    config.update('jax_enable_x64', True) 
+    from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs
+    size = int(1e7)
+    boxsize = (3000,) * 3
+
+    sattrs = SelectionAttrs(theta=(0., 0.05))
+    ells = (0, 2, 4)
+
+    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, seed=44)
+    positions1, weights1 = np.column_stack(data1[:3]), data1[3:]
+    positions2, weights2 = np.column_stack(data2[:3]), data2[3:]
+    particles1 = Particles(positions1, weights1)
+    particles2 = Particles(positions2, weights2)
+
+    k = np.linspace(0.001, 0.1, 10)
+    battrs = BinAttrs(k=k, pole=(ells, 'firstpoint'))
+    counts_k = count2(particles1, particles2, battrs=battrs, sattrs=sattrs)['weight'].T
+
+    sedges = np.arange(0., sum(b**2 for b in boxsize)**0.5, 0.1)
+    battrs = BinAttrs(s=sedges, pole=(ells, 'firstpoint'))
+    counts_s = count2(particles1, particles2, battrs=battrs, sattrs=sattrs)['weight'].T
+
+    def correlation_to_spectrum(k, sedges, counts, ells=ells):
+        from scipy import special
+        sedges = np.column_stack([sedges[:-1], sedges[1:]])
+        smid = np.mean(sedges, axis=-1)
+        #volume = 4. * np.pi / 3. * (sedges[..., 1]**3 - sedges[..., 0]**3)
+        spectrum = []
+        for ill, ell in enumerate(ells):
+            spectrum.append((-1)**(ell // 2) * np.sum(counts[ill] * special.spherical_jn(ell, k[:, None] * smid[None, :]), axis=-1))
+        return spectrum
+
+    spectrum = correlation_to_spectrum(k, sedges, counts_s, ells=ells)
+    from matplotlib import pyplot as plt
+    ax = plt.gca()
+    for ill, ell in enumerate(ells):
+        color = f'C{ill:d}'
+        ax.plot(k, counts_k[ill], color=color, linestyle='-')
+        ax.plot(k, spectrum[ill], color='k', linestyle='--')
+    plt.show()
 
 
 def test_jax(distributed=False):
@@ -508,6 +592,8 @@ if __name__ == '__main__':
 
     #test_thetacut()
     test_corrfunc_smu()
+    #test_corrfunc_theta()
+    #test_spectrum()
     #test_jax(distributed=True)
     #test_readme()
     #test_popcount()

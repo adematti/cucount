@@ -129,7 +129,7 @@ def test_jax(write=False):
         return Particles(positions, weights, **kwargs)
 
     edges = np.logspace(-3., -1., 30)
-    battrs = BinAttrs(theta=edges * np.pi / 180.)
+    battrs = BinAttrs(theta=edges)
     catalogs = get_catalogs(write=write)
 
     # gg
@@ -189,7 +189,7 @@ def test_treecorr():
         return treecorr.Catalog(ra=ra, dec=dec, w=weights, g1=e1, g2=e2, ra_units='deg', dec_units='deg')
 
     edges = np.logspace(-3., -1., 30)
-    battrs = BinAttrs(theta=edges * np.pi / 180.)
+    battrs = BinAttrs(theta=edges)
     catalogs = generate_catalogs()
 
     # Convert theta edges to arcmin for TreeCorr

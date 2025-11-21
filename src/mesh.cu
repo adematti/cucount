@@ -250,7 +250,7 @@ __global__ void count_particles_kernel(const MeshAttrs mattrs, const Particles p
     IndexValue index_value = particles.index_value;
 
     for (size_t i = gid; i < particles.size; i += stride) {
-        if ((index_value.size_individual_weight) && (particles.values[index_value.start_individual_weight] == 0.)) continue;
+        if ((index_value.size_individual_weight) && (particles.values[i * index_value.size + index_value.start_individual_weight] == 0.)) continue;
         const FLOAT *position = &(particles.positions[NDIM * i]);
         index[i] = _get_cell_index(mattrs, position);
         my_atomicAddSizet(&(mesh.nparticles[index[i]]), 1);
@@ -266,7 +266,7 @@ __global__ void fill_particles_kernel(const Particles particles, const size_t *i
     IndexValue index_value = particles.index_value;
 
     for (size_t i = gid; i < particles.size; i += stride) {
-        if ((index_value.size_individual_weight) && (particles.values[index_value.start_individual_weight] == 0.)) continue;  // skip particles with zero weight; they count for nothing
+        if ((index_value.size_individual_weight) && (particles.values[i * index_value.size + index_value.start_individual_weight] == 0.)) continue;  // skip particles with zero weight; they count for nothing
         const FLOAT* position = &(particles.positions[NDIM * i]);
         const FLOAT *value = &(particles.values[index_value.size * i]);
         FLOAT sposition[NDIM];

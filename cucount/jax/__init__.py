@@ -65,13 +65,13 @@ def make_array_from_process_local_data(per_host_array, per_host_size=None, pad=0
                 if sizes is None:
                     sizes = get_sizes()
                 per_host_sum = np.repeat(per_host_array.sum(axis=0, keepdims=True), nlocal, axis=0)
-                pad = jax.make_array_from_process_local_data(sharding, per_host_sum).sum(axis=0) / sizes.sum()[None, ...]
+                pad = jax.make_array_from_process_local_data(sharding, per_host_sum).sum(axis=0, keepdims=True) / sizes.sum()[None, ...]
             elif pad == 'mean':
                 pad = np.mean(per_host_array, axis=0)[None, ...]
             else:
                 raise ValueError('mean or global_mean supported only')
         constant_values = pad
-        pad = lambda array, pad_width: np.append(array, np.repeat(constant_values, pad_width[0][1], axis=0), axis=0)
+        pad = lambda array, pad_width: np.concatenate([array, np.repeat(np.asarray(constant_values, dtype=array.dtype), pad_width[0][1], axis=0)], dtype=array.dtype, axis=0)
 
     if per_host_size is None:
         if sizes is None: sizes = get_sizes()
@@ -85,7 +85,8 @@ def make_array_from_process_local_data(per_host_array, per_host_size=None, pad=0
 @tree_util.register_pytree_node_class
 class AngularWeight(numpy.AngularWeight):
 
-    _np = jnp
+    pass
+    #_np = jnp  # cannot set, else got "ValueError: array is not writeable"
 
 
 @tree_util.register_pytree_node_class
@@ -117,14 +118,15 @@ class Particles(numpy.Particles):
     def __init__(self, positions, weights=None, spin_values=None, positions_type='pos', index_value=None, exchange=False, sharding_mesh=None):
         self.positions = _format_positions(positions, positions_type=positions_type, np=jnp)
         with_sharding = bool(sharding_mesh.axis_names)
-        self.values, self.index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=jnp)
+        self.values, index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=jnp)
+        self.index_value = IndexValue(**index_value)
         if not self.index_value('individual_weight'):
             # Let's add weights in any case (required arguments to count2)
             weights = [jnp.ones_like(self.positions, shape=self.positions.shape[0])] + _make_list_weights(weights)
             self.values, self.index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=jnp)
 
         if with_sharding and exchange:
-            self.positions = make_array_from_process_local_data(positions, pad=0, sharding_mesh=sharding_mesh)
+            self.positions = make_array_from_process_local_data(self.positions, pad='mean', sharding_mesh=sharding_mesh)
             self.values = [make_array_from_process_local_data(value, pad=0, sharding_mesh=sharding_mesh) for value in self.values]
 
 
@@ -150,6 +152,12 @@ def _count2_no_shard(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttr
     # Buffer for mesh
     size += 2 * meshsize
     size += (nvalues2 + ndim2) * sum(particle.size for particle in particles)
+    # Buffer for angular upweights
+    if wattrs.angular is not None:
+        size += 2 * wattrs.angular.weight.size
+    # Buffer for bitwise correction
+    if wattrs.bitwise is not None and wattrs.bitwise.p_correction_nbits is not None:
+        size += wattrs.bitwise.p_correction_nbits.size
     # Buffer for count2: bins
     size += sum(s + 1 for s in bshape)
     # Buffer for count2: bins

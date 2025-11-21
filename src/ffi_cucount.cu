@@ -2,6 +2,9 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <cuda.h>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
 
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/api/ffi.h"
@@ -20,10 +23,60 @@ static WeightAttrs wattrs;
 static IndexValue index_value[2] = {0};
 
 
+// keep ownership of host-side copies created here so pointers stay valid
+static std::vector<void*> owned_host_ptrs;
+
+// helper to free owned pointers
+static void free_owned_ptrs() {
+    for (void *p : owned_host_ptrs) {
+        std::free(p);
+    }
+    owned_host_ptrs.clear();
+}
+
+
 void set_attrs_py(BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(), const SelectionAttrs_py sattrs_py = SelectionAttrs_py()) {
+    // free previously allocated host copies (if any)
+    free_owned_ptrs();
+
     battrs = battrs_py.data();
     wattrs = wattrs_py.data();
     sattrs = sattrs_py.data();
+
+    // --- Make owned host copies for battrs.array entries (if provided) ---
+    // Assumes battrs.asize[i] holds element count and battrs_py.array[i] is provided.
+    for (size_t i = 0; i < (size_t)battrs.ndim; i++) {
+        if (battrs.asize[i] != 0) {
+            // compute count and allocate
+            FLOAT *buf = (FLOAT*) std::malloc(battrs.asize[i] * sizeof(FLOAT));
+            if (!buf) throw std::bad_alloc();
+            // copy from py::array_t backing memory
+            std::memcpy(buf, battrs.array[i], battrs.asize[i] * sizeof(FLOAT));
+            battrs.array[i] = buf;
+            owned_host_ptrs.push_back(buf);
+        }
+    }
+    // --- Make owned host copies for wattrs.bitwise.p_correction_nbits (if provided) ---
+    if (wattrs.bitwise.p_nbits > 0) {
+        size_t size = wattrs.bitwise.p_nbits * wattrs.bitwise.p_nbits;
+        FLOAT *buf = (FLOAT*) std::malloc(size * sizeof(FLOAT));
+        if (!buf) throw std::bad_alloc();
+        std::memcpy(buf, wattrs.bitwise.p_correction_nbits, size * sizeof(FLOAT));
+        wattrs.bitwise.p_correction_nbits = buf;
+        owned_host_ptrs.push_back(buf);
+    }
+    // --- Make owned host copies for wattrs.angular.sep / weight (if provided) ---
+    if (wattrs.angular.size > 0) {
+        FLOAT *sep_buf = (FLOAT*) std::malloc(wattrs.angular.size * sizeof(FLOAT));
+        FLOAT *weight_buf = (FLOAT*) std::malloc(wattrs.angular.size * sizeof(FLOAT));
+        if (!sep_buf || !weight_buf) {std::free(sep_buf); std::free(weight_buf); throw std::bad_alloc();}
+        std::memcpy(sep_buf, wattrs.angular.sep, wattrs.angular.size * sizeof(FLOAT));
+        std::memcpy(weight_buf, wattrs.angular.weight, wattrs.angular.size * sizeof(FLOAT));
+        wattrs.angular.sep = sep_buf;
+        wattrs.angular.weight = weight_buf;
+        owned_host_ptrs.push_back(sep_buf);
+        owned_host_ptrs.push_back(weight_buf);
+    }
 }
 
 
@@ -82,8 +135,8 @@ ffi::Error count2Impl(cudaStream_t stream,
     set_mesh_attrs(list_particles, &mattrs, &membuffer, stream);
     set_mesh(list_particles, list_mesh, mattrs, &membuffer, stream);
     // Perform the computation
-    // Note: FFI interface doesn't support spin parameters yet, defaulting to spin1=0, spin2=0
     count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, wattrs, &membuffer, stream);
+    free_owned_ptrs();
 
     cudaError_t last_error = cudaGetLastError();
     if (last_error != cudaSuccess) {

@@ -26,9 +26,9 @@ class AngularWeight(object):
         return cls(*children)
 
     def _to_c(self):
-        sep = self._np.cos(self._np.radians(self.sep))
-        argsort = self._np.argsort(sep)
-        state = {'sep': sep[argsort].copy(), 'weight': self.weight[argsort].copy()}
+        sep = np.cos(np.radians(self.sep))
+        argsort = np.argsort(sep)
+        state = {'sep': np.array(sep[argsort], dtype=np.float64), 'weight': np.array(self.weight[argsort], dtype=np.float64)}
         return state
 
     def __call__(self, sep):
@@ -94,13 +94,14 @@ class BitwiseWeight(object):
 
     def __call__(self, *bitwise_weights):
         """Return value of weights."""
+        bitwise_weights = [reformat_bitarrays(*weights, dtype=np.uint64, copy=True, np=self._np) for weights in bitwise_weights]
         denom = self.noffset + sum(popcount(functools.reduce(operator.and_, weights), np=self._np) for weights in zip(*bitwise_weights))
         mask = denom == 0
         toret = self.nrealizations / self._np.where(mask, 1., denom)
         if len(bitwise_weights) > 1 and self.p_correction_nbits is not None:
             c = tuple(sum(popcount(weight, np=self._np) for weight in weights) for weights in bitwise_weights)
-            toret /= self.p_correction_nbits[c]
-        toret = np.where(mask, self.default_value, toret)
+            toret = toret / self._np.asarray(self.p_correction_nbits)[c]
+        toret = self._np.where(mask, self.default_value, toret)
         return toret
 
     def _to_c(self):
@@ -108,6 +109,7 @@ class BitwiseWeight(object):
         state.pop('nalways')
         for name in ['p_correction_nbits']:
             if state[name] is None: state.pop(name)
+            else: state[name] = np.array(state[name], dtype=np.float64)
         return state
 
 
@@ -150,6 +152,8 @@ class WeightAttrs(object):
             return
         for particle in particles:
             assert all(value.shape[0] == particle.size for value in particle.values), "All input value arrays should be of same length as positions"
+            assert len(particle.index_value('individual_weight', return_type=list)) <= 1, "Only one individual weight is supported"
+            assert len(particle.index_value('negative_weight', return_type=list)) <= 1, "Only one negative weight is supported"
         if self.spin is not None:
             assert all(particle.get('spin') for particle in particles), 'WeightAttrs.spin is not None, so Particles must have spin values'
         nbitwises = [len(particle.get('bitwise_weight')) for particle in particles]
@@ -173,7 +177,7 @@ class WeightAttrs(object):
             negative = 1.
             for _ in negatives:
                 for value in _: negative *= value
-            weight2 -= negative
+            weight -= negative
         return weight
 
 
@@ -189,7 +193,7 @@ class BinAttrs(cucountlib.cucount.BinAttrs):
     Provide binning:
     - s = edge array or (min, max, step)
     - mu = (edge array or (min, max, step), line-of-sight (midpoint, firstpoint, endpoint, x, y, z))
-    - theta = edge array or (min, max, step)
+    - theta = edge array or (min, max, step)  # in degrees
     """
     def edges(self, name=None):
         def edge(array, name):
@@ -303,11 +307,9 @@ def _format_values(weights=None, spin_values=None, index_value=None, np=np):
         kwargs.update(individual_weight=len(individual_weights),
                       bitwise_weight=len(bitwise_weights),
                       negative_weight=len(negative_weights))
-    if isinstance(index_value, dict):
-        kwargs.update(**index_value)
-    if not isinstance(index_value, IndexValue):
-        index_value = IndexValue(**kwargs)
-    return values, index_value
+    if index_value is not None:
+        kwargs.update(**(index_value if isinstance(index_value, dict) else index_value._sizes))
+    return values, kwargs
 
 
 def _concatenate_values(values, np=np):
@@ -370,7 +372,8 @@ class Particles(object):
 
     def __init__(self, positions, weights=None, spin_values=None, positions_type='pos', index_value=None):
         # To check/modify when adding new weighting scheme
-        self.values, self.index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=np)
+        self.values, index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=np)
+        self.index_value = IndexValue(**index_value)
         self.positions = _format_positions(positions, positions_type=positions_type, np=np)
 
     @property
@@ -392,7 +395,7 @@ class Particles(object):
         if name == 'weights':
             weights = []
             for name, sl in self.index_value(return_type=slice).items():
-                if name != 'spin': weights.append(self.values[sl])
+                weights += self.values[sl]
             return weights
         return self.values[self.index_value(name, return_type=slice)]
 
@@ -459,6 +462,7 @@ def popcount(*arrays, np=np):
             return _popcount_lookuptable[array.view((np.uint8, (array.dtype.itemsize,)))].sum(axis=-1)
     return sum(_popcount(array) for array in arrays)
 
+
 def reformat_bitarrays(*arrays, dtype=np.uint64, copy=True, np=np):
     """
     Reformat input integer arrays into list of arrays of type ``dtype``.
@@ -486,7 +490,11 @@ def reformat_bitarrays(*arrays, dtype=np.uint64, copy=True, np=np):
     nremainingbytes = 0
     for array in arrays:
         # first bits are in the first byte array
-        arrayofbytes = array.view((np.uint8, (array.dtype.itemsize,)))
+        if np.__name__.startswith('jax'):
+            import jax
+            arrayofbytes = jax.lax.bitcast_convert_type(array, np.uint8)
+        else:
+            arrayofbytes = array.view((np.uint8, (array.dtype.itemsize,)))
         arrayofbytes = np.moveaxis(arrayofbytes, -1, 0)
         for arrayofbyte in arrayofbytes:
             if nremainingbytes == 0:
