@@ -78,7 +78,13 @@ struct Particles_py {
 
 
 py::object count2_py(Particles_py& particles1, Particles_py& particles2,
-               BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(), const SelectionAttrs_py sattrs_py = SelectionAttrs_py()) {
+               MeshAttrs_py mattrs_py, BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(),
+               const SelectionAttrs_py sattrs_py = SelectionAttrs_py()) {
+
+    BinAttrs battrs = battrs_py.data();
+    WeightAttrs wattrs = wattrs_py.data();
+    SelectionAttrs sattrs = sattrs_py.data();
+    MeshAttrs mattrs = mattrs_py.data();
 
     DeviceMemoryBuffer *membuffer = NULL;
     Particles list_particles[MAX_NMESH];
@@ -89,30 +95,23 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     copy_particles_to_device(particles1.data(), &list_particles[0], 2);
     copy_particles_to_device(particles2.data(), &list_particles[1], 2);
 
-    BinAttrs battrs = battrs_py.data();
-    WeightAttrs wattrs = wattrs_py.data();
-    SelectionAttrs sattrs = sattrs_py.data();
-    MeshAttrs mattrs;
+    // Create a default CUDA stream (or use 0 for the default stream)
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+
+    set_mesh(list_particles, list_mesh, mattrs, membuffer, stream);
+    // Free allocated memory
+    for (size_t i = 0; i < 2; i++) free_device_particles(&(list_particles[i]));
 
     char names[MAX_NWEIGHT][SIZE_NAME];
     size_t ncounts = get_count2_size(list_particles[0].index_value, list_particles[1].index_value, names);
     size_t csize = ncounts * battrs.size;
-
     // Create a numpy array to store the results
     py::array_t<FLOAT> counts_py(csize);
     auto counts_ptr = counts_py.mutable_data(); // Get a pointer to the array's data
 
     FLOAT *counts = (FLOAT*) my_device_malloc(csize * sizeof(FLOAT), membuffer);
 
-    // Create a default CUDA stream (or use 0 for the default stream)
-    cudaStream_t stream;
-    CUDA_CHECK(cudaStreamCreate(&stream));
-
-    prepare_mesh_attrs(&mattrs, battrs, sattrs);
-    set_mesh_attrs(list_particles, &mattrs, membuffer, stream);
-    set_mesh(list_particles, list_mesh, mattrs, membuffer, stream);
-    // Free allocated memory
-    for (size_t i = 0; i < 2; i++) free_device_particles(&(list_particles[i]));
     // Perform the computation
     count2(counts, list_mesh, mattrs, sattrs, battrs, wattrs, membuffer, stream);
 
@@ -172,11 +171,18 @@ PYBIND11_MODULE(cucount, m) {
     py::class_<WeightAttrs_py>(m, "WeightAttrs", py::module_local())
         .def(py::init<py::kwargs>()); // Accept Python kwargs
 
+    py::class_<MeshAttrs_py>(m, "MeshAttrs", py::module_local())
+        .def(py::init<py::kwargs>()) // Accept named kwargs: periodic, boxsize, cellsize
+        .def_readwrite("periodic", &MeshAttrs_py::periodic)
+        .def_property_readonly("boxsize", [](const MeshAttrs_py &mp) -> py::array_t<FLOAT> { return mp.boxsize_arr; })
+        .def_property_readonly("cellsize", [](const MeshAttrs_py &mp) -> py::array_t<FLOAT> { return mp.cellsize_arr; });
+
     m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
 
     m.def("count2", &count2_py, "Take particle positions and weights (numpy arrays), perform 2-pt counts on the GPU and return a numpy array",
         py::arg("particles1"),
         py::arg("particles2"),
+        py::arg("mattrs"),
         py::arg("battrs"),
         py::arg("wattrs") = WeightAttrs_py(), // Default value
         py::arg("sattrs") = SelectionAttrs_py()); // Default value

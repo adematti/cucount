@@ -73,10 +73,10 @@ __device__ size_t cartesian_to_cell_index(const MeshAttrs mattrs, const FLOAT* p
 }
 
 
-__device__ void _find_extent(const MeshAttrs mattrs, const FLOAT *position, FLOAT *extent) {
+__device__ void _find_extent(const MESH_TYPE mesh_type, const FLOAT *position, FLOAT *extent) {
 
     FLOAT cth, phi, r;
-    if (mattrs.type == MESH_ANGULAR) {
+    if (mesh_type == MESH_ANGULAR) {
         cartesian_to_sphere(position, &r, &cth, &phi);
         extent[0] = fmin(cth, extent[0]);
         extent[1] = fmax(cth, extent[1]);
@@ -92,7 +92,7 @@ __device__ void _find_extent(const MeshAttrs mattrs, const FLOAT *position, FLOA
 }
 
 
-__global__ void find_extent_kernel(FLOAT *extent, Particles particles, const MeshAttrs mattrs) {
+__global__ void find_extent_kernel(FLOAT *extent, Particles particles, const MESH_TYPE mesh_type) {
 
     extern __shared__ FLOAT sdata[];
     size_t tid = threadIdx.x;
@@ -107,7 +107,7 @@ __global__ void find_extent_kernel(FLOAT *extent, Particles particles, const Mes
 
     for (size_t i = gid; i < particles.size; i += stride) {
         const FLOAT *position = &(particles.positions[NDIM * i]);
-        _find_extent(mattrs, position, textent);
+        _find_extent(mesh_type, position, textent);
     }
     for (size_t axis = 0; axis < NDIM; axis++) {
         sdata[2 * NDIM * tid + 2 * axis] = textent[2 * axis];
@@ -137,12 +137,11 @@ __global__ void find_extent_kernel(FLOAT *extent, Particles particles, const Mes
 }
 
 
-void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
+void set_mesh_extent(const MESH_TYPE mesh_type, FLOAT *boxsize, FLOAT *boxcenter, const Particles *list_particles, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
 
     int nblocks, nthreads_per_block;
     CONFIGURE_KERNEL_LAUNCH(find_extent_kernel, nblocks, nthreads_per_block, buffer);
 
-    size_t sum_nparticles = 0, n_nparticles = 0;
     FLOAT extent[2 * NDIM];
     for (size_t axis = 0; axis < NDIM; axis++) {
         extent[2 * axis] = INFINITY;
@@ -154,7 +153,7 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs, DeviceMe
         if (particles.size == 0) continue;
         FLOAT *device_block_extent = (FLOAT*) my_device_malloc(nblocks * 2 * NDIM * sizeof(FLOAT), buffer);
         CUDA_CHECK(cudaDeviceSynchronize());
-        find_extent_kernel<<<nblocks, nthreads_per_block, nthreads_per_block * 2 * NDIM * sizeof(FLOAT), stream>>>(device_block_extent, particles, *mattrs);
+        find_extent_kernel<<<nblocks, nthreads_per_block, nthreads_per_block * 2 * NDIM * sizeof(FLOAT), stream>>>(device_block_extent, particles, mesh_type);
         CUDA_CHECK(cudaDeviceSynchronize());
         FLOAT *block_extent = (FLOAT*) my_malloc(nblocks * 2 * NDIM * sizeof(FLOAT));
         cudaMemcpy(block_extent, device_block_extent, nblocks * 2 * NDIM * sizeof(FLOAT), cudaMemcpyDeviceToHost);
@@ -166,60 +165,28 @@ void set_mesh_attrs(const Particles *list_particles, MeshAttrs *mattrs, DeviceMe
         }
         my_device_free(device_block_extent, buffer);
         free(block_extent);
-        sum_nparticles += particles.size;
-        n_nparticles += 1;
     }
 
-    size_t nparticles = sum_nparticles / n_nparticles;
-
-    if (mattrs->type == MESH_ANGULAR) {
+    if (mesh_type == MESH_ANGULAR) {
         FLOAT fsky = (extent[1] - extent[0]) * (extent[3] - extent[2]) / (4 * M_PI);
         log_message(LOG_LEVEL_INFO, "Enclosing fractional area is %.4f [%.4f %.4f] x [%.4f %.4f].\n", fsky, extent[0], extent[1], extent[2], extent[3]);
-
-        if (mattrs->meshsize[0] * mattrs->meshsize[1] == 0) {
-            FLOAT theta_max = acos(mattrs->smax);
-            int nside1 = 5 * (int)(M_PI / theta_max);
-            int nside2 = MIN((int)(sqrt(0.25 * nparticles / fsky)), 2048);  // cap to avoid blowing up the memory
-            if ((buffer) && (buffer->size > 0)) nside2 = MIN(nside2, (int)(sqrt(0.5 * buffer->meshsize)));
-            mattrs->meshsize[0] = (size_t) MAX(MIN(nside1, nside2), 1);
-            mattrs->meshsize[1] = 2 * mattrs->meshsize[0];
-        }
-        mattrs->boxsize[0] = extent[1] - extent[0];
-        mattrs->boxsize[1] = extent[3] - extent[2];
-        mattrs->boxcenter[0] = (extent[0] + extent[1]) / 2.;
-        mattrs->boxcenter[1] = (extent[2] + extent[3]) / 2.;
-        size_t meshsize = mattrs->meshsize[0] * mattrs->meshsize[1];
-        FLOAT pixel_resolution = sqrt(4 * M_PI / meshsize) / DTORAD;
-        log_message(LOG_LEVEL_INFO, "Mesh size is %d = %d x %d.\n", meshsize, mattrs->meshsize[0], mattrs->meshsize[1]);
-        log_message(LOG_LEVEL_INFO, "Pixel resolution is %.4lf deg.\n", pixel_resolution);
-        for (size_t axis = 2; axis < NDIM; axis++) mattrs->meshsize[axis] = 1;
+        boxsize[0] = extent[1] - extent[0];
+        boxsize[1] = extent[3] - extent[2];
+        boxcenter[0] = (extent[0] + extent[1]) / 2.;
+        boxcenter[1] = (extent[2] + extent[3]) / 2.;
     }
 
-    if (mattrs->type == MESH_CARTESIAN) {
+    if (mesh_type == MESH_CARTESIAN) {
         FLOAT volume = 1.;
         for (size_t axis = 0; axis < NDIM; axis ++) {
-            mattrs->boxsize[axis] = 1.001 * (extent[2 * axis + 1] - extent[2 * axis]);
-            mattrs->boxcenter[axis] = (extent[2 * axis] + extent[2 * axis + 1]) / 2.;
-            volume *= mattrs->boxsize[axis];
+            boxsize[axis] = 1.001 * (extent[2 * axis + 1] - extent[2 * axis]);
+            boxcenter[axis] = (extent[2 * axis] + extent[2 * axis + 1]) / 2.;
+            volume *= boxsize[axis];
         }
         log_message(LOG_LEVEL_INFO, "Enclosing volume is %.4f [%.4f %.4f] x [%.4f %.4f] x [%.4f %.4f].\n", volume, extent[0], extent[1], extent[2], extent[3], extent[4], extent[5]);
-
-        size_t meshsize = 1;
-        if (mattrs->meshsize[0] == 0) {
-            int nside1 = (int) (4.0 * pow(volume, 1. / 3.) / mattrs->smax);
-            // This imposes total mesh.size < mean(particles.size)
-            int nside2 = (int) pow(0.5 * nparticles, 1. / 3.);
-            if ((buffer) && (buffer->size > 0)) nside2 = MIN(nside2, (int)(pow(buffer->meshsize, 1. / 3.)));
-            for (size_t axis = 0; axis < NDIM; axis ++) {
-                mattrs->meshsize[axis] = (size_t) MAX(MIN(nside1, nside2), 1);
-                meshsize *= mattrs->meshsize[axis];
-            }
-        }
-        FLOAT voxel_resolution = volume / meshsize;
-        log_message(LOG_LEVEL_INFO, "Mesh size is %d = %d x %d x %d.\n", meshsize, mattrs->meshsize[0], mattrs->meshsize[1], mattrs->meshsize[2]);
-        log_message(LOG_LEVEL_INFO, "Voxel resolution is %.4lf.\n", voxel_resolution);
     }
 }
+
 
 
 __device__ size_t _get_cell_index(const MeshAttrs mattrs, const FLOAT *position) {

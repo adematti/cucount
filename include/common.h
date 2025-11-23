@@ -26,7 +26,7 @@ extern LogLevel global_log_level;
 
 void log_message(LogLevel level, const char *format, ...);
 
-typedef enum {MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
+typedef enum {MESH_NONE, MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
 typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
 typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT, LOS_X, LOS_Y, LOS_Z} LOS_TYPE;
 

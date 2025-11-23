@@ -13,7 +13,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
 from cucountlib import ffi_cucount
-from cucount.numpy import BinAttrs, SelectionAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, setup_logging
+from cucount.numpy import BinAttrs, SelectionAttrs, MeshAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, setup_logging
 from cucount import numpy
 
 
@@ -133,8 +133,8 @@ class Particles(numpy.Particles):
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 
-def _count2_no_shard(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None):
-    ffi_cucount.set_attrs(battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
+def _count2_no_shard(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None, mattrs=MeshAttrs=None):
+    ffi_cucount.set_attrs(battrs, wattrs=wattrs._to_c(), sattrs=sattrs, mattrs=mattrs._to_c())
     for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value._to_c())
     dtype = jnp.float64
     bsize, bshape = battrs.size, tuple(battrs.shape)
@@ -171,7 +171,7 @@ def _count2_no_shard(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttr
 
 
 @default_sharding_mesh
-def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None, sharding_mesh=None):
+def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None, mattrs: MeshAttrs=None, sharding_mesh=None):
     """
     Perform two-point pair counts using the native cucount library.
 
@@ -190,6 +190,8 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         (no weights) is used.
     sattrs : SelectionAttrs, optional
         Selection attributes to restrict pairs. If None, defaults to SelectionAttrs().
+    mattrs : MeshAttrs, optional
+        Mesh attributes (periodic, cellsize). If None, defaults to MeshAttrs().
 
     Returns
     -------
@@ -210,8 +212,9 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     assert len(particles) == 2
     if wattrs is None: wattrs = WeightAttrs()
     if sattrs is None: sattrs = SelectionAttrs()
+    if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
     wattrs.check(*particles)
-    count2 = _count2 = partial(_count2_no_shard, battrs=battrs, wattrs=wattrs, sattrs=sattrs)
+    count2 = _count2 = partial(_count2_no_shard, battrs=battrs, wattrs=wattrs, sattrs=sattrs, mattrs=mattrs)
     if sharding_mesh.axis_names:
         #assert all(particle.exchanged for particle in particles), 'All input particles should be exchanged'
         count2 = shard_map(lambda *particles: jax.lax.psum(_count2(*particles), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))

@@ -17,8 +17,9 @@
 namespace py = pybind11;
 namespace ffi = xla::ffi;
 
-static SelectionAttrs sattrs;
+static MeshAttrs mattrs;
 static BinAttrs battrs;
+static SelectionAttrs sattrs;
 static WeightAttrs wattrs;
 static IndexValue index_value[2] = {0};
 
@@ -35,10 +36,13 @@ static void free_owned_ptrs() {
 }
 
 
-void set_attrs_py(BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(), const SelectionAttrs_py sattrs_py = SelectionAttrs_py()) {
+void set_attrs_py(MeshAttrs_py mattrs_py, BinAttrs_py battrs_py,
+                 WeightAttrs_py wattrs_py = WeightAttrs_py(),
+                 const SelectionAttrs_py sattrs_py = SelectionAttrs_py()) {
     // free previously allocated host copies (if any)
     free_owned_ptrs();
 
+    mattrs = mattrs_py.data();
     battrs = battrs_py.data();
     wattrs = wattrs_py.data();
     sattrs = sattrs_py.data();
@@ -130,10 +134,10 @@ ffi::Error count2Impl(cudaStream_t stream,
     set_mem_buffer(&membuffer, buffer);
     membuffer.nblocks = 256;
     membuffer.meshsize = (list_particles[0].size + list_particles[1].size) / 2;
-    MeshAttrs mattrs;
-    prepare_mesh_attrs(&mattrs, battrs, sattrs);
-    set_mesh_attrs(list_particles, &mattrs, &membuffer, stream);
-    set_mesh(list_particles, list_mesh, mattrs, &membuffer, stream);
+
+    MeshAttrs mattrs = mattrs_py.data(battrs, sattrs, list_particles, membuffer, stream);
+    set_mesh(list_particles, list_mesh, mattrs, membuffer, stream);
+
     // Perform the computation
     count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, wattrs, &membuffer, stream);
     free_owned_ptrs();
@@ -194,9 +198,16 @@ PYBIND11_MODULE(ffi_cucount, m) {
     py::class_<WeightAttrs_py>(m, "WeightAttrs", py::module_local())
         .def(py::init<py::kwargs>()); // Accept Python kwargs
 
+    py::class_<MeshAttrs_py>(m, "MeshAttrs", py::module_local())
+        .def(py::init<py::kwargs>()) // Accept named kwargs: periodic, boxsize, cellsize
+        .def_readwrite("periodic", &MeshAttrs_py::periodic)
+        .def_property_readonly("boxsize", [](const MeshAttrs_py &mp) -> py::array_t<FLOAT> { return mp.boxsize_arr; })
+        .def_property_readonly("cellsize", [](const MeshAttrs_py &mp) -> py::array_t<FLOAT> { return mp.cellsize_arr; });
+
     m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
 
     m.def("set_attrs", &set_attrs_py, "Set attributes",
+        py::arg("mattrs"),
         py::arg("battrs"),
         py::arg("wattrs") = WeightAttrs_py(), // Default value
         py::arg("sattrs") = SelectionAttrs_py()); // Default value

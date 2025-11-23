@@ -1,4 +1,7 @@
+import sys
+import time
 import numbers
+import logging
 import functools
 import operator
 from dataclasses import dataclass, asdict
@@ -6,7 +9,50 @@ from dataclasses import dataclass, asdict
 import numpy as np
 
 import cucountlib
-from cucountlib.cucount import setup_logging
+
+
+logger = logging.getLogger('cucount')
+
+
+def _setup_cucount_logging():
+    level = logging.getLogger('cucount').getEffectiveLevel()
+    level = logging.getLevelName(level)
+    cucountlib.cucount.setup_logging(level=level)
+
+
+def setup_logging(level=logging.INFO, stream=sys.stdout,  **kwargs):
+    """
+    Set up logging.
+
+    Parameters
+    ----------
+    level : str, int, default=logging.INFO
+        Logging level.
+    stream : _io.TextIOWrapper, default=sys.stdout
+        Where to stream.
+    kwargs : dict
+        Other arguments for :func:`logging.basicConfig`.
+    """
+    # Cannot provide stream and filename kwargs at the same time to logging.basicConfig, so handle different cases
+    # Thanks to https://stackoverflow.com/questions/30861524/logging-basicconfig-not-creating-log-file-when-i-run-in-pycharm
+    if isinstance(level, str):
+        level = {'info': logging.INFO, 'debug': logging.DEBUG, 'warning': logging.WARNING}[level.lower()]
+    for handler in logging.root.handlers:
+        logging.root.removeHandler(handler)
+
+    t0 = time.time()
+
+    class MyFormatter(logging.Formatter):
+
+        def format(self, record):
+            self._style._fmt = '[%09.2f] ' % (time.time() - t0) + ' %(asctime)s %(name)-28s %(levelname)-8s %(message)s'
+            return super(MyFormatter, self).format(record)
+
+    fmt = MyFormatter(datefmt='%m-%d %H:%M ')
+    handler = logging.StreamHandler(stream=stream)
+    handler.setFormatter(fmt)
+    logging.basicConfig(level=level, handlers=[handler], **kwargs)
+    _setup_cucount_logging()
 
 
 @dataclass
@@ -217,6 +263,146 @@ class BinAttrs(cucountlib.cucount.BinAttrs):
 
 
 @dataclass(init=False)
+class MeshAttrs(object):
+
+    boxsize: np.ndarray
+    boxcenter: np.ndarray
+    meshsize: np.ndarray
+    type: str
+    periodic: bool
+    smax: float
+    _np = np
+
+    def __init__(self, *positions, boxsize=None, boxcenter=None, meshsize=None, battrs=None, sattrs=None, periodic=False):
+        """
+        Determine mesh attributes from input positions and other attributes.
+
+        Parameters
+        ----------
+        *positions : array-like or Particles
+            List of positions arrays.
+
+        boxsize : array-like of 3 floats, optional
+            Box size along each axis. If None, determined from positions.
+
+        meshsize : array-like of 3 floats, optional
+            Size of the mesh along each axis. If None, determined from battrs or sattrs.
+
+        battrs : BinAttrs, optional
+            Binning attributes. Used to determine cellsize if cellsize is None.
+
+        sattrs : SelectionAttrs, optional
+            Selection attributes. Used to determine boxsize if boxsize is None.
+
+        periodic : bool, default=False
+            Whether to use periodic boundary conditions.
+        """
+        positions = [p.positions if isinstance(p, Particles) else p for p in positions]
+        nparticles = sum(p.shape[0] for p in positions) // len(positions)
+
+        def _get_extent(*positions):
+            """Return minimum physical extent (min, max) corresponding to input positions."""
+            if not positions:
+                raise ValueError('positions must be provided if boxsize and boxcenter are not specified, or check is True')
+            nonempty_positions = [pos for pos in positions if pos.size]
+            if not nonempty_positions:
+                raise ValueError('<= 1 particles found; cannot infer boxsize')
+            axis = tuple(range(len(nonempty_positions[0].shape[:-1])))
+
+            def cartesian_to_sphere(pos, np=self._np):
+                """Convert cartesian to spherical coordinates (r, theta, phi)."""
+                x, y, z = pos.T
+                r = np.sqrt(x**2 + y**2 + z**2)
+                cth = np.clip(z / r, -1.0, 1.0)  # polar angle
+                phi = np.arctan2(y, x) % (2. * np.pi)  # azimuthal angle
+                return np.column_stack((cth, phi))
+
+            if mesh_type == 'angular':
+                # angular: compute extent in theta, phi
+                nonempty_positions = [cartesian_to_sphere(pos, degree=False) for pos in nonempty_positions]
+
+            pos_min = self._np.array([self._np.min(p, axis=axis) for p in nonempty_positions]).min(axis=0)
+            pos_max = self._np.array([self._np.max(p, axis=axis) for p in nonempty_positions]).max(axis=0)
+            return pos_min, pos_max
+
+        mesh_type, mesh_smax = None, None
+        if sattrs and sattrs.ndim:
+            if sattrs.varnames[0] == 'theta':
+                mesh_type = 'angular'
+                mesh_smax = self._np.cos(sattrs.max[0] * np.pi / 180.)
+            elif sattrs.varnames[0] == 's':
+                mesh_type = 'cartesian'
+                mesh_smax = sattrs.max[0]
+        elif battrs and battrs.ndim:
+            if battrs.varnames[0] == 'theta':
+                mesh_type = 'angular'
+                mesh_smax = self._np.cos(battrs.max[0] * np.pi / 180.)
+            elif battrs.varnames[0] == 's':
+                mesh_type = 'cartesian'
+                mesh_smax = battrs.max[0]
+        assert mesh_type is not None, 'cannot determine mesh type from sattrs or battrs; provide at least one with var "theta" or "s"')
+        ndim = {'angular': 2, 'cartesian': 3}[mesh_type]
+
+        if periodic:
+            assert mesh_type == 'cartesian'
+            assert boxsize is not None, 'if periodic=True, boxsize must be provided'
+            boxcenter = 0.
+
+        elif boxsize is None or boxcenter is None:
+            extent = _get_extent(*positions)
+            if boxsize is None:
+                boxsize = extent[1] - extent[0]
+            if boxcenter is None:
+                boxcenter = 0.5 * (extent[1] + extent[0])
+
+        boxsize = self._np.asarray(boxsize, dtype=np.float64) * np.ones(ndim, dtype=np.float64)
+        boxcenter = self._np.asarray(boxcenter, dtype=np.float64) * np.ones(ndim, dtype=np.float64)
+
+        # Now set up resolution meshsize
+        if mesh_type == 'angular':
+            if meshsize is None:
+                theta_max = np.acos(mesh_smax)
+                nside1 = 5 * np.rint(np.pi / theta_max).astype(int)
+                fsky = boxsize.prod() / (4 * np.pi)
+                nside2 = np.minimum(self._np.sqrt(self._np.rint((0.25 * nparticles / fsky)).astype(int)), 2048)
+                meshsize = np.maximum(np.minimum(nside1, nside2), 1)
+                meshsize = [meshsize, 2 * meshsize]
+            meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
+            pixel_resolution = np.degrees(np.sqrt(4 * np.pi / meshsize.prod()))
+            logger.info("Mesh size is %d = %d x %d.\n", meshsize.prod(), meshsize[0], meshsize[1])
+            logger.info("Pixel resolution is %.4lf deg.\n", pixel_resolution)
+        elif mesh_type == 'cartesian':
+            nside2 = int((0.5 * nparticles)**(1. / 3.))
+            if meshsize is None:
+                nside1 = np.rint(4.0 * boxsize / mesh_smax).astype(int)
+                meshsize = np.maximum(np.minimum(nside1, nside2), 1)
+            meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
+            cellsize = boxsize / meshsize
+            logger.info("Mesh size is %d = %d x %d x %d.\n", meshsize.prod(), meshsize[0], meshsize[1], meshsize[2])
+            logger.info("Cell size is (%.4lf, %.4lf, %.4lf).\n", cellsize[0], cellsize[1], cellsize[2])
+        self.meshsize = meshsize
+        self.boxsize = boxsize
+        self.boxcenter = boxcenter
+        self.type = mesh_type
+        self.smax = mesh_smax
+
+    def tree_flatten(self):
+        children = (self.meshsize, self.boxsize, self.boxcenter, self.smax)
+        aux_data = dict(type=self.type)
+        return children, aux_data
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        new = cls.__new__(cls)
+        new.meshsize, new.boxsize, new.boxcenter, new.smax = children
+        new.type = aux_data['type']
+        return new
+
+    def _to_c(self):
+        return asdict(self)
+
+
+@dataclass(init=False)
 class IndexValue(object):
     # To check/modify when adding new weighting scheme
     _fields = ['spin', 'individual_weight', 'bitwise_weight', 'negative_weight']
@@ -413,7 +599,7 @@ class Particles(object):
         return new
 
 
-def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None):
+def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None, mattrs: MeshAttrs=None):
     """
     Perform two-point pair counts using the native cucount library.
 
@@ -432,18 +618,22 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         (no weights) is used.
     sattrs : SelectionAttrs, optional
         Selection attributes to restrict pairs. If None, defaults to SelectionAttrs().
+    mattrs : MeshAttrs, optional
+        Mesh attributes (periodic, cellsize). If None, defaults to MeshAttrs().
 
     Returns
     -------
     result : dict
         Output of the native count2 call. A dict of named arrays (e.g. weight, weight_plus, weight_cross, etc.).
     """
+    _setup_cucount_logging()
     assert len(particles) == 2
     if wattrs is None: wattrs = WeightAttrs()
-    if sattrs is None: sattrs = SelectionAttrs()
     wattrs.check(*particles)
+    if sattrs is None: sattrs = SelectionAttrs()
+    if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
     particles = [cucountlib.cucount.Particles(p.positions, values=_concatenate_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
-    return cucountlib.cucount.count2(*particles, battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
+    return cucountlib.cucount.count2(*particles, battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, mattrs=mattrs._to_c())
 
 
 # Create a lookup table for set bits per byte
