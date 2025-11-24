@@ -490,11 +490,14 @@ def test_corrfunc_cubic(mode='smu'):
     assert np.allclose(test_jax, ref, **tol)
 
 
-def test_spectrum():
-    import jax
-    from jax import config
-    config.update('jax_enable_x64', True)
-    from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs
+def test_spectrum(backend='numpy'):
+    if backend == 'jax':
+        import jax
+        from jax import config
+        config.update('jax_enable_x64', True)
+        from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs
+    else:
+        from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs
     size = int(1e7)
     boxsize = (3000,) * 3
 

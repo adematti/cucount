@@ -224,7 +224,6 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     if sattrs is None: sattrs = SelectionAttrs()
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
     wattrs.check(*particles)
-    #print(wattrs)
     count2 = _count2 = partial(_count2_no_shard, mattrs=mattrs, battrs=battrs, wattrs=wattrs, sattrs=sattrs)
     if sharding_mesh.axis_names:
         #assert all(particle.exchanged for particle in particles), 'All input particles should be exchanged'

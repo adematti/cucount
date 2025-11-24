@@ -356,7 +356,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         else if (var == VAR_RP) {
             value = sqrt(s2 - s2 * mu2);
         }
-        if ((var != VAR_POLE) || (var != VAR_K)) {
+        if ((var != VAR_POLE) && (var != VAR_K)) {
             int ibin_loc = 0;  // int and not size_t as can go negative
             if (battrs.asize[i] > 0) {  // custom binning
                 if ((value >= battrs.array[i][battrs.asize[i] - 1]) || (value < battrs.array[i][0])) return;
