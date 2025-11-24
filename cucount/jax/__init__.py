@@ -13,7 +13,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
 from cucountlib import ffi_cucount
-from cucount.numpy import BinAttrs, SelectionAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, setup_logging
+from cucount.numpy import BinAttrs, SelectionAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, setup_logging, _setup_cucount_logging
 from cucount import numpy
 
 
@@ -21,7 +21,6 @@ jax.ffi.register_ffi_target('count2', ffi_cucount.count2())
 
 
 def create_sharding_mesh(device_mesh_shape=None):
-
     if device_mesh_shape is None:
         count = len(jax.devices())
         device_mesh_shape = (count,)
@@ -220,6 +219,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     """
     assert jax.config.read('jax_enable_x64'), 'for cucount you have to enable float64'
     assert len(particles) == 2
+    _setup_cucount_logging()
     if wattrs is None: wattrs = WeightAttrs()
     if sattrs is None: sattrs = SelectionAttrs()
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
