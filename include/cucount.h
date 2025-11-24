@@ -405,26 +405,27 @@ struct WeightAttrs_py {
 
 // Expose the MeshAttrs struct to Python
 struct MeshAttrs_py {
-    // optional arrays (copied from Python if provided)
-    py::array_t<FLOAT> boxsize;   // length NDIM
-    py::array_t<FLOAT> boxcenter;   // length NDIM
-    py::array_t<size_t> meshsize;  // length NDIM
-    FLOAT smax;
+    // use std::vector for simple, copyable storage
+    std::vector<FLOAT> boxsize;    // length NDIM (optional)
+    std::vector<FLOAT> boxcenter;  // length NDIM (optional)
+    std::vector<size_t> meshsize;  // length NDIM (optional)
+
+    FLOAT smax = 0.0;
     bool periodic = false;
-    MESH_TYPE type;
+    MESH_TYPE type = MESH_CARTESIAN;
 
     MeshAttrs_py() {}
 
-    // Read only full-array / scalar kwargs; no scalar-to-array expansion
+    // Read named kwargs; expect array-like inputs (no scalar expansion)
     MeshAttrs_py(const py::kwargs& kwargs) {
         for (auto item : kwargs) {
             std::string key = py::cast<std::string>(item.first);
             if (key == "boxsize") {
-                boxsize = py::array_t<FLOAT>(item.second.attr("copy")());
+                boxsize = py::cast<std::vector<FLOAT>>(item.second);
             } else if (key == "boxcenter") {
-                boxcenter = py::array_t<FLOAT>(item.second.attr("copy")());
+                boxcenter = py::cast<std::vector<FLOAT>>(item.second);
             } else if (key == "meshsize") {
-                meshsize = py::array_t<size_t>(item.second.attr("copy")());
+                meshsize = py::cast<std::vector<size_t>>(item.second);
             } else if (key == "smax") {
                 smax = py::cast<FLOAT>(item.second);
             } else if (key == "periodic") {
@@ -436,10 +437,8 @@ struct MeshAttrs_py {
                     if (t == "angular") type = MESH_ANGULAR;
                     else if (t == "cartesian") type = MESH_CARTESIAN;
                     else throw std::invalid_argument("Invalid mesh type: " + t);
-                } else if (py::isinstance<py::int_>(item.second)) {
-                    type = static_cast<MESH_TYPE>(py::cast<int>(item.second));
                 } else {
-                    throw std::invalid_argument("MeshAttrs_py: 'type' must be string or int");
+                    type = static_cast<MESH_TYPE>(py::cast<int>(item.second));
                 }
             } else {
                 throw std::invalid_argument("Unknown MeshAttrs_py argument: " + key);
@@ -447,26 +446,18 @@ struct MeshAttrs_py {
         }
     }
 
-    // Convert to plain C MeshAttrs. meshsize is computed if cellsize provided.
-    MeshAttrs data(BinAttrs battrs, SelectionAttrs sattrs, const Particles *list_particles, DeviceMemoryBuffer *buffer, cudaStream_t stream) const {
+    // Convert to plain C MeshAttrs. Missing entries are filled with sensible defaults.
+    MeshAttrs data() const {
         MeshAttrs mattrs;
-        // initialize to safe defaults
         for (size_t axis = 0; axis < NDIM; axis++) {
-            if (axis < meshsize.size()) {
-                mattrs.meshsize[axis] = meshsize[axis];
-                mattrs.boxsize[axis] = boxsize[axis];
-                mattrs.boxcenter[axis] = boxcenter[axis];
-            }
-            else {  // angular
-                mattrs.meshsize[axis] = 1;
-                mattrs.boxsize[axis] = 0.;
-                mattrs.boxcenter[axis] = 0.;
-            }
+            mattrs.meshsize[axis] = (axis < meshsize.size() ? meshsize[axis] : 1);
+            mattrs.boxsize[axis] = (axis < boxsize.size() ? boxsize[axis] : 0.0);
+            mattrs.boxcenter[axis] = (axis < boxcenter.size() ? boxcenter[axis] : 0.0);
         }
         mattrs.type = type;
         mattrs.smax = smax;
         mattrs.periodic = periodic;
-        return mattrs
+        return mattrs;
     }
 };
 

@@ -67,126 +67,11 @@ __device__ size_t cartesian_to_cell_index(const MeshAttrs mattrs, const FLOAT* p
     for (size_t axis = 0; axis < NDIM; axis++) {
         index *= mattrs.meshsize[axis];
         FLOAT offset = mattrs.boxcenter[axis] - mattrs.boxsize[axis] / 2;
-        index += (int) ((position[axis] - offset) * mattrs.meshsize[axis] / mattrs.boxsize[axis]);
+        int index_axis = (int) ((position[axis] - offset) * mattrs.meshsize[axis] / mattrs.boxsize[axis]);
+        index += (int) (index_axis % mattrs.meshsize[axis]);
     }
     return index;
 }
-
-
-__device__ void _find_extent(const MESH_TYPE mesh_type, const FLOAT *position, FLOAT *extent) {
-
-    FLOAT cth, phi, r;
-    if (mesh_type == MESH_ANGULAR) {
-        cartesian_to_sphere(position, &r, &cth, &phi);
-        extent[0] = fmin(cth, extent[0]);
-        extent[1] = fmax(cth, extent[1]);
-        extent[2] = fmin(phi, extent[2]);
-        extent[3] = fmax(phi, extent[3]);
-    }
-    else {
-        for (size_t axis = 0; axis < NDIM; axis++) {
-            extent[2 * axis] = fmin(position[axis], extent[2 * axis]);
-            extent[2 * axis + 1] = fmax(position[axis], extent[2 * axis + 1]);
-        }
-    }
-}
-
-
-__global__ void find_extent_kernel(FLOAT *extent, Particles particles, const MESH_TYPE mesh_type) {
-
-    extern __shared__ FLOAT sdata[];
-    size_t tid = threadIdx.x;
-    size_t stride = gridDim.x * blockDim.x;
-    size_t gid = tid + blockIdx.x * blockDim.x;
-
-    FLOAT textent[2 * NDIM];
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        textent[2 * axis] = INFINITY;         // min = position
-        textent[2 * axis + 1] = -INFINITY;     // max = position
-    }
-
-    for (size_t i = gid; i < particles.size; i += stride) {
-        const FLOAT *position = &(particles.positions[NDIM * i]);
-        _find_extent(mesh_type, position, textent);
-    }
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        sdata[2 * NDIM * tid + 2 * axis] = textent[2 * axis];
-        sdata[2 * NDIM * tid + 2 * axis + 1] = textent[2 * axis + 1];
-    }
-    __syncthreads();
-
-    // reduction: safe for any blockDim.x
-    // find largest power-of-two <= blockDim.x
-    unsigned int max_s = 1;
-    while (max_s * 2 <= blockDim.x) max_s *= 2;
-
-    for (unsigned int s = max_s; s > 0; s >>= 1) {
-        if (tid < s && (tid + s) < blockDim.x) {
-            for (size_t axis = 0; axis < NDIM; axis++) {
-                sdata[2 * NDIM * tid + 2 * axis] = fmin(sdata[2 * NDIM * tid + 2 * axis], sdata[2 * NDIM * (tid + s) + 2 * axis]);
-                sdata[2 * NDIM * tid + 2 * axis + 1] = fmax(sdata[2 * NDIM * tid + 2 * axis + 1], sdata[2 * NDIM * (tid + s) + 2 * axis + 1]);
-            }
-        }
-        __syncthreads();
-    }
-
-    // Write result for this block to global mem
-    if (tid == 0) {
-        for (size_t i = 0; i < 2 * NDIM; i++) extent[2 * NDIM * blockIdx.x + i] = sdata[i];
-    }
-}
-
-
-void set_mesh_extent(const MESH_TYPE mesh_type, FLOAT *boxsize, FLOAT *boxcenter, const Particles *list_particles, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
-
-    int nblocks, nthreads_per_block;
-    CONFIGURE_KERNEL_LAUNCH(find_extent_kernel, nblocks, nthreads_per_block, buffer);
-
-    FLOAT extent[2 * NDIM];
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        extent[2 * axis] = INFINITY;
-        extent[2 * axis + 1] = -INFINITY;
-    }
-
-    for (size_t imesh=0; imesh<MAX_NMESH; imesh++) {
-        const Particles particles = list_particles[imesh];
-        if (particles.size == 0) continue;
-        FLOAT *device_block_extent = (FLOAT*) my_device_malloc(nblocks * 2 * NDIM * sizeof(FLOAT), buffer);
-        CUDA_CHECK(cudaDeviceSynchronize());
-        find_extent_kernel<<<nblocks, nthreads_per_block, nthreads_per_block * 2 * NDIM * sizeof(FLOAT), stream>>>(device_block_extent, particles, mesh_type);
-        CUDA_CHECK(cudaDeviceSynchronize());
-        FLOAT *block_extent = (FLOAT*) my_malloc(nblocks * 2 * NDIM * sizeof(FLOAT));
-        cudaMemcpy(block_extent, device_block_extent, nblocks * 2 * NDIM * sizeof(FLOAT), cudaMemcpyDeviceToHost);
-        for (size_t i = 0; i < nblocks; i++) {
-            for (size_t axis = 0; axis < NDIM; axis++) {
-                extent[2 * axis] = MIN(block_extent[2 * NDIM * i + 2 * axis], extent[2 * axis]);
-                extent[2 * axis + 1] = MAX(block_extent[2 * NDIM * i + 2 * axis + 1], extent[2 * axis + 1]);
-            }
-        }
-        my_device_free(device_block_extent, buffer);
-        free(block_extent);
-    }
-
-    if (mesh_type == MESH_ANGULAR) {
-        FLOAT fsky = (extent[1] - extent[0]) * (extent[3] - extent[2]) / (4 * M_PI);
-        log_message(LOG_LEVEL_INFO, "Enclosing fractional area is %.4f [%.4f %.4f] x [%.4f %.4f].\n", fsky, extent[0], extent[1], extent[2], extent[3]);
-        boxsize[0] = extent[1] - extent[0];
-        boxsize[1] = extent[3] - extent[2];
-        boxcenter[0] = (extent[0] + extent[1]) / 2.;
-        boxcenter[1] = (extent[2] + extent[3]) / 2.;
-    }
-
-    if (mesh_type == MESH_CARTESIAN) {
-        FLOAT volume = 1.;
-        for (size_t axis = 0; axis < NDIM; axis ++) {
-            boxsize[axis] = 1.001 * (extent[2 * axis + 1] - extent[2 * axis]);
-            boxcenter[axis] = (extent[2 * axis] + extent[2 * axis + 1]) / 2.;
-            volume *= boxsize[axis];
-        }
-        log_message(LOG_LEVEL_INFO, "Enclosing volume is %.4f [%.4f %.4f] x [%.4f %.4f] x [%.4f %.4f].\n", volume, extent[0], extent[1], extent[2], extent[3], extent[4], extent[5]);
-    }
-}
-
 
 
 __device__ size_t _get_cell_index(const MeshAttrs mattrs, const FLOAT *position) {
@@ -268,6 +153,7 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         mesh.size = 1;
         for (size_t axis = 0; axis < NDIM; axis++) mesh.size *= mattrs.meshsize[axis];
         // Allocate memory for mesh variables
+        //printf("Allocating mesh %d\n", imesh);
         size_t *index = (size_t*) my_device_malloc(particles.size * sizeof(size_t), buffer);
         mesh.nparticles = (size_t*) my_device_malloc(mesh.size * sizeof(size_t), buffer);
         CUDA_CHECK(cudaMemset(mesh.nparticles, 0, mesh.size * sizeof(size_t)));

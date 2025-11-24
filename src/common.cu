@@ -85,7 +85,7 @@ void* my_malloc(size_t size) {
 void* my_device_malloc(size_t nbytes, DeviceMemoryBuffer* buffer) {
     if ((buffer) && (buffer->size > 0)) {
         // Use pre-allocated buffer if enough space
-        // printf("nbytes, size = %zu, %zu, %zu %zu\n", nbytes, buffer->offset, buffer->offset + nbytes, buffer->size);
+        // printf("nbytes, size = %zu, %zu, %zu %zu\n", nbytes / 8, buffer->offset / 8, (buffer->offset + nbytes) / 8, (buffer->size) / 8);
         if (buffer->offset + nbytes > buffer->size) {
             log_message(LOG_LEVEL_ERROR, "DeviceMemoryBuffer: not enough space for allocation (%zu requested, %zu available)\n", nbytes, buffer->size - buffer->offset);
             exit(EXIT_FAILURE);

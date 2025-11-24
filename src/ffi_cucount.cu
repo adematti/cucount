@@ -133,11 +133,7 @@ ffi::Error count2Impl(cudaStream_t stream,
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
     membuffer.nblocks = 256;
-    membuffer.meshsize = (list_particles[0].size + list_particles[1].size) / 2;
-
-    MeshAttrs mattrs = mattrs_py.data(battrs, sattrs, list_particles, membuffer, stream);
-    set_mesh(list_particles, list_mesh, mattrs, membuffer, stream);
-
+    set_mesh(list_particles, list_mesh, mattrs, &membuffer, stream);
     // Perform the computation
     count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, wattrs, &membuffer, stream);
     free_owned_ptrs();
@@ -191,6 +187,7 @@ PYBIND11_MODULE(ffi_cucount, m) {
     py::class_<SelectionAttrs_py>(m, "SelectionAttrs", py::module_local())
         .def(py::init<py::kwargs>()) // Accept Python kwargs
         .def_property_readonly("ndim", &SelectionAttrs_py::ndim)
+        .def_property_readonly("varnames", &SelectionAttrs_py::varnames, "Return list of variable names in order (e.g. ['theta'])")
         .def_readonly("var", &SelectionAttrs_py::var)
         .def_readonly("min", &SelectionAttrs_py::min)
         .def_readonly("max", &SelectionAttrs_py::max);
@@ -199,10 +196,7 @@ PYBIND11_MODULE(ffi_cucount, m) {
         .def(py::init<py::kwargs>()); // Accept Python kwargs
 
     py::class_<MeshAttrs_py>(m, "MeshAttrs", py::module_local())
-        .def(py::init<py::kwargs>()) // Accept named kwargs: periodic, boxsize, cellsize
-        .def_readwrite("periodic", &MeshAttrs_py::periodic)
-        .def_property_readonly("boxsize", [](const MeshAttrs_py &mp) -> py::array_t<FLOAT> { return mp.boxsize_arr; })
-        .def_property_readonly("cellsize", [](const MeshAttrs_py &mp) -> py::array_t<FLOAT> { return mp.cellsize_arr; });
+        .def(py::init<py::kwargs>());
 
     m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
 

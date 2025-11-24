@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import special
 
-from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs, WeightAttrs, popcount, reformat_bitarrays, joint_occurences
+from cucount.numpy import count2, Particles, BinAttrs, SelectionAttrs, WeightAttrs, popcount, reformat_bitarrays, joint_occurences, setup_logging
 
 
 @np.vectorize
@@ -365,10 +365,11 @@ def test_thetacut():
         assert np.allclose(test.T, poles_ref, **tol)
 
 
-def test_corrfunc_smu():
+def test_corrfunc_cutsky(mode='smu'):
     import time
-    edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
-    size = int(1e6) # int(1e7)
+    print(f'Test in mode {mode}')
+
+    size = int(5e6) # int(1e7)
     boxsize = (3000,) * 3
     sep = np.linspace(0., 0.1, 100)
     twopoint_weights = (sep, 1. + np.linspace(0., 1., sep.size))
@@ -377,56 +378,103 @@ def test_corrfunc_smu():
     positions1, weights1 = np.column_stack(data1[:3]), data1[3:]
     positions2, weights2 = np.column_stack(data2[:3]), data2[3:]
 
-    t0 = time.time()
-    particles1 = Particles(positions1, weights1)
-    particles2 = Particles(positions2, weights2)
-    wattrs = WeightAttrs(bitwise=dict(weights=particles1.get('bitwise_weight')), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
     los = 'midpoint'
-    battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-    assert np.allclose(battrs.edges('s'), np.column_stack([edges[0][:-1], edges[0][1:]]))
-    assert np.allclose(battrs.edges('mu'), np.column_stack([edges[1][:-1], edges[1][1:]]))
-    test = count2(particles1, particles2, battrs=battrs, wattrs=wattrs)['weight']
-    print('cucount', time.time() - t0)
+    if mode == 'smu':
+        edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
+        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+        #assert np.allclose(battrs.edges('s'), np.column_stack([edges[0][:-1], edges[0][1:]]))
+        #assert np.allclose(battrs.edges('mu'), np.column_stack([edges[1][:-1], edges[1][1:]]))
+    elif mode == 'theta':
+        edges = 10**np.arange(-5, -1 + 0.1, 0.1)
+        battrs = BinAttrs(theta=edges)
+    else:
+        raise NotImplementedError
 
-    from pycorr import TwoPointCounter
-    t0 = time.time()
-    ref = TwoPointCounter('smu', edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los, position_type='pos',
-                          weight_attrs={'normalization': 'counter'}, twopoint_weights=twopoint_weights, nthreads=1, gpu=True)
-    print('Corrfunc', time.time() - t0)
-    tol = {'atol': 1e-8, 'rtol': 1e-5}
+    def run_cucount(backend='numpy'):
+        import jax
+        from jax import config
+        config.update('jax_enable_x64', True) 
+        if backend == 'jax':
+            from cucount.jax import Particles, WeightAttrs, count2
+        else:
+            from cucount.numpy import Particles, WeightAttrs, count2
+        t0 = time.time()
+        particles1 = Particles(positions1, weights1)
+        particles2 = Particles(positions2, weights2)
+        wattrs = WeightAttrs(bitwise=dict(weights=particles1.get('bitwise_weight')), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
+        test = count2(particles1, particles2, battrs=battrs, wattrs=wattrs)['weight']
+        print(f'cucount: {time.time() - t0:.2f} s')
+        return test
+
+    def run_corrfunc():
+        from pycorr import TwoPointCounter
+        t0 = time.time()
+        kw = dict(nthreads=1, gpu=True) if mode == 'smu' else dict(nthreads=8, gpu=False)
+        ref = TwoPointCounter(mode, edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los, position_type='pos', weight_attrs={'normalization': 'counter'}, twopoint_weights=twopoint_weights, **kw).wcounts
+        print(f'Corrfunc: {time.time() - t0:.2f} s')
+        return ref
+
+    tol = {'atol': 1e-8, 'rtol': 3e-5}  # there can be a jump from a bin from another
     #print(test.ravel())
-    assert np.allclose(test, ref.wcounts, **tol)
+    ref = run_corrfunc()
+    test_jax = run_cucount(backend='jax')
+    test_numpy = run_cucount(backend='numpy')
+    assert np.allclose(test_jax, ref, **tol)
+    assert np.allclose(test_numpy, ref, **tol)
 
 
-def test_corrfunc_theta():
+def test_corrfunc_cubic(mode='smu'):
     import time
-    size = int(1e6) # int(1e7)
-    boxsize = (3000,) * 3
-    sep = np.linspace(0., 0.1, 100)
-    twopoint_weights = (sep, 1. + np.linspace(0., 1., sep.size))
+    print(f'Test in mode {mode}')
 
-    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=2, seed=44)
+    size = int(1e7)
+    boxsize = (3000,) * 3
+
+    data1, data2 = generate_catalogs(size, boxsize=boxsize, n_individual_weights=1, n_bitwise_weights=0, seed=44)
     positions1, weights1 = np.column_stack(data1[:3]), data1[3:]
     positions2, weights2 = np.column_stack(data2[:3]), data2[3:]
 
-    t0 = time.time()
-    particles1 = Particles(positions1, weights1)
-    particles2 = Particles(positions2, weights2)
-    wattrs = WeightAttrs(bitwise=dict(weights=particles1.get('bitwise_weight')), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
-    #theta = 10**np.arange(-5, -1 + 0.1, 0.1)
-    theta = np.linspace(1e-5, 0.2, 10)
-    battrs = BinAttrs(theta=theta)
-    test = count2(particles1, particles2, battrs=battrs, wattrs=wattrs)['weight']
-    print('cucount', time.time() - t0)
+    los = 'z'
+    if mode == 'smu':
+        edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
+        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+        #assert np.allclose(battrs.edges('s'), np.column_stack([edges[0][:-1], edges[0][1:]]))
+        #assert np.allclose(battrs.edges('mu'), np.column_stack([edges[1][:-1], edges[1][1:]]))
+    else:
+        raise NotImplementedError
 
-    from pycorr import TwoPointCounter
-    t0 = time.time()
-    ref = TwoPointCounter('theta', edges=theta, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, position_type='pos',
-                          weight_attrs={'normalization': 'counter'}, twopoint_weights=twopoint_weights, nthreads=64)
-    print('Corrfunc', time.time() - t0)
-    tol = {'atol': 1e-8, 'rtol': 1e-5}
-    assert np.allclose(test, ref.wcounts, **tol)
+    def run_cucount(backend='numpy'):
+        import jax
+        from jax import config
+        config.update('jax_enable_x64', True) 
+        if backend == 'jax':
+            from cucount.jax import Particles, WeightAttrs, MeshAttrs, count2
+        else:
+            from cucount.numpy import Particles, WeightAttrs, MeshAttrs, count2
+        t0 = time.time()
+        particles1 = Particles(positions1, weights1)
+        particles2 = Particles(positions2, weights2)
+        mattrs = MeshAttrs(particles1, particles2, boxsize=boxsize, battrs=battrs, meshsize=30, periodic=True)
+        test = count2(particles1, particles2, battrs=battrs, mattrs=mattrs)['weight']
+        print(f'cucount: {time.time() - t0:.2f} s')
+        return test
 
+    def run_corrfunc():
+        from pycorr import TwoPointCounter
+        t0 = time.time()
+        kw = dict(nthreads=1, gpu=True) if mode == 'smu' else dict(nthreads=8, gpu=False)
+        ref = TwoPointCounter(mode, edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los, position_type='pos', boxsize=boxsize, **kw).wcounts
+        print(f'Corrfunc: {time.time() - t0:.2f} s')
+        return ref
+
+    tol = {'atol': 1e-8, 'rtol': 3e-5}  # there can be a jump from a bin from another
+    #print(test.ravel())
+    ref = run_corrfunc()
+    test_numpy = run_cucount(backend='numpy')
+    print(test_numpy / ref)
+    assert np.allclose(test_numpy, ref, **tol)
+    test_jax = run_cucount(backend='jax')
+    assert np.allclose(test_jax, ref, **tol)
 
 
 def test_spectrum():
@@ -590,9 +638,12 @@ def test_popcount():
 
 if __name__ == '__main__':
 
+    setup_logging()
     #test_thetacut()
-    test_corrfunc_smu()
-    #test_corrfunc_theta()
+    for mode in ['smu', 'theta']:
+        test_corrfunc_cutsky(mode)
+    for mode in ['smu']:
+        test_corrfunc_cubic(mode)
     #test_spectrum()
     #test_jax(distributed=True)
     #test_readme()

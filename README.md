@@ -72,7 +72,7 @@ Use the JAX interface if JAX is already part of your codebase.
 ```python
 import jax
 from jax import config
-config.update("jax_enable_x64", True)  # Only float64 is currently supported
+config.update("jax_enable_x64", True)  # Currently only double precision is supported
 
 from cucount.jax import count2, Particles, BinAttrs
 

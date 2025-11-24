@@ -8,7 +8,7 @@ from dataclasses import dataclass, asdict
 
 import numpy as np
 
-import cucountlib
+import cucountlib.cucount
 
 
 logger = logging.getLogger('cucount')
@@ -17,7 +17,7 @@ logger = logging.getLogger('cucount')
 def _setup_cucount_logging():
     level = logging.getLogger('cucount').getEffectiveLevel()
     level = logging.getLevelName(level)
-    cucountlib.cucount.setup_logging(level=level)
+    cucountlib.cucount.setup_logging(level.lower())
 
 
 def setup_logging(level=logging.INFO, stream=sys.stdout,  **kwargs):
@@ -319,7 +319,7 @@ class MeshAttrs(object):
 
             if mesh_type == 'angular':
                 # angular: compute extent in theta, phi
-                nonempty_positions = [cartesian_to_sphere(pos, degree=False) for pos in nonempty_positions]
+                nonempty_positions = [cartesian_to_sphere(pos) for pos in nonempty_positions]
 
             pos_min = self._np.array([self._np.min(p, axis=axis) for p in nonempty_positions]).min(axis=0)
             pos_max = self._np.array([self._np.max(p, axis=axis) for p in nonempty_positions]).max(axis=0)
@@ -329,18 +329,18 @@ class MeshAttrs(object):
         if sattrs and sattrs.ndim:
             if sattrs.varnames[0] == 'theta':
                 mesh_type = 'angular'
-                mesh_smax = self._np.cos(sattrs.max[0] * np.pi / 180.)
+                mesh_smax = np.cos(np.radians(sattrs.max[0]))
             elif sattrs.varnames[0] == 's':
                 mesh_type = 'cartesian'
                 mesh_smax = sattrs.max[0]
         elif battrs and battrs.ndim:
             if battrs.varnames[0] == 'theta':
                 mesh_type = 'angular'
-                mesh_smax = self._np.cos(battrs.max[0] * np.pi / 180.)
+                mesh_smax = np.cos(np.radians(battrs.max[0]))
             elif battrs.varnames[0] == 's':
                 mesh_type = 'cartesian'
                 mesh_smax = battrs.max[0]
-        assert mesh_type is not None, 'cannot determine mesh type from sattrs or battrs; provide at least one with var "theta" or "s"')
+        assert mesh_type is not None, 'cannot determine mesh type from sattrs or battrs; provide at least one'
         ndim = {'angular': 2, 'cartesian': 3}[mesh_type]
 
         if periodic:
@@ -351,7 +351,7 @@ class MeshAttrs(object):
         elif boxsize is None or boxcenter is None:
             extent = _get_extent(*positions)
             if boxsize is None:
-                boxsize = extent[1] - extent[0]
+                boxsize = 1.00001 * (extent[1] - extent[0])
             if boxcenter is None:
                 boxcenter = 0.5 * (extent[1] + extent[0])
 
@@ -361,7 +361,7 @@ class MeshAttrs(object):
         # Now set up resolution meshsize
         if mesh_type == 'angular':
             if meshsize is None:
-                theta_max = np.acos(mesh_smax)
+                theta_max = np.arccos(mesh_smax)
                 nside1 = 5 * np.rint(np.pi / theta_max).astype(int)
                 fsky = boxsize.prod() / (4 * np.pi)
                 nside2 = np.minimum(self._np.sqrt(self._np.rint((0.25 * nparticles / fsky)).astype(int)), 2048)
@@ -369,8 +369,8 @@ class MeshAttrs(object):
                 meshsize = [meshsize, 2 * meshsize]
             meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
             pixel_resolution = np.degrees(np.sqrt(4 * np.pi / meshsize.prod()))
-            logger.info("Mesh size is %d = %d x %d.\n", meshsize.prod(), meshsize[0], meshsize[1])
-            logger.info("Pixel resolution is %.4lf deg.\n", pixel_resolution)
+            logger.info("Mesh size is %d = %d x %d.", meshsize.prod(), meshsize[0], meshsize[1])
+            logger.info("Pixel resolution is %.4lf deg.", pixel_resolution)
         elif mesh_type == 'cartesian':
             nside2 = int((0.5 * nparticles)**(1. / 3.))
             if meshsize is None:
@@ -378,28 +378,29 @@ class MeshAttrs(object):
                 meshsize = np.maximum(np.minimum(nside1, nside2), 1)
             meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
             cellsize = boxsize / meshsize
-            logger.info("Mesh size is %d = %d x %d x %d.\n", meshsize.prod(), meshsize[0], meshsize[1], meshsize[2])
-            logger.info("Cell size is (%.4lf, %.4lf, %.4lf).\n", cellsize[0], cellsize[1], cellsize[2])
+            logger.info("Mesh size is %d = %d x %d x %d.", meshsize.prod(), meshsize[0], meshsize[1], meshsize[2])
+            logger.info("Cell size is (%.4lf, %.4lf, %.4lf).", cellsize[0], cellsize[1], cellsize[2])
         self.meshsize = meshsize
         self.boxsize = boxsize
         self.boxcenter = boxcenter
-        self.type = mesh_type
         self.smax = mesh_smax
+        self.type = mesh_type
+        self.periodic = bool(periodic)
 
     def tree_flatten(self):
         children = (self.meshsize, self.boxsize, self.boxcenter, self.smax)
-        aux_data = dict(type=self.type)
+        aux_data = dict(type=self.type, periodic=self.periodic)
         return children, aux_data
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         new = cls.__new__(cls)
         new.meshsize, new.boxsize, new.boxcenter, new.smax = children
-        new.type = aux_data['type']
+        new.__dict__.update(aux_data)
         return new
 
     def _to_c(self):
-        return asdict(self)
+        return cucountlib.cucount.MeshAttrs(**asdict(self))
 
 
 @dataclass(init=False)
@@ -633,7 +634,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     if sattrs is None: sattrs = SelectionAttrs()
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
     particles = [cucountlib.cucount.Particles(p.positions, values=_concatenate_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
-    return cucountlib.cucount.count2(*particles, battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, mattrs=mattrs._to_c())
+    return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
 
 
 # Create a lookup table for set bits per byte

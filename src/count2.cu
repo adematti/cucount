@@ -94,17 +94,27 @@ __device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
     }
 }
 
+
+__device__ inline void wrap_periodic(FLOAT *dxyz, FLOAT boxsize) {
+    FLOAT half = 0.5 * boxsize;
+    FLOAT x = *dxyz + half;
+    x = fmod(x, boxsize);  // negative if x is negative
+    if (x < 0) x += boxsize;
+    *dxyz = x - half;
+}
+
+
 __device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
     for (size_t axis = 0; axis < NDIM; axis++) {
         add[axis] = position1[axis] + position2[axis];
-        if (device_mattrs.periodic) add[axis] = fmod(add[axis], device_mattrs.boxsize[axis]);
+        if (device_mattrs.periodic) wrap_periodic(&(add[axis]), device_mattrs.boxsize[axis]);
     }
 }
 
 __device__ inline void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2) {
     for (size_t axis = 0; axis < NDIM; axis++) {
         diff[axis] = position1[axis] - position2[axis];
-        if (device_mattrs.periodic) diff[axis] = fmod(diff[axis], device_mattrs.boxsize[axis]);
+        if (device_mattrs.periodic) wrap_periodic(&(diff[axis]), device_mattrs.boxsize[axis]);
     }
 }
 
@@ -230,14 +240,15 @@ __device__ FLOAT get_bessel(int ell, FLOAT x) {
     } else {
         FLOAT invx  = 1.0 / x;
         FLOAT invx2 = invx * invx;
+        FLOAT invx3, invx4;
         switch (ell) {
             case 0:
                 return sin(x) * invx;
             case 2:
                 return (3.0 * invx2 - 1.0) * sin(x) * invx - 3.0 * cos(x) * invx2;
             case 4:
-                FLOAT invx3 = invx2 * invx;
-                FLOAT invx4 = invx2 * invx2;
+                invx3 = invx2 * invx;
+                invx4 = invx2 * invx2;
                 //return sin(x) * (invx - 45.0 * invx3 + 105.0 * invx4) - cos(x) * (10.0 * invx - 105.0 * invx3);
                 return 5 * (2 * invx2 - 21 * invx4) * cos(x) + (invx - 45 * invx3 + 105 * invx2 * invx3) * sin(x);
             default:

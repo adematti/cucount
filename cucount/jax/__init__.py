@@ -133,25 +133,28 @@ class Particles(numpy.Particles):
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 
-def _count2_no_shard(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None, mattrs=MeshAttrs=None):
-    ffi_cucount.set_attrs(battrs, wattrs=wattrs._to_c(), sattrs=sattrs, mattrs=mattrs._to_c())
+def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None):
+    ffi_cucount.set_attrs(mattrs._to_c(), battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
     for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value._to_c())
     dtype = jnp.float64
     bsize, bshape = battrs.size, tuple(battrs.shape)
     names = ffi_cucount.get_count2_names()
     res_type = jax.ShapeDtypeStruct((len(names) * bsize,), dtype)
-    ndim2 = sum(particle.positions.shape[1] for particle in particles)
-    nvalues2 = sum(particle.index_value.size for particle in particles)
     # Max values
     nblocks = 256
-    meshsize = sum(particle.size + 100 for particle in particles)
+    # Two meshes
+    meshsize2 = 2 * mattrs.meshsize.prod()
     # Estimate buffer size
     size = 0
-    # Buffer for set_mesh_attrs
-    size += nblocks * ndim2
     # Buffer for mesh
-    size += 2 * meshsize
-    size += (nvalues2 + ndim2) * sum(particle.size for particle in particles)
+    # nparticles, cumnparticles
+    size += 2 * meshsize2
+    # index, positions, spositions, values
+    size += sum(particle.positions.shape[0] for particle in particles)
+    size += 2 * sum(particle.positions.size for particle in particles)
+    size += sum(particle.index_value.size * particle.positions.shape[0] for particle in particles)
+    # Buffer for recursive scan
+    size += 2 * (sum(particle.positions.size for particle in particles) + 1024 - 1) // 1024
     # Buffer for angular upweights
     if wattrs.angular is not None:
         size += 2 * wattrs.angular.weight.size
@@ -214,7 +217,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     if sattrs is None: sattrs = SelectionAttrs()
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
     wattrs.check(*particles)
-    count2 = _count2 = partial(_count2_no_shard, battrs=battrs, wattrs=wattrs, sattrs=sattrs, mattrs=mattrs)
+    count2 = _count2 = partial(_count2_no_shard, mattrs=mattrs, battrs=battrs, wattrs=wattrs, sattrs=sattrs)
     if sharding_mesh.axis_names:
         #assert all(particle.exchanged for particle in particles), 'All input particles should be exchanged'
         count2 = shard_map(lambda *particles: jax.lax.psum(_count2(*particles), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))

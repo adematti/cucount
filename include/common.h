@@ -147,7 +147,6 @@ struct DeviceMemoryBuffer {
     size_t size;
     size_t offset;
     size_t nblocks;
-    size_t meshsize;
 };
 
 
