@@ -2,6 +2,8 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>  // for std::vector conversion
 #include <cstring>  // for std::memcpy
+#include <thread>
+#include <vector>
 
 #include "mesh.h"
 #include "count2.h"
@@ -77,53 +79,127 @@ struct Particles_py {
 };
 
 
+
+
+
+// ...existing code...
 py::object count2_py(Particles_py& particles1, Particles_py& particles2,
-               MeshAttrs_py mattrs_py, BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(),
-               const SelectionAttrs_py sattrs_py = SelectionAttrs_py()) {
+                    MeshAttrs_py mattrs_py, BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(),
+                    const SelectionAttrs_py sattrs_py = SelectionAttrs_py(), const int nthreads = 1) {
 
     BinAttrs battrs = battrs_py.data();
     WeightAttrs wattrs = wattrs_py.data();
     SelectionAttrs sattrs = sattrs_py.data();
     MeshAttrs mattrs = mattrs_py.data();
 
-    DeviceMemoryBuffer *membuffer = NULL;
-    Particles list_particles[MAX_NMESH];
-    Mesh list_mesh[MAX_NMESH];
-    for (size_t imesh=0; imesh < MAX_NMESH; imesh++) list_particles[imesh].size = 0;
-    // In this function Particles and Mesh struct live on the host (CPU)
-    // but their arrays (positions, weights, etc.) live on the device (GPU)
-    copy_particles_to_device(particles1.data(), &list_particles[0], 2);
-    copy_particles_to_device(particles2.data(), &list_particles[1], 2);
+    // prepare host-side particle descriptors (point into numpy buffers)
+    Particles p1_host = particles1.data();
+    Particles p2_host = particles2.data();
 
-    // Create a default CUDA stream (or use 0 for the default stream)
-    cudaStream_t stream;
-    CUDA_CHECK(cudaStreamCreate(&stream));
+    // number of GPUs available
+    int ngpus = 1;
+    CUDA_CHECK(cudaGetDeviceCount(&ngpus));
+    ngpus = MIN(nthreads, ngpus);
 
-    set_mesh(list_particles, list_mesh, mattrs, membuffer, stream);
-    // Free allocated memory
-    for (size_t i = 0; i < 2; i++) free_device_particles(&(list_particles[i]));
-
+    // number of counts and total size per-count
     char names[MAX_NWEIGHT][SIZE_NAME];
-    size_t ncounts = get_count2_size(list_particles[0].index_value, list_particles[1].index_value, names);
+    size_t ncounts = get_count2_size(p1_host.index_value, p2_host.index_value, names);
     size_t csize = ncounts * battrs.size;
-    // Create a numpy array to store the results
+
+    // Host output (accumulated across GPUs)
     py::array_t<FLOAT> counts_py(csize);
-    auto counts_ptr = counts_py.mutable_data(); // Get a pointer to the array's data
+    auto counts_ptr = counts_py.mutable_data();
+    // initialize to zero
+    std::fill_n(counts_ptr, csize, static_cast<FLOAT>(0.0));
 
-    FLOAT *counts = (FLOAT*) my_device_malloc(csize * sizeof(FLOAT), membuffer);
+    // Partition particles1 across GPUs (split by particle index)
+    const size_t n1 = p1_host.size;
+    std::vector<size_t> starts(ngpus), ends(ngpus);
+    for (int d = 0; d < ngpus; ++d) {
+        starts[d] = (d * n1) / ngpus;
+        ends[d] = ((d + 1) * n1) / ngpus;
+    }
 
-    // Perform the computation
-    count2(counts, list_mesh, mattrs, sattrs, battrs, wattrs, membuffer, stream);
+    // Prepare container for per-GPU results
+    std::vector<std::vector<FLOAT>> dev_results(ngpus);
 
-    CUDA_CHECK(cudaMemcpy(counts_ptr, counts, csize * sizeof(FLOAT), cudaMemcpyDeviceToHost));
-    my_device_free(counts, membuffer);
+    // Launch one std::thread per GPU so each thread can set its own current device
+    std::vector<std::thread> workers;
+    workers.reserve(ngpus);
 
-    // Free allocated memory
-    for (size_t i=0; i < 2; i++) free_device_mesh(&(list_mesh[i]));
+    for (int dev = 0; dev < ngpus; ++dev) {
+        const size_t start = starts[dev];
+        const size_t end = ends[dev];
+        const size_t nchunk = (end > start) ? (end - start) : 0;
+        // if no particles in this chunk, skip launching heavy work (leave zero contribution)
+        if (nchunk == 0) continue;
 
-    // Destroy the stream
-    CUDA_CHECK(cudaStreamDestroy(stream));
+        workers.emplace_back([dev, start, nchunk, &p1_host, &p2_host, &battrs, &mattrs, &sattrs, &wattrs, ncounts, csize, &dev_results]() {
+            // set device for this thread
+            CUDA_CHECK(cudaSetDevice(dev));
+            // create CUDA stream
+            cudaStream_t stream;
+            CUDA_CHECK(cudaStreamCreate(&stream));
 
+            // prepare per-thread DeviceMemoryBuffer (nullptr means use internal allocator)
+            DeviceMemoryBuffer *membuffer = NULL;
+
+            // create host-side Particles describing the chunk (point into original host arrays)
+            Particles chunk_p1 = p1_host;
+            chunk_p1.size = nchunk;
+            // positions are stored as contiguous rows of NDIM floats
+            chunk_p1.positions = p1_host.positions + (start * NDIM);
+            if (p1_host.values != nullptr) {
+                // values are row-major with width = index_value.size
+                size_t width = p1_host.index_value.size;
+                chunk_p1.values = p1_host.values + (start * width);
+            }
+
+            // copy chunk and full second catalogue to device
+            Particles list_particles_dev[MAX_NMESH];
+            for (size_t i = 0; i < MAX_NMESH; ++i) list_particles_dev[i].size = 0;
+            copy_particles_to_device(chunk_p1, &list_particles_dev[0], 2);
+            copy_particles_to_device(p2_host, &list_particles_dev[1], 2);
+
+            // build meshes on this device for the two catalogs
+            Mesh list_mesh_dev[MAX_NMESH];
+            for (size_t i = 0; i < MAX_NMESH; ++i) list_mesh_dev[i].total_nparticles = 0;
+            set_mesh(list_particles_dev, list_mesh_dev, mattrs, membuffer, stream);
+            // free host->device particle structures (device-side meshes remain)
+            for (size_t i = 0; i < 2; ++i) free_device_particles(&(list_particles_dev[i]));
+
+            // allocate device histogram for this GPU
+            FLOAT *device_counts = (FLOAT*) my_device_malloc(csize * sizeof(FLOAT), membuffer);
+            CUDA_CHECK(cudaMemsetAsync(device_counts, 0, csize * sizeof(FLOAT), stream));
+
+            // run count2 on this device (asynchronous on stream)
+            count2(device_counts, list_mesh_dev, mattrs, sattrs, battrs, wattrs, membuffer, stream);
+
+            // synchronize device stream to ensure kernel completion before copyback
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+
+            // copy device counts back to host
+            dev_results[dev].assign(csize, static_cast<FLOAT>(0.0));
+            CUDA_CHECK(cudaMemcpy(dev_results[dev].data(), device_counts, csize * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+
+            // free device memory and device meshes
+            my_device_free(device_counts, membuffer);
+            for (size_t i = 0; i < 2; ++i) free_device_mesh(&(list_mesh_dev[i]));
+
+            CUDA_CHECK(cudaStreamDestroy(stream));
+        });
+    }
+
+    // wait for all workers to finish
+    for (auto &t : workers) t.join();
+
+    // accumulate per-GPU results into final counts_py
+    for (int dev = 0; dev < ngpus; ++dev) {
+        if (dev_results[dev].empty()) continue;
+        for (size_t i = 0; i < csize; ++i) counts_ptr[i] += dev_results[dev][i];
+    }
+
+    // Return named arrays reshaped to bin shape
     py::dict result;
     // Return appropriate result based on spin parameters
     for (size_t icount = 0; icount < ncounts; icount++) {
@@ -183,5 +259,6 @@ PYBIND11_MODULE(cucount, m) {
         py::arg("mattrs"),
         py::arg("battrs"),
         py::arg("wattrs") = WeightAttrs_py(), // Default value
-        py::arg("sattrs") = SelectionAttrs_py()); // Default value
+        py::arg("sattrs") = SelectionAttrs_py(),
+        py::arg("nthreads") = 1); // Default value
 }

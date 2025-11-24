@@ -239,6 +239,8 @@ class BinAttrs(cucountlib.cucount.BinAttrs):
     Provide binning:
     - s = edge array or (min, max, step)
     - mu = (edge array or (min, max, step), line-of-sight (midpoint, firstpoint, endpoint, x, y, z))
+    - rp = (edge array or (min, max, step), line-of-sight (midpoint, firstpoint, endpoint, x, y, z))
+    - pi = (edge array or (min, max, step), line-of-sight (midpoint, firstpoint, endpoint, x, y, z))
     - theta = edge array or (min, max, step)  # in degrees
     """
     def edges(self, name=None):
@@ -609,7 +611,7 @@ class Particles(object):
         return new
 
 
-def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None, mattrs: MeshAttrs=None):
+def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None, mattrs: MeshAttrs=None, nthreads: int=1):
     """
     Perform two-point pair counts using the native cucount library.
 
@@ -630,6 +632,8 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         Selection attributes to restrict pairs. If None, defaults to SelectionAttrs().
     mattrs : MeshAttrs, optional
         Mesh attributes (periodic, cellsize). If None, defaults to MeshAttrs().
+    nthreads : int, optional
+        Number of GPUs (within the same node) to run in parallel on.
 
     Returns
     -------
@@ -643,7 +647,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     if sattrs is None: sattrs = SelectionAttrs()
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
     particles = [cucountlib.cucount.Particles(p.positions, values=_concatenate_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
-    return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
+    return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, nthreads=nthreads)
 
 
 # Create a lookup table for set bits per byte

@@ -369,7 +369,7 @@ def test_corrfunc_cutsky(mode='smu'):
     import time
     print(f'Test in mode {mode}')
 
-    size = int(5e6) # int(1e7)
+    size = int(1e7)
     boxsize = (3000,) * 3
     sep = np.linspace(0., 0.1, 100)
     twopoint_weights = (sep, 1. + np.linspace(0., 1., sep.size))
@@ -388,36 +388,40 @@ def test_corrfunc_cutsky(mode='smu'):
         edges = (np.linspace(1., 51, 101), np.linspace(-50., 50., 101))
         battrs = BinAttrs(rp=(edges[0], los), pi=(edges[1], los))
     elif mode == 'theta':
-        edges = 10**np.arange(-5, -1 + 0.1, 0.1)
+        edges = 10**np.arange(-4, -1.5 + 0.1, 0.1)
         battrs = BinAttrs(theta=edges)
     else:
         raise NotImplementedError
+    nthreads = 4
 
     def run_cucount(backend='numpy'):
         import jax
         from jax import config
         config.update('jax_enable_x64', True)
         if backend == 'jax':
-            from cucount.jax import Particles, WeightAttrs, count2
+            from cucount.jax import Particles, WeightAttrs, MeshAttrs, count2
+            kw = dict()
         else:
-            from cucount.numpy import Particles, WeightAttrs, count2
+            from cucount.numpy import Particles, WeightAttrs, MeshAttrs, count2
+            kw = dict(nthreads=nthreads)
         t0 = time.time()
         particles1 = Particles(positions1, weights1)
         particles2 = Particles(positions2, weights2)
         wattrs = WeightAttrs(bitwise=dict(weights=particles1.get('bitwise_weight')), angular=dict(sep=twopoint_weights[0], weight=twopoint_weights[1]))
-        test = count2(particles1, particles2, battrs=battrs, wattrs=wattrs)['weight']
+        test = count2(particles1, particles2, battrs=battrs, wattrs=wattrs, **kw)['weight']
         print(f'cucount: {time.time() - t0:.2f} s')
         return test
 
     def run_corrfunc():
         from pycorr import TwoPointCounter
         t0 = time.time()
-        kw = dict(nthreads=1, gpu=True) if mode == 'smu' else dict(nthreads=8, gpu=False)
+        kw = dict(nthreads=nthreads, gpu=True) if mode == 'smu' else dict(nthreads=8, gpu=False)
         ref = TwoPointCounter(mode, edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los, position_type='pos', weight_attrs={'normalization': 'counter'}, twopoint_weights=twopoint_weights, **kw).wcounts
         print(f'Corrfunc: {time.time() - t0:.2f} s')
         return ref
 
-    tol = {'atol': 1e-8, 'rtol': 3e-5}  # there can be a jump from a bin from another
+    tol = {'atol': 1e-8, 'rtol': 3e-5}
+    if mode == 'theta': tol = {'atol': 1e-8, 'rtol': 1e-3} # there can be a jump from a bin from another
     #print(test.ravel())
     ref = run_corrfunc()
     test_jax = run_cucount(backend='jax')
@@ -444,32 +448,35 @@ def test_corrfunc_cubic(mode='smu'):
         #assert np.allclose(battrs.edges('s'), np.column_stack([edges[0][:-1], edges[0][1:]]))
         #assert np.allclose(battrs.edges('mu'), np.column_stack([edges[1][:-1], edges[1][1:]]))
     elif mode == 'rppi':
-        edges = (np.linspace(1., 51, 101), np.linspace(-50., 50., 101))
+        edges = (np.linspace(1., 51, 101), np.linspace(-100., 100., 101))
         battrs = BinAttrs(rp=(edges[0], los), pi=(edges[1], los))
     else:
         raise NotImplementedError
+    nthreads = 4
 
-    def run_cucount(backend='numpy'):
+    def run_cucount(backend='numpy', nthreads=nthreads):
         import jax
         from jax import config
         config.update('jax_enable_x64', True)
         if backend == 'jax':
             from cucount.jax import Particles, WeightAttrs, MeshAttrs, count2
+            kw = dict()
         else:
             from cucount.numpy import Particles, WeightAttrs, MeshAttrs, count2
+            kw = dict(nthreads=nthreads)
         t0 = time.time()
         particles1 = Particles(positions1, weights1)
         particles2 = Particles(positions2, weights2)
-        mattrs = MeshAttrs(particles1, particles2, boxsize=boxsize, battrs=battrs, meshsize=30, periodic=True)
+        mattrs = MeshAttrs(particles1, particles2, boxsize=boxsize, battrs=battrs, periodic=True)
         print(mattrs)
-        test = count2(particles1, particles2, battrs=battrs, mattrs=mattrs)['weight']
+        test = count2(particles1, particles2, battrs=battrs, mattrs=mattrs, **kw)['weight']
         print(f'cucount: {time.time() - t0:.2f} s')
         return test
 
     def run_corrfunc():
         from pycorr import TwoPointCounter
         t0 = time.time()
-        kw = dict(nthreads=1, gpu=True) if mode == 'smu' else dict(nthreads=8, gpu=False)
+        kw = dict(nthreads=nthreads, gpu=True) if mode == 'smu' else dict(nthreads=8, gpu=False)
         ref = TwoPointCounter(mode, edges=edges, positions1=positions1, weights1=weights1, positions2=positions2, weights2=weights2, los=los, position_type='pos', boxsize=boxsize, **kw).wcounts
         print(f'Corrfunc: {time.time() - t0:.2f} s')
         return ref
