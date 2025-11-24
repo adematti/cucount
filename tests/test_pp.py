@@ -47,7 +47,7 @@ def test_legendre_bessel():
     x = np.geomspace(1e-9, 100, 1000)
     for ell in range(5):
         print(ell)
-        
+
         assert np.allclose(spherical_bessel(x, ell), special.spherical_jn(ell, x, derivative=False), atol=1e-7, rtol=1e-3)
 
 
@@ -384,6 +384,9 @@ def test_corrfunc_cutsky(mode='smu'):
         battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
         #assert np.allclose(battrs.edges('s'), np.column_stack([edges[0][:-1], edges[0][1:]]))
         #assert np.allclose(battrs.edges('mu'), np.column_stack([edges[1][:-1], edges[1][1:]]))
+    elif mode == 'rppi':
+        edges = (np.linspace(1., 51, 101), np.linspace(-50., 50., 101))
+        battrs = BinAttrs(rp=(edges[0], los), pi=(edges[1], los))
     elif mode == 'theta':
         edges = 10**np.arange(-5, -1 + 0.1, 0.1)
         battrs = BinAttrs(theta=edges)
@@ -393,7 +396,7 @@ def test_corrfunc_cutsky(mode='smu'):
     def run_cucount(backend='numpy'):
         import jax
         from jax import config
-        config.update('jax_enable_x64', True) 
+        config.update('jax_enable_x64', True)
         if backend == 'jax':
             from cucount.jax import Particles, WeightAttrs, count2
         else:
@@ -440,13 +443,16 @@ def test_corrfunc_cubic(mode='smu'):
         battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
         #assert np.allclose(battrs.edges('s'), np.column_stack([edges[0][:-1], edges[0][1:]]))
         #assert np.allclose(battrs.edges('mu'), np.column_stack([edges[1][:-1], edges[1][1:]]))
+    elif mode == 'rppi':
+        edges = (np.linspace(1., 51, 101), np.linspace(-50., 50., 101))
+        battrs = BinAttrs(rp=(edges[0], los), pi=(edges[1], los))
     else:
         raise NotImplementedError
 
     def run_cucount(backend='numpy'):
         import jax
         from jax import config
-        config.update('jax_enable_x64', True) 
+        config.update('jax_enable_x64', True)
         if backend == 'jax':
             from cucount.jax import Particles, WeightAttrs, MeshAttrs, count2
         else:
@@ -480,7 +486,7 @@ def test_corrfunc_cubic(mode='smu'):
 def test_spectrum():
     import jax
     from jax import config
-    config.update('jax_enable_x64', True) 
+    config.update('jax_enable_x64', True)
     from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs
     size = int(1e7)
     boxsize = (3000,) * 3
@@ -540,7 +546,7 @@ def test_jax(distributed=False):
 
     import jax
     from jax import config
-    config.update('jax_enable_x64', True) 
+    config.update('jax_enable_x64', True)
     #res_numpy = count_numpy()
     if distributed: jax.distributed.initialize()
 
@@ -640,9 +646,9 @@ if __name__ == '__main__':
 
     setup_logging()
     #test_thetacut()
-    for mode in ['smu', 'theta']:
+    for mode in ['smu', 'rppi', 'theta']:
         test_corrfunc_cutsky(mode)
-    for mode in ['smu']:
+    for mode in ['smu', 'rppi']:
         test_corrfunc_cubic(mode)
     #test_spectrum()
     #test_jax(distributed=True)

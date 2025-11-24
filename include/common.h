@@ -13,7 +13,7 @@
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))  // minimum of two numbers
 #define CLIP(x, low, high)  (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))  // min(max(a, low), high)
 #define MAX_NMESH 3  // 3-pt correlation function at maximum
-#define MAX_NBIN 3  // maximum number of binning dimension
+#define MAX_NBIN 3  // maximum number of binning dimensions
 #define MAX_POLE 8
 #define DTORAD 0.017453292519943295 // x deg = x*DTORAD rad
 
@@ -27,7 +27,7 @@ extern LogLevel global_log_level;
 void log_message(LogLevel level, const char *format, ...);
 
 typedef enum {MESH_NONE, MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
-typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
+typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_RP, VAR_PI, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
 typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT, LOS_X, LOS_Y, LOS_Z} LOS_TYPE;
 
 

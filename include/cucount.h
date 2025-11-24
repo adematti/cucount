@@ -32,6 +32,8 @@ VAR_TYPE string_to_var_type(const std::string& var_name) {
     if (var_name == "") return VAR_NONE;
     if (var_name == "s") return VAR_S;
     if (var_name == "mu") return VAR_MU;
+    if (var_name == "rp") return VAR_RP;
+    if (var_name == "pi") return VAR_PI;
     if (var_name == "theta") return VAR_THETA;
     if (var_name == "pole") return VAR_POLE;
     if (var_name == "k") return VAR_K;
@@ -44,6 +46,8 @@ std::string var_type_to_string(VAR_TYPE v) {
         case VAR_NONE: return "";
         case VAR_S: return "s";
         case VAR_MU: return "mu";
+        case VAR_RP: return "rp";
+        case VAR_PI: return "pi";
         case VAR_THETA: return "theta";
         case VAR_POLE: return "pole";
         case VAR_K: return "k";
@@ -102,7 +106,7 @@ struct BinAttrs_py {
             // Parse the values
             VAR_TYPE v = string_to_var_type(var_name);
             var.push_back(v);
-            bool los_required = ((v == VAR_MU) || (v == VAR_POLE));
+            bool los_required = ((v == VAR_MU) || (v == VAR_RP) || (v == VAR_PI) || (v == VAR_POLE));
 
             // Handle different types of values
             if ((py::isinstance<py::array>(item.second)) && (!los_required)) {
@@ -154,6 +158,21 @@ struct BinAttrs_py {
             }
             if (step.back() == 0.) throw std::invalid_argument("Invalid step = 0. for key: " + var_name);
         }
+
+        // Ensure LOS consistency for all variables that require it:
+        bool los_seen = false;
+        LOS_TYPE common_los = LOS_NONE;
+        for (size_t i = 0; i < var.size(); ++i) {
+            if (los[i] != LOS_NONE) {
+                if (!los_seen) {
+                    common_los = los[i];
+                    los_seen = true;
+                } else if (los[i] != common_los) {
+                    throw std::invalid_argument("All LOS specifications must be the same for variables that require LOS");
+                }
+            }
+        }
+
         // Sort variables to ensure VAR_POLE is last
         std::vector<size_t> indices(var.size());
         size_t current_index = 0;

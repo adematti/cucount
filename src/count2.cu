@@ -284,6 +284,14 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             los = battrs.los[i];
             REQUIRED_MU = 1;
         }
+        if (var == VAR_RP) {
+            los = battrs.los[i];
+            REQUIRED_MU2 = 1;
+        }
+        if (var == VAR_PI) {
+            los = battrs.los[i];
+            REQUIRED_MU = 1;
+        }
         if (var == VAR_POLE) {
             los = battrs.los[i];
             REQUIRED_MU2 = 1;
@@ -323,6 +331,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             if (REQUIRED_MU) mu = d / s;
             else mu2 = (d * d) / s2;
         }
+        if (REQUIRED_MU) mu2 = mu * mu;
         if (s == 0) {
             mu = 0.;
             mu2 = 0.;
@@ -335,13 +344,19 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         if (var == VAR_S) {
             value = s;
         }
-        if (var == VAR_THETA) {
-            value = acos(dot(sposition1, sposition2)) / DTORAD;
-        }
-        if (var == VAR_MU) {
+        else if (var == VAR_MU) {
             value = mu;
         }
-        if ((var == VAR_S) || (var == VAR_THETA) || (var == VAR_MU)) {
+        else if (var == VAR_THETA) {
+            value = acos(dot(sposition1, sposition2)) / DTORAD;
+        }
+        else if (var == VAR_PI) {
+            value = mu * s;
+        }
+        else if (var == VAR_RP) {
+            value = sqrt(s2 - s2 * mu2);
+        }
+        if ((var != VAR_POLE) || (var != VAR_K)) {
             int ibin_loc = 0;  // int and not size_t as can go negative
             if (battrs.asize[i] > 0) {  // custom binning
                 if ((value >= battrs.array[i][battrs.asize[i] - 1]) || (value < battrs.array[i][0])) return;
