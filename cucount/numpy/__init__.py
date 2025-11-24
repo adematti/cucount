@@ -326,21 +326,28 @@ class MeshAttrs(object):
             return pos_min, pos_max
 
         mesh_type, mesh_smax = None, None
-        if sattrs and sattrs.ndim:
-            if sattrs.varnames[0] == 'theta':
+        limits = {}
+        for attrs in [sattrs, battrs]:
+            if attrs is None: continue
+            for name, lim in zip(attrs.varnames, attrs.max):
+                if name in limits: limits[name] = min(limits[name], lim)
+                else: limits[name] = lim
+
+        for name, lim in limits.items():
+            if name == 'theta':
                 mesh_type = 'angular'
-                mesh_smax = np.cos(np.radians(sattrs.max[0]))
-            elif sattrs.varnames[0] == 's':
+                mesh_smax = np.cos(np.radians(lim))
+                break
+            elif name == 's':
                 mesh_type = 'cartesian'
-                mesh_smax = sattrs.max[0]
-        elif battrs and battrs.ndim:
-            if battrs.varnames[0] == 'theta':
-                mesh_type = 'angular'
-                mesh_smax = np.cos(np.radians(battrs.max[0]))
-            elif battrs.varnames[0] == 's':
+                mesh_smax = lim
+                break
+            elif name in ['rp', 'pi', 'k']:
                 mesh_type = 'cartesian'
-                mesh_smax = battrs.max[0]
+
         assert mesh_type is not None, 'cannot determine mesh type from sattrs or battrs; provide at least one'
+        if mesh_smax is None and all(name in limits for name in ['rp', 'pi']):
+            mesh_smax = (limits['rp']**2 + limits['pi']**2)**0.5
         ndim = {'angular': 2, 'cartesian': 3}[mesh_type]
 
         if periodic:
@@ -357,6 +364,8 @@ class MeshAttrs(object):
 
         boxsize = self._np.asarray(boxsize, dtype=np.float64) * np.ones(ndim, dtype=np.float64)
         boxcenter = self._np.asarray(boxcenter, dtype=np.float64) * np.ones(ndim, dtype=np.float64)
+        if mesh_smax is None:
+            mesh_smax = sum(bb**2 for bb in boxsize)**0.5
 
         # Now set up resolution meshsize
         if mesh_type == 'angular':

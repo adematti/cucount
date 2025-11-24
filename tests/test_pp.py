@@ -461,6 +461,7 @@ def test_corrfunc_cubic(mode='smu'):
         particles1 = Particles(positions1, weights1)
         particles2 = Particles(positions2, weights2)
         mattrs = MeshAttrs(particles1, particles2, boxsize=boxsize, battrs=battrs, meshsize=30, periodic=True)
+        print(mattrs)
         test = count2(particles1, particles2, battrs=battrs, mattrs=mattrs)['weight']
         print(f'cucount: {time.time() - t0:.2f} s')
         return test
@@ -477,7 +478,6 @@ def test_corrfunc_cubic(mode='smu'):
     #print(test.ravel())
     ref = run_corrfunc()
     test_numpy = run_cucount(backend='numpy')
-    print(test_numpy / ref)
     assert np.allclose(test_numpy, ref, **tol)
     test_jax = run_cucount(backend='jax')
     assert np.allclose(test_jax, ref, **tol)
