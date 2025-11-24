@@ -36,7 +36,7 @@ def setup_logging(level=logging.INFO, stream=sys.stdout,  **kwargs):
     # Cannot provide stream and filename kwargs at the same time to logging.basicConfig, so handle different cases
     # Thanks to https://stackoverflow.com/questions/30861524/logging-basicconfig-not-creating-log-file-when-i-run-in-pycharm
     if isinstance(level, str):
-        level = {'info': logging.INFO, 'debug': logging.DEBUG, 'warning': logging.WARNING}[level.lower()]
+        level = {'info': logging.INFO, 'debug': logging.DEBUG, 'warning': logging.WARNING, 'error': logging.ERROR}[level.lower()]
     for handler in logging.root.handlers:
         logging.root.removeHandler(handler)
 
@@ -313,18 +313,17 @@ class MeshAttrs(object):
 
             def cartesian_to_sphere(pos, np=self._np):
                 """Convert cartesian to spherical coordinates (r, theta, phi)."""
-                x, y, z = pos.T
-                r = np.sqrt(x**2 + y**2 + z**2)
-                cth = np.clip(z / r, -1.0, 1.0)  # polar angle
-                phi = np.arctan2(y, x) % (2. * np.pi)  # azimuthal angle
+                r = np.sqrt((pos**2).sum(axis=-1))
+                cth = np.clip(pos[..., 2] / r, -1.0, 1.0)  # polar angle
+                phi = np.arctan2(pos[..., 1], pos[..., 0]) % (2. * np.pi)  # azimuthal angle
                 return np.column_stack((cth, phi))
 
             if mesh_type == 'angular':
                 # angular: compute extent in theta, phi
                 nonempty_positions = [cartesian_to_sphere(pos) for pos in nonempty_positions]
 
-            pos_min = self._np.array([self._np.min(p, axis=axis) for p in nonempty_positions]).min(axis=0)
-            pos_max = self._np.array([self._np.max(p, axis=axis) for p in nonempty_positions]).max(axis=0)
+            pos_min = np.array([self._np.min(p, axis=axis) for p in nonempty_positions]).min(axis=0)
+            pos_max = np.array([self._np.max(p, axis=axis) for p in nonempty_positions]).max(axis=0)
             return pos_min, pos_max
 
         mesh_type, mesh_smax = None, None
@@ -364,8 +363,8 @@ class MeshAttrs(object):
             if boxcenter is None:
                 boxcenter = 0.5 * (extent[1] + extent[0])
 
-        boxsize = self._np.asarray(boxsize, dtype=np.float64) * np.ones(ndim, dtype=np.float64)
-        boxcenter = self._np.asarray(boxcenter, dtype=np.float64) * np.ones(ndim, dtype=np.float64)
+        boxsize = np.asarray(boxsize, dtype=np.float64) * np.ones(ndim, dtype=np.float64)
+        boxcenter = np.asarray(boxcenter, dtype=np.float64) * np.ones(ndim, dtype=np.float64)
         if mesh_smax is None:
             mesh_smax = sum(bb**2 for bb in boxsize)**0.5
 
@@ -411,7 +410,8 @@ class MeshAttrs(object):
         return new
 
     def _to_c(self):
-        return cucountlib.cucount.MeshAttrs(**asdict(self))
+        state = asdict(self)
+        return cucountlib.cucount.MeshAttrs(**state)
 
 
 @dataclass(init=False)

@@ -13,7 +13,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
 from cucountlib import ffi_cucount
-from cucount.numpy import BinAttrs, SelectionAttrs, MeshAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, setup_logging
+from cucount.numpy import BinAttrs, SelectionAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, setup_logging
 from cucount import numpy
 
 
@@ -105,6 +105,12 @@ class WeightAttrs(numpy.WeightAttrs):
 
 
 @tree_util.register_pytree_node_class
+class MeshAttrs(numpy.MeshAttrs):
+
+    _np = jnp
+
+
+@tree_util.register_pytree_node_class
 class IndexValue(numpy.IndexValue):
 
     pass
@@ -134,6 +140,7 @@ jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 
 def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None):
+    mattrs._to_c()
     ffi_cucount.set_attrs(mattrs._to_c(), battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
     for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value._to_c())
     dtype = jnp.float64
