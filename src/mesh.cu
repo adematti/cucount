@@ -184,5 +184,5 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         CUDA_CHECK(cudaDeviceSynchronize());
         my_device_free(index, buffer);
     }
-    log_message(LOG_LEVEL_INFO, "Mesh variables successfully set.\n");
+    log_message(LOG_LEVEL_DEBUG, "Mesh variables successfully set.\n");
 }

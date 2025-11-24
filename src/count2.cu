@@ -690,7 +690,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     CUDA_CHECK(cudaEventRecord(stop, stream));
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaEventElapsedTime(&elapsed_time, start, stop));
-    log_message(LOG_LEVEL_INFO, "Time elapsed: %3.1f ms.\n", elapsed_time);
+    log_message(LOG_LEVEL_DEBUG, "Time elapsed: %3.1f ms.\n", elapsed_time);
 
     // Free GPU memory
     my_device_free(block_counts, buffer);

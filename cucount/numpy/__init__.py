@@ -313,8 +313,9 @@ class MeshAttrs(object):
 
             def cartesian_to_sphere(pos, np=self._np):
                 """Convert cartesian to spherical coordinates (r, theta, phi)."""
-                r = np.sqrt((pos**2).sum(axis=-1))
-                cth = np.clip(pos[..., 2] / r, -1.0, 1.0)  # polar angle
+                r = np.sqrt((pos**2).sum(axis=-1, keepdims=True))
+                pos = pos / r
+                cth = np.clip(pos[..., 2], -1.0, 1.0)  # polar angle
                 phi = np.arctan2(pos[..., 1], pos[..., 0]) % (2. * np.pi)  # azimuthal angle
                 return np.column_stack((cth, phi))
 
@@ -379,8 +380,8 @@ class MeshAttrs(object):
                 meshsize = [meshsize, 2 * meshsize]
             meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
             pixel_resolution = np.degrees(np.sqrt(4 * np.pi / meshsize.prod()))
-            logger.info("Mesh size is %d = %d x %d.", meshsize.prod(), meshsize[0], meshsize[1])
-            logger.info("Pixel resolution is %.4lf deg.", pixel_resolution)
+            logger.debug("Mesh size is %d = %d x %d.", meshsize.prod(), meshsize[0], meshsize[1])
+            logger.debug("Pixel resolution is %.4lf deg.", pixel_resolution)
         elif mesh_type == 'cartesian':
             nside2 = int((0.5 * nparticles)**(1. / 3.))
             if meshsize is None:
@@ -388,8 +389,8 @@ class MeshAttrs(object):
                 meshsize = np.maximum(np.minimum(nside1, nside2), 1)
             meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
             cellsize = boxsize / meshsize
-            logger.info("Mesh size is %d = %d x %d x %d.", meshsize.prod(), meshsize[0], meshsize[1], meshsize[2])
-            logger.info("Cell size is (%.4lf, %.4lf, %.4lf).", cellsize[0], cellsize[1], cellsize[2])
+            logger.debug("Mesh size is %d = %d x %d x %d.", meshsize.prod(), meshsize[0], meshsize[1], meshsize[2])
+            logger.debug("Cell size is (%.4lf, %.4lf, %.4lf).", cellsize[0], cellsize[1], cellsize[2])
         self.meshsize = meshsize
         self.boxsize = boxsize
         self.boxcenter = boxcenter

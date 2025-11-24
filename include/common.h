@@ -52,7 +52,7 @@ typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT, LOS_X, LOS_Y
     do { \
         cudaOccupancyMaxPotentialBlockSize(&(nblocks_var), &(nthreads_var), kernel, 0, 0); \
         if (buffer) nblocks_var = MIN(buffer->nblocks, nblocks_var); \
-        log_message(LOG_LEVEL_INFO, "Configured kernel with %d blocks and %d threads per block.\n", (nblocks_var), (nthreads_var)); \
+        log_message(LOG_LEVEL_DEBUG, "Configured kernel with %d blocks and %d threads per block.\n", (nblocks_var), (nthreads_var)); \
     } while (0)
 
 
