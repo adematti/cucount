@@ -800,3 +800,42 @@ def joint_occurences(nrealizations=128, max_occurences=None, noffset=1, default_
         toret.append(row)
 
     return toret
+
+
+
+def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
+    """
+    Perform two-point pair counts analytically for periodic boxes.
+
+    Parameters
+    ----------
+    battrs : BinAttrs
+        Binning specification (edges/shape) for the pair counts.
+    mattrs : MeshAttrs or array, optional
+        Mesh attributes (boxsize).
+
+    Returns
+    -------
+    counts : array
+        Normalized analytical pair counts in each bin.
+    """
+    boxsize = getattr(mattrs, 'boxsize', mattrs) * np.ones(3, dtype=np.float64)
+    edges = battrs.edges()
+    mode = list(edges)
+    if mode == ('s',):
+        v = 4. / 3. * np.pi * edges[0]**3
+        dv = np.diff(v, axis=0)
+    elif mode == ('s', 'mu'):
+        # we bin in mu
+        v = 2. / 3. * np.pi * edges[0][:, None]**3 * edges[1]
+        dv = np.diff(np.diff(v, axis=0), axis=-1)
+    elif mode == ('rp', 'pi'):
+        v = np.pi * edges[0][:, None]**2 * edges[1]
+        dv = np.diff(np.diff(v, axis=0), axis=1)
+    elif mode == ('rp',):
+        los = battrs.los[0]
+        v = np.pi * edges[0]**2 * boxsize['xyz'.index(los)]
+        dv = np.diff(v, axis=0)
+    else:
+        raise NotImplementedError('No analytic pair counter provided for binning {}'.format(mode))
+    return dv / boxsize.prod()

@@ -46,11 +46,13 @@ positions2, weights2 = generate_catalog(rng, size)
 edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
 los = 'midpoint'
 
-# Compute pair counts
+# Compute pair counts, with 4 threads (i.e. on 4 GPU)
+# If you want to go multi-node, MPI is a good option
 particles1 = Particles(positions1, weights1)
 particles2 = Particles(positions2, weights2)
 battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
 counts = count2(particles1, particles2, battrs=battrs, nthreads=4)
+# counts is a dictionary with key "weight"
 ```
 
 ---

@@ -652,6 +652,95 @@ def test_popcount():
     assert np.allclose(count, count_ref)
 
 
+def test_analytic():
+    boxsize = 2000.
+    from cucount.numpy import count2_analytic, BinAttrs, MeshAttrs
+
+    battrs = BinAttrs(s=np.linspace(0., 200., 21))
+    count2_analytic(battrs=battrs, mattrs=boxsize)
+
+    battrs = BinAttrs(s=np.linspace(0., 200., 21), mu=(np.linspace(-1., 1., 21), 'x'))
+    count2_analytic(battrs=battrs, mattrs=boxsize)
+
+    battrs = BinAttrs(rp=(np.linspace(0., 200., 21), 'x'), pi=(np.linspace(-1., 1., 21), 'x'))
+    count2_analytic(battrs=battrs, mattrs=boxsize)
+
+
+def test_lsstypes():
+
+    from pathlib import Path
+    from cucount.numpy import count2, count2_analytic, Particles, BinAttrs, WeightAttrs, MeshAttrs, setup_logging
+    import lsstypes as types
+    from lsstypes import Count2, Count2Correlation
+
+    boxsize = boxsize=(3000.,) * 3
+
+    # Cutsky geometry
+    data, _ = generate_catalogs(1000, boxsize, n_individual_weights=2, n_bitwise_weights=2, seed=42)
+    randoms, _ = generate_catalogs(10000, boxsize=boxsize, n_individual_weights=1, seed=84)
+    data_positions, data_weights = np.column_stack(data[:3]), data[3:]
+    random_positions, random_weights = np.column_stack(randoms[:3]), randoms[3:]
+    data = Particles(data_positions, data_weights)
+    randoms = Particles(random_positions, random_weights)
+
+    battrs = BinAttrs(s=np.linspace(0., 200., 21), mu=(np.linspace(-1., 1., 21), 'midpoint'))
+    wattrs = WeightAttrs(bitwise=dict(weights=data))
+    mattrs = None
+
+    # Helper to convert to lsstypes Count2
+    def to_lsstypes(battrs: BinAttrs, counts: np.ndarray, norm: np.ndarray) -> Count2:
+        coords = battrs.coords()
+        edges = battrs.edges()
+        edges = {f'{k}_edges': v for k, v in edges.items()}
+        return Count2(counts=counts, norm=norm, **coords, **edges, coords=list(coords))
+
+    # Hepler to get counts as Count2
+    def get_counts(*particles: Particles) -> Count2:
+        autocorr = len(particles) == 1
+        counts = count2(*(particles * 2 if autocorr else particles), battrs=battrs, wattrs=wattrs, mattrs=mattrs)['weight']
+        if autocorr:
+            norm = wattrs(particles[0]).sum()**2 - wattrs(*(particles * 2)).sum()
+        else:
+            norm = wattrs(particles[0]).sum() * wattrs(particles[1]).sum()
+        return to_lsstypes(battrs, counts, norm)
+
+    DD = get_counts(data)
+    DR = get_counts(data, randoms)
+    RD = DR.clone(value=DR.value[:, ::-1])  # reverse mu for RD
+    RR = get_counts(randoms)
+    # Note: you can also "sum" DR, RD and RR counts over multiple random catalogs to reduce noise
+    # DR = types.sum(list_of_DR_counts)
+    # RR = types.sum(list_of_RR_counts)
+
+    # For reconstructed 2PCF, you can provide DD, DS, SD, SS, RR counts
+    correlation = Count2Correlation(estimator='landyszalay', DD=DD, DR=DR, RD=RD, RR=RR)
+    dirname = Path('_tests')
+    fn = dirname / 'test_lsstypes_landyszalay.h5'
+    dirname.mkdir(exist_ok=True)
+    correlation.write(fn)
+    correlation = types.read(fn)
+    correlation.project(ells=(0, 2, 4)).plot(fn=dirname / 'test_lsstypes_landyszalay.png')
+
+    # Periodic geometry
+    data, _ = generate_catalogs(1000, boxsize, n_individual_weights=2, n_bitwise_weights=2, seed=42)
+    data_positions, data_weights = np.column_stack(data[:3]), data[3:]
+    data = Particles(data_positions, data_weights)
+
+    battrs = BinAttrs(s=np.linspace(0., 200., 21), mu=(np.linspace(-1., 1., 21), 'midpoint'))
+    wattrs = WeightAttrs(bitwise=dict(weights=data))
+    mattrs = MeshAttrs(data, boxsize=boxsize, battrs=battrs, periodic=True)
+
+    DD = get_counts(data)
+    # In case of periodic geometry; analytic RR
+    RR = to_lsstypes(battrs, count2_analytic(battrs=battrs, mattrs=boxsize), norm=1.)
+    correlation = Count2Correlation(estimator='natural', DD=DD, RR=RR)
+    fn = dirname / 'test_lsstypes_natural.h5'
+    correlation.write(fn)
+    correlation = types.read(fn)
+    correlation.project(ells=(0, 2, 4)).plot(fn=dirname / 'test_lsstypes_natural.png')
+
+
+
 if __name__ == '__main__':
 
     setup_logging()
@@ -664,3 +753,5 @@ if __name__ == '__main__':
     #test_jax(distributed=True)
     #test_readme()
     #test_popcount()
+    test_analytic()
+    test_lsstypes()

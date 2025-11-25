@@ -13,7 +13,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
 from cucountlib import ffi_cucount
-from cucount.numpy import BinAttrs, SelectionAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, setup_logging, _setup_cucount_logging
+from cucount.numpy import BinAttrs, SelectionAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, count2_analytic, setup_logging, _setup_cucount_logging
 from cucount import numpy
 
 
