@@ -95,26 +95,32 @@ __device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
 }
 
 
-__device__ inline void wrap_periodic(FLOAT *dxyz, FLOAT boxsize) {
+__device__ inline FLOAT wrap_periodic_float(FLOAT dxyz, FLOAT boxsize) {
     FLOAT half = 0.5 * boxsize;
-    FLOAT x = *dxyz + half;
+    FLOAT x = dxyz + half;
     x = fmod(x, boxsize);  // negative if x is negative
     if (x < 0) x += boxsize;
-    *dxyz = x - half;
+    return x - half;
+}
+
+
+__device__ inline int wrap_periodic_int(int idx, size_t meshsize) {
+    int r = idx % meshsize;
+    return (r < 0) ? r + meshsize : r;
 }
 
 
 __device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
     for (size_t axis = 0; axis < NDIM; axis++) {
         add[axis] = position1[axis] + position2[axis];
-        if (device_mattrs.periodic) wrap_periodic(&(add[axis]), device_mattrs.boxsize[axis]);
+        if (device_mattrs.periodic) add[axis] = wrap_periodic_float(add[axis], device_mattrs.boxsize[axis]);
     }
 }
 
 __device__ inline void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2) {
     for (size_t axis = 0; axis < NDIM; axis++) {
         diff[axis] = position1[axis] - position2[axis];
-        if (device_mattrs.periodic) wrap_periodic(&(diff[axis]), device_mattrs.boxsize[axis]);
+        if (device_mattrs.periodic) diff[axis] = wrap_periodic_float(diff[axis], device_mattrs.boxsize[axis]);
     }
 }
 
@@ -313,7 +319,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             else mu2 = (d * d) / s2;
         }
         else if (los == LOS_ENDPOINT) {
-            mu = dot(diff, sposition2);
+            d = dot(diff, sposition2);
             if (REQUIRED_MU) mu = d / s;
             else mu2 = (d * d) / s2;
         }
@@ -531,7 +537,7 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh me
         for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
             int icth_n = icth * device_mattrs.meshsize[1];
             for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
-                int iphi_true = (iphi + device_mattrs.meshsize[1]) % device_mattrs.meshsize[1];
+                int iphi_true = wrap_periodic_int(iphi, device_mattrs.meshsize[1]);
                 int icell = iphi_true + icth_n;
                 int np2 = mesh2.nparticles[icell];
                 size_t cum2 = mesh2.cumnparticles[icell];
@@ -573,11 +579,11 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh 
         set_cartesian_bounds(position1, bounds);
         //printf("%d %d %d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
         for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
-            int ix_n = (ix % device_mattrs.meshsize[0]) * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
+            int ix_n = wrap_periodic_int(ix, device_mattrs.meshsize[0]) * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
             for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
-                int iy_n = (iy % device_mattrs.meshsize[1]) *  device_mattrs.meshsize[2];
+                int iy_n = wrap_periodic_int(iy, device_mattrs.meshsize[1]) *  device_mattrs.meshsize[2];
                 for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
-                    int iz_n = iz % device_mattrs.meshsize[2];
+                    int iz_n = wrap_periodic_int(iz, device_mattrs.meshsize[2]);
                     int icell = ix_n + iy_n + iz_n;
                     int np2 = mesh2.nparticles[icell];
                     size_t cum2 = mesh2.cumnparticles[icell];
