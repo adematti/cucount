@@ -318,7 +318,7 @@ struct WeightAttrs_py {
     // New members for 'bitwise' and 'angular' options
     FLOAT bitwise_default_value = 0.0;
     FLOAT bitwise_nrealizations = 0.0;
-    size_t bitwise_noffset = 0;
+    int bitwise_noffset = 0;
     py::array_t<FLOAT> bitwise_p_correction_nbits;
     py::array_t<FLOAT> angular_sep;
     py::array_t<FLOAT> angular_weight;
@@ -374,9 +374,9 @@ struct WeightAttrs_py {
                 py::dict d = py::cast<py::dict>(item.second);
 
                 // keys are optional -- use existing defaults if absent
-                if (d.contains("default_vaue")) bitwise_default_value = py::cast<double>(d["default_value"]);
-                if (d.contains("nrealizations")) bitwise_nrealizations = py::cast<double>(d["nrealizations"]);
-                if (d.contains("noffset")) bitwise_noffset = py::cast<size_t>(d["noffset"]);
+                if (d.contains("default_value")) bitwise_default_value = py::cast<FLOAT>(d["default_value"]);
+                if (d.contains("nrealizations")) bitwise_nrealizations = py::cast<FLOAT>(d["nrealizations"]);
+                if (d.contains("noffset")) bitwise_noffset = py::cast<int>(d["noffset"]);
                 if (d.contains("p_correction_nbits")) {
                     auto pcorr = py::cast<py::array_t<FLOAT>>(d["p_correction_nbits"]);
                     if (pcorr.ndim() != 2) {
