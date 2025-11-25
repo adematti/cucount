@@ -68,6 +68,22 @@ LOS_TYPE string_to_los_type(const std::string& los_name) {
 }
 
 
+// inverse mapping for LOS_TYPE -> string
+std::string los_type_to_string(LOS_TYPE v) {
+    switch (v) {
+        case LOS_NONE: return "";
+        case LOS_FIRSTPOINT: return "firstpoint";
+        case LOS_ENDPOINT: return "endpoint";
+        case LOS_MIDPOINT: return "midpoint";
+        case LOS_X: return "x";
+        case LOS_Y: return "y";
+        case LOS_Z: return "z";
+        default: return "";
+    }
+}
+
+
+
 // Helper function to reorder a vector based on sorted indices
 template <typename T>
 void reorder(std::vector<T>& vec, const std::vector<size_t>& indices) {
@@ -227,6 +243,14 @@ struct BinAttrs_py {
         std::vector<std::string> out;
         out.reserve(var.size());
         for (auto v : var) out.push_back(var_type_to_string(v));
+        return out;
+    }
+
+    // Return list of los names in the same order as `los`
+    std::vector<std::string> losnames() const {
+        std::vector<std::string> out;
+        out.reserve(los.size());
+        for (auto v : los) out.push_back(los_type_to_string(v));
         return out;
     }
 

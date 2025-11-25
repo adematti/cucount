@@ -264,6 +264,10 @@ class BinAttrs(cucountlib.cucount.BinAttrs):
         index = self.varnames.index(name)
         return mid(self.array[index], name)
 
+    @property
+    def shape(self):
+        return tuple(super().shape)
+
 
 @dataclass(init=False)
 class MeshAttrs(object):
@@ -821,21 +825,22 @@ def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
     """
     boxsize = getattr(mattrs, 'boxsize', mattrs) * np.ones(3, dtype=np.float64)
     edges = battrs.edges()
-    mode = list(edges)
+    mode = tuple(edges)
+    shape = battrs.shape
     if mode == ('s',):
-        v = 4. / 3. * np.pi * edges[0]**3
-        dv = np.diff(v, axis=0)
+        v = 4. / 3. * np.pi * edges['s']**3
+        dv = np.diff(v, axis=-1)
     elif mode == ('s', 'mu'):
         # we bin in mu
-        v = 2. / 3. * np.pi * edges[0][:, None]**3 * edges[1]
-        dv = np.diff(np.diff(v, axis=0), axis=-1)
+        v = 2. / 3. * np.pi * edges['s'][..., None, None]**3 * edges['mu']
+        dv = np.diff(np.diff(v, axis=1), axis=-1)
     elif mode == ('rp', 'pi'):
-        v = np.pi * edges[0][:, None]**2 * edges[1]
-        dv = np.diff(np.diff(v, axis=0), axis=1)
+        v = np.pi * edges['rp'][..., None, None]**2 * edges['pi']
+        dv = np.diff(np.diff(v, axis=1), axis=-1)
     elif mode == ('rp',):
-        los = battrs.los[0]
-        v = np.pi * edges[0]**2 * boxsize['xyz'.index(los)]
-        dv = np.diff(v, axis=0)
+        los = battrs.losnames[0]
+        v = np.pi * edges['rp']**2 * boxsize['xyz'.index(los)]
+        dv = np.diff(v, axis=-1)
     else:
         raise NotImplementedError('No analytic pair counter provided for binning {}'.format(mode))
-    return dv / boxsize.prod()
+    return np.squeeze(dv).reshape(shape) / boxsize.prod()

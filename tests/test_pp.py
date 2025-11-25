@@ -656,14 +656,12 @@ def test_analytic():
     boxsize = 2000.
     from cucount.numpy import count2_analytic, BinAttrs, MeshAttrs
 
-    battrs = BinAttrs(s=np.linspace(0., 200., 21))
-    count2_analytic(battrs=battrs, mattrs=boxsize)
-
-    battrs = BinAttrs(s=np.linspace(0., 200., 21), mu=(np.linspace(-1., 1., 21), 'x'))
-    count2_analytic(battrs=battrs, mattrs=boxsize)
-
-    battrs = BinAttrs(rp=(np.linspace(0., 200., 21), 'x'), pi=(np.linspace(-1., 1., 21), 'x'))
-    count2_analytic(battrs=battrs, mattrs=boxsize)
+    for battrs in [BinAttrs(s=np.linspace(0., 200., 21)),
+                   BinAttrs(s=np.linspace(0., 200., 21), mu=(np.linspace(-1., 1., 21), 'x')),
+                   BinAttrs(rp=(np.linspace(0., 200., 21), 'x'), pi=(np.linspace(-1., 1., 21), 'x')),
+                   BinAttrs(rp=(np.linspace(0., 200., 21), 'x'))]:
+        counts = count2_analytic(battrs=battrs, mattrs=boxsize)
+        assert counts.shape == battrs.shape
 
 
 def test_lsstypes():
@@ -673,18 +671,19 @@ def test_lsstypes():
     import lsstypes as types
     from lsstypes import Count2, Count2Correlation
 
-    boxsize = boxsize=(3000.,) * 3
+    boxsize = (3000.,) * 3
 
     # Cutsky geometry
-    data, _ = generate_catalogs(1000, boxsize, n_individual_weights=2, n_bitwise_weights=2, seed=42)
-    randoms, _ = generate_catalogs(10000, boxsize=boxsize, n_individual_weights=1, seed=84)
+    size = int(1e6)
+    data, _ = generate_catalogs(size, boxsize, n_individual_weights=1, n_bitwise_weights=2, seed=42)
+    randoms, _ = generate_catalogs(2 * size, boxsize=boxsize, n_individual_weights=1, seed=84)
     data_positions, data_weights = np.column_stack(data[:3]), data[3:]
     random_positions, random_weights = np.column_stack(randoms[:3]), randoms[3:]
     data = Particles(data_positions, data_weights)
     randoms = Particles(random_positions, random_weights)
 
     battrs = BinAttrs(s=np.linspace(0., 200., 21), mu=(np.linspace(-1., 1., 21), 'midpoint'))
-    wattrs = WeightAttrs(bitwise=dict(weights=data))
+    wattrs = WeightAttrs(bitwise=dict(weights=data.get('bitwise_weight')))
     mattrs = None
 
     # Helper to convert to lsstypes Count2
@@ -705,8 +704,8 @@ def test_lsstypes():
         return to_lsstypes(battrs, counts, norm)
 
     DD = get_counts(data)
-    DR = get_counts(data, randoms)
-    RD = DR.clone(value=DR.value[:, ::-1])  # reverse mu for RD
+    DR = get_counts(data.clone(weights=wattrs(data)), randoms)
+    RD = DR.clone(value=DR.value()[:, ::-1])  # reverse mu for RD
     RR = get_counts(randoms)
     # Note: you can also "sum" DR, RD and RR counts over multiple random catalogs to reduce noise
     # DR = types.sum(list_of_DR_counts)
@@ -719,15 +718,15 @@ def test_lsstypes():
     dirname.mkdir(exist_ok=True)
     correlation.write(fn)
     correlation = types.read(fn)
-    correlation.project(ells=(0, 2, 4)).plot(fn=dirname / 'test_lsstypes_landyszalay.png')
+    correlation.project(ells=[0, 2, 4]).plot(fn=dirname / 'test_lsstypes_landyszalay.png')
 
-    # Periodic geometry
-    data, _ = generate_catalogs(1000, boxsize, n_individual_weights=2, n_bitwise_weights=2, seed=42)
+    # Periodic box geometry
+    data, _ = generate_catalogs(1000, boxsize, n_individual_weights=1, seed=42)
     data_positions, data_weights = np.column_stack(data[:3]), data[3:]
     data = Particles(data_positions, data_weights)
 
     battrs = BinAttrs(s=np.linspace(0., 200., 21), mu=(np.linspace(-1., 1., 21), 'midpoint'))
-    wattrs = WeightAttrs(bitwise=dict(weights=data))
+    wattrs = WeightAttrs()
     mattrs = MeshAttrs(data, boxsize=boxsize, battrs=battrs, periodic=True)
 
     DD = get_counts(data)
@@ -737,13 +736,15 @@ def test_lsstypes():
     fn = dirname / 'test_lsstypes_natural.h5'
     correlation.write(fn)
     correlation = types.read(fn)
-    correlation.project(ells=(0, 2, 4)).plot(fn=dirname / 'test_lsstypes_natural.png')
+    correlation.project(ells=[0, 2, 4]).plot(fn=dirname / 'test_lsstypes_natural.png')
 
 
 
 if __name__ == '__main__':
 
     setup_logging()
+    test_analytic()
+    test_lsstypes()
     #test_thetacut()
     for mode in ['smu', 'rppi', 'theta']:
         test_corrfunc_cutsky(mode)
@@ -753,5 +754,3 @@ if __name__ == '__main__':
     #test_jax(distributed=True)
     #test_readme()
     #test_popcount()
-    test_analytic()
-    test_lsstypes()
