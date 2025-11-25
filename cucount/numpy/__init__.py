@@ -201,7 +201,8 @@ class WeightAttrs(object):
             assert len(particle.index_value('individual_weight', return_type=list)) <= 1, "Only one individual weight is supported"
             assert len(particle.index_value('negative_weight', return_type=list)) <= 1, "Only one negative weight is supported"
         if self.spin is not None:
-            assert all(particle.get('spin') for particle in particles), 'WeightAttrs.spin is not None, so Particles must have spin values'
+            assert len(self.spin) == len(particles), "Provide as many WeightAttrs.spin as Particles catalogs"
+            assert all(bool(particle.get('spin')) == bool(spin) for spin, particle in zip(self.spin, particles)), "Provide spin_values whenever WeightAttrs.spin != 0"
         nbitwises = [len(particle.get('bitwise_weight')) for particle in particles]
         if any(nbitwises):
             assert self.bitwise is not None, 'Particles have bitwise weights, so provide bitwise to WeightAttrs'

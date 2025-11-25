@@ -72,7 +72,7 @@ def test(write=False):
         return Particles(positions, weights, **kwargs)
 
     edges = np.logspace(-3., -1., 30)
-    battrs = BinAttrs(theta=edges * np.pi / 180.)
+    battrs = BinAttrs(theta=edges)
     catalogs = get_catalogs(write=write)
 
     # gg
