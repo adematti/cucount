@@ -10,7 +10,7 @@ def generate_ellipticities(size, sigma_e=0.3, seed=42):
     """Generate random galaxy ellipticities e1, e2."""
     rng = np.random.RandomState(seed=seed)
     # Random orientation angles (0 to pi)
-    phi = np.random.uniform(0, np.pi, size)
+    phi = rng.uniform(0, np.pi, size)
     e_mag = rng.normal(0, sigma_e, size)
     e_mag = np.clip(np.abs(e_mag), 0, 0.9)
     # Compute components
@@ -50,8 +50,13 @@ def get_catalogs(write=False):
     return catalogs
 
 
-def test(write=False):
-    from cucount.numpy import BinAttrs, WeightAttrs, Particles, count2
+def test(backend='numpy', write=False):
+    if backend == 'jax':
+        from jax import config
+        config.update('jax_enable_x64', True)
+        from cucount.jax import BinAttrs, WeightAttrs, Particles, count2
+    else:
+        from cucount.numpy import BinAttrs, WeightAttrs, Particles, count2
 
     def get_cartesian(ra, dec):
         """Convert RA/Dec to unit sphere Cartesian coordinates"""
@@ -93,6 +98,8 @@ def test(write=False):
     if write: np.savetxt(fn, counts)
     else: counts_ref = np.loadtxt(fn)
     assert np.allclose(counts, counts_ref)
+    particle = particles[1].clone(spin_values=None)
+    assert not particle.get('spin')
 
     # ss
     particles = [create_cucount_particles(catalog, with_spin=True) for catalog in catalogs]
@@ -102,65 +109,11 @@ def test(write=False):
     fn = dirname / 'counts_ss.txt'
     if write: np.savetxt(fn, counts)
     else: counts_ref = np.loadtxt(fn)
-    assert np.allclose(counts, counts_ref)
-
-
-def test_jax(write=False):
-    from cucount.jax import BinAttrs, WeightAttrs, Particles, count2
-    from jax import config
-    config.update('jax_enable_x64', True)
-
-    def get_cartesian(ra, dec):
-        """Convert RA/Dec to unit sphere Cartesian coordinates"""
-        conv = np.pi / 180.
-        theta, phi = dec * conv, ra * conv
-        x = np.cos(theta) * np.cos(phi)
-        y = np.cos(theta) * np.sin(phi)
-        z = np.sin(theta)
-        return np.column_stack([x, y, z])
-
-    def create_cucount_particles(catalog, with_spin=False):
-        ra, dec, e1, e2, weights = catalog
-        # Convert to 3D unit sphere Cartesian coordinates
-        positions = get_cartesian(ra, dec)
-        kwargs = dict()
-        if with_spin:
-            kwargs.update(spin_values=-np.column_stack([e1, e2]))
-        return Particles(positions, weights, **kwargs)
-
-    edges = np.logspace(-3., -1., 30)
-    battrs = BinAttrs(theta=edges)
-    catalogs = get_catalogs(write=write)
-
-    # gg
-    particles = [create_cucount_particles(catalog, with_spin=False) for catalog in catalogs]
-    counts_ref = counts = count2(*particles, battrs=battrs)['weight']
-    fn = dirname / 'counts_gg.txt'
-    counts_ref = np.loadtxt(fn)
-    assert np.allclose(counts, counts_ref)
-
-    # gs
-    particles = [create_cucount_particles(catalogs[0], with_spin=False),
-                create_cucount_particles(catalogs[1], with_spin=True)]
-    wattrs = WeightAttrs(spin=(0, 2))
-    counts = count2(*particles, battrs=battrs, wattrs=wattrs)
-    counts_ref = counts = np.column_stack(list(counts.values()))
-    fn = dirname / 'counts_gs.txt'
-    counts_ref = np.loadtxt(fn)
-    assert np.allclose(counts, counts_ref)
-
-    # ss
-    particles = [create_cucount_particles(catalog, with_spin=True) for catalog in catalogs]
-    wattrs = WeightAttrs(spin=(2, 2))
-    counts = count2(*particles, battrs=battrs, wattrs=wattrs)
-    counts_ref = counts = np.column_stack(list(counts.values()))
-    fn = dirname / 'counts_ss.txt'
-    counts_ref = np.loadtxt(fn)
     assert np.allclose(counts, counts_ref)
 
 
 def test_treecorr():
-    from cucount.numpy import BinAttrs, Particles, count2
+    from cucount.numpy import BinAttrs, WeightAttrs, Particles, count2
     import treecorr
 
     def get_cartesian(ra, dec):
@@ -198,8 +151,9 @@ def test_treecorr():
     nbins = len(edges) - 1
 
     # gg
+    wattrs = WeightAttrs(spin=(0, 0))
     particles = [create_cucount_particles(catalog, with_ellipticies=False) for catalog in catalogs]
-    counts = count2(*particles, battrs=battrs, spin1=0, spin2=0)
+    counts = count2(*particles, battrs=battrs, wattrs=wattrs)
 
     tc = treecorr.NNCorrelation(min_sep=min_sep, max_sep=max_sep, nbins=nbins,
                                 sep_units='arcmin', bin_type='Log', bin_slop=0., metric='Euclidean')
@@ -207,8 +161,9 @@ def test_treecorr():
     assert np.allclose(counts, tc.weight)
 
     # gs
+    wattrs = WeightAttrs(spin=(0, 2))
     particles = [create_cucount_particles(catalog) for catalog in catalogs]
-    counts = count2(*particles, battrs=battrs, spin1=0, spin2=2)
+    counts = count2(*particles, battrs=battrs, wattrs=wattrs)
 
     tc = treecorr.NGCorrelation(min_sep=min_sep, max_sep=max_sep, nbins=nbins,
                                 sep_units='arcmin', bin_type='Log', bin_slop=0., metric='Euclidean')
@@ -217,8 +172,9 @@ def test_treecorr():
     # tc.xi, tc.xi_im
 
     # ss
+    wattrs = WeightAttrs(spin=(2, 2))
     particles = [create_cucount_particles(catalog, with_ellipticies=True) for catalog in catalogs]
-    counts = count2(*particles, battrs=battrs, spin1=2, spin2=2)
+    counts = count2(*particles, battrs=battrs, wattrs=wattrs)
     tc = treecorr.GGCorrelation(min_sep=min_sep, max_sep=max_sep, nbins=nbins,
                                 sep_units='arcmin', bin_type='Log', bin_slop=0., metric='Euclidean')
     tc.process(*[create_treecorr_catalog(catalog) for catalog in catalogs])
@@ -229,5 +185,5 @@ def test_treecorr():
 if __name__ == '__main__':
 
     #test(write=True)
-    test()
+    test(backend='numpy')
     #test_jax()

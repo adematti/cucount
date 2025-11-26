@@ -149,7 +149,8 @@ def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs,
     # Max values
     nblocks = 256
     # Two meshes
-    meshsize2 = 2 * mattrs.meshsize.prod()
+    meshsize = mattrs.meshsize.prod()
+    meshsize2 = 2 * meshsize
     # Estimate buffer size
     size = 0
     # Buffer for mesh
@@ -160,17 +161,17 @@ def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs,
     size += 2 * sum(particle.positions.size for particle in particles)
     size += sum(particle.index_value.size * particle.positions.shape[0] for particle in particles)
     # Buffer for recursive scan
-    size += 2 * (sum(particle.positions.size for particle in particles) + 1024 - 1) // 1024
+    size += 2 * 2 * (meshsize + 1024 - 1) // 1024
     # Buffer for angular upweights
     if wattrs.angular is not None:
         size += 2 * wattrs.angular.weight.size
     # Buffer for bitwise correction
     if wattrs.bitwise is not None and wattrs.bitwise.p_correction_nbits is not None:
         size += wattrs.bitwise.p_correction_nbits.size
-    # Buffer for count2: bins
+    # Buffer for count2: edges
     size += sum(s + 1 for s in bshape)
-    # Buffer for count2: bins
-    size += nblocks * bsize
+    # Buffer for count2: nblocks * counts
+    size += nblocks * bsize * len(names)  # up to factor 3 (shear-shear)
     buffer_type = jax.ShapeDtypeStruct((size,), dtype)
     call = jax.ffi.ffi_call('count2', (res_type, buffer_type))
 

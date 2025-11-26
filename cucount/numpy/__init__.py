@@ -603,7 +603,7 @@ class Particles(object):
         if name == 'weights':
             weights = []
             for name, sl in self.index_value(return_type=slice).items():
-                weights += self.values[sl]
+                if name != 'spin': weights += self.values[sl]
             return weights
         return self.values[self.index_value(name, return_type=slice)]
 
@@ -808,7 +808,6 @@ def joint_occurences(nrealizations=128, max_occurences=None, noffset=1, default_
         toret.append(row)
 
     return toret
-
 
 
 def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
