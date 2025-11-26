@@ -10,6 +10,21 @@ __device__ __constant__ SelectionAttrs device_sattrs;
 //__device__ __constant__ BinAttrs device_battrs;
 
 
+__device__ inline FLOAT wrap_periodic_float(FLOAT dxyz, FLOAT boxsize) {
+    FLOAT half = 0.5 * boxsize;
+    FLOAT x = dxyz + half;
+    x = fmod(x, boxsize);  // negative if x is negative
+    if (x < 0) x += boxsize;
+    return x - half;
+}
+
+
+__device__ inline int wrap_periodic_int(int idx, int meshsize) {
+    int r = idx % meshsize;
+    return (r < 0) ? r + meshsize : r;
+}
+
+
 __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
     FLOAT cth, phi;
     int icth, iphi;
@@ -78,42 +93,53 @@ __device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
     if (bounds[1] >= device_mattrs.meshsize[0]) bounds[1] = device_mattrs.meshsize[0] - 1;
 }
 
+/*
 __device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
     for (size_t axis = 0; axis < NDIM; axis++) {
+        int meshsize = (int) device_mattrs.meshsize[axis];
         FLOAT offset = device_mattrs.boxcenter[axis] - device_mattrs.boxsize[axis] / 2;
-        int index = (int) ((position[axis] - offset) * device_mattrs.meshsize[axis] / device_mattrs.boxsize[axis]);
-        int delta = (int) (device_mattrs.smax / device_mattrs.boxsize[axis] * device_mattrs.meshsize[axis]) + 1;
+        int index = (int) ((position[axis] - offset) * meshsize / device_mattrs.boxsize[axis]);
+        index = wrap_periodic_int(index, meshsize);
+        int delta = (int) (device_mattrs.smax / device_mattrs.boxsize[axis] * meshsize + 1);
+        bounds[2 * axis] = index - delta;
+        bounds[2 * axis + 1] = index + delta;
+        if (device_mattrs.periodic == device_mattrs.periodic) {
+            bounds[2 * axis] = MAX(bounds[2 * axis], 0);
+            bounds[2 * axis + 1] = MIN(bounds[2 * axis + 1], meshsize - 1);
+        }
+        else if (2 * delta >= meshsize) {  // make sure to visit each cell only once
+            bounds[2 * axis] = 0;
+            bounds[2 * axis + 1] = meshsize - 1;
+        }
+    }
+}
+*/
+
+__device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
+    for (size_t axis = 0; axis < NDIM; axis++) {
+        int meshsize = (int) device_mattrs.meshsize[axis];
+        FLOAT offset = device_mattrs.boxcenter[axis] - device_mattrs.boxsize[axis] / 2;
+        int index = (int) floor((position[axis] - offset) * meshsize / device_mattrs.boxsize[axis]);
+        index = wrap_periodic_int(index, meshsize);
+        int delta = (int) ceil(device_mattrs.smax / device_mattrs.boxsize[axis] * meshsize);
         bounds[2 * axis] = index - delta;
         bounds[2 * axis + 1] = index + delta;
         if (device_mattrs.periodic == 0) {
             bounds[2 * axis] = MAX(bounds[2 * axis], 0);
-            bounds[2 * axis + 1] = MIN(bounds[2 * axis + 1], device_mattrs.meshsize[axis] - 1);
-        };
-        //bounds[2 * axis] = 0;
-        //bounds[2 * axis + 1] = device_mattrs.meshsize[axis] - 1;
+            bounds[2 * axis + 1] = MIN(bounds[2 * axis + 1], meshsize - 1);
+        }
+        else if (2 * delta + 1 >= meshsize) {  // make sure to visit each cell at most once
+            bounds[2 * axis] = 0;
+            bounds[2 * axis + 1] = meshsize - 1;
+        }
     }
-}
-
-
-__device__ inline FLOAT wrap_periodic_float(FLOAT dxyz, FLOAT boxsize) {
-    FLOAT half = 0.5 * boxsize;
-    FLOAT x = dxyz + half;
-    x = fmod(x, boxsize);  // negative if x is negative
-    if (x < 0) x += boxsize;
-    return x - half;
-}
-
-
-__device__ inline int wrap_periodic_int(int idx, size_t meshsize) {
-    int r = idx % meshsize;
-    return (r < 0) ? r + meshsize : r;
 }
 
 
 __device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
     for (size_t axis = 0; axis < NDIM; axis++) {
         add[axis] = position1[axis] + position2[axis];
-        if (device_mattrs.periodic) add[axis] = wrap_periodic_float(add[axis], device_mattrs.boxsize[axis]);
+        //if (device_mattrs.periodic) add[axis] = wrap_periodic_float(add[axis], device_mattrs.boxsize[axis]);
     }
 }
 
@@ -338,7 +364,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             else mu2 = (d * d) / s2;
         }
         if (REQUIRED_MU) mu2 = mu * mu;
-        if (s == 0) {
+        if (s2 == 0) {
             mu = 0.;
             mu2 = 0.;
         };
@@ -360,7 +386,8 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             value = mu * s;
         }
         else if (var == VAR_RP) {
-            value = sqrt(s2 - s2 * mu2);
+            // Because of numerical artefacts, we may have s2 - s2 * mu2 < 0
+            value = (s2 <= 0.) ? 0. : value = sqrt(s2 - s2 * mu2);
         }
         if ((var != VAR_POLE) && (var != VAR_K)) {
             int ibin_loc = 0;  // int and not size_t as can go negative
@@ -579,11 +606,11 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh 
         set_cartesian_bounds(position1, bounds);
         //printf("%d %d %d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
         for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
-            int ix_n = wrap_periodic_int(ix, device_mattrs.meshsize[0]) * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
+            int ix_n = wrap_periodic_int(ix, (int) device_mattrs.meshsize[0]) * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
             for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
-                int iy_n = wrap_periodic_int(iy, device_mattrs.meshsize[1]) *  device_mattrs.meshsize[2];
+                int iy_n = wrap_periodic_int(iy, (int) device_mattrs.meshsize[1]) *  device_mattrs.meshsize[2];
                 for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
-                    int iz_n = wrap_periodic_int(iz, device_mattrs.meshsize[2]);
+                    int iz_n = wrap_periodic_int(iz, (int) device_mattrs.meshsize[2]);
                     int icell = ix_n + iy_n + iz_n;
                     int np2 = mesh2.nparticles[icell];
                     size_t cum2 = mesh2.cumnparticles[icell];

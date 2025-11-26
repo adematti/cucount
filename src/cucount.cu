@@ -91,6 +91,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     WeightAttrs wattrs = wattrs_py.data();
     SelectionAttrs sattrs = sattrs_py.data();
     MeshAttrs mattrs = mattrs_py.data();
+    //for (size_t axis = 0; axis < NDIM; axis++) printf("boxsize %.4f %.4f\n", mattrs.boxsize[axis], mattrs.boxcenter[axis]);
 
     // prepare host-side particle descriptors (point into numpy buffers)
     Particles p1_host = particles1.data();

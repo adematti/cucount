@@ -298,6 +298,12 @@ struct SelectionAttrs_py {
             min.push_back(std::get<0>(range_tuple));
             max.push_back(std::get<1>(range_tuple));
         }
+        // Selection support is currently limited: require VAR_THETA only.
+        for (size_t i = 0; i < var.size(); ++i) {
+            if (var[i] != VAR_THETA) {
+                throw std::invalid_argument("SelectionAttrs currently only implemented for 'theta'");
+            }
+        }
     }
 
     size_t ndim() const {

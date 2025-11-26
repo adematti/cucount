@@ -62,7 +62,7 @@ __device__ size_t angular_to_cell_index(const MeshAttrs mattrs, const FLOAT cth,
 }
 
 
-__device__ inline int wrap_periodic_int(int idx, size_t meshsize) {
+__device__ inline int wrap_periodic_int(int idx, int meshsize) {
     int r = idx % meshsize;
     return (r < 0) ? r + meshsize : r;
 }
@@ -73,8 +73,8 @@ __device__ size_t cartesian_to_cell_index(const MeshAttrs mattrs, const FLOAT* p
     for (size_t axis = 0; axis < NDIM; axis++) {
         index *= mattrs.meshsize[axis];
         FLOAT offset = mattrs.boxcenter[axis] - mattrs.boxsize[axis] / 2;
-        int index_axis = (int) ((position[axis] - offset) * mattrs.meshsize[axis] / mattrs.boxsize[axis]);
-        index += wrap_periodic_int(index_axis, mattrs.meshsize[axis]);
+        int index_axis = (int) floor((position[axis] - offset) * mattrs.meshsize[axis] / mattrs.boxsize[axis]);
+        index += wrap_periodic_int(index_axis, (int) mattrs.meshsize[axis]);
     }
     return index;
 }

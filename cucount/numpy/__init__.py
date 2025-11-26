@@ -280,7 +280,7 @@ class MeshAttrs(object):
     smax: float
     _np = np
 
-    def __init__(self, *positions, boxsize=None, boxcenter=None, meshsize=None, battrs=None, sattrs=None, periodic=False):
+    def __init__(self, *positions, boxsize=None, boxcenter=None, meshsize=None, refine=1., battrs=None, sattrs=None, periodic=False):
         """
         Determine mesh attributes from input positions and other attributes.
 
@@ -294,6 +294,9 @@ class MeshAttrs(object):
 
         meshsize : array-like of 3 floats, optional
             Size of the mesh along each axis. If None, determined from battrs or sattrs.
+
+        refine : float, default=1.
+            Refine mesh by this factor.
 
         battrs : BinAttrs, optional
             Binning attributes. Used to determine cellsize if cellsize is None.
@@ -378,20 +381,20 @@ class MeshAttrs(object):
         if mesh_type == 'angular':
             if meshsize is None:
                 theta_max = np.arccos(mesh_smax)
-                nside1 = 5 * np.rint(np.pi / theta_max).astype(int)
+                nside1 = 5 * (np.pi / theta_max)
                 fsky = boxsize.prod() / (4 * np.pi)
-                nside2 = np.minimum(self._np.sqrt(self._np.rint((0.25 * nparticles / fsky)).astype(int)), 2048)
-                meshsize = np.maximum(np.minimum(nside1, nside2), 1)
+                nside2 = np.minimum(self._np.sqrt(0.25 * nparticles / fsky), 2048)
+                meshsize = np.maximum(np.minimum(nside1, nside2) * refine, 1).astype(int)
                 meshsize = [meshsize, 2 * meshsize]
             meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
             pixel_resolution = np.degrees(np.sqrt(4 * np.pi / meshsize.prod()))
             logger.debug("Mesh size is %d = %d x %d.", meshsize.prod(), meshsize[0], meshsize[1])
             logger.debug("Pixel resolution is %.4lf deg.", pixel_resolution)
         elif mesh_type == 'cartesian':
-            nside2 = int((0.5 * nparticles)**(1. / 3.))
+            nside2 = (0.5 * nparticles)**(1. / 3.)
             if meshsize is None:
-                nside1 = np.rint(4.0 * boxsize / mesh_smax).astype(int)
-                meshsize = np.maximum(np.minimum(nside1, nside2), 1)
+                nside1 = 6.0 * boxsize / mesh_smax
+                meshsize = np.maximum(np.minimum(nside1, nside2) * refine, 1).astype(int)
             meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
             cellsize = boxsize / meshsize
             logger.debug("Mesh size is %d = %d x %d x %d.", meshsize.prod(), meshsize[0], meshsize[1], meshsize[2])
