@@ -296,7 +296,8 @@ class MeshAttrs(object):
             Size of the mesh along each axis. If None, determined from battrs or sattrs.
 
         refine : float, default=1.
-            Refine mesh by this factor.
+            Refine mesh by this factor; > 1 to increase the resolution of the mesh used to speed-up pair counting;
+            < 1 to decrease the resolution (only impact running time).
 
         battrs : BinAttrs, optional
             Binning attributes. Used to determine cellsize if cellsize is None.
