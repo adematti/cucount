@@ -710,7 +710,8 @@ def reformat_bitarrays(*arrays, dtype=np.uint64, copy=True, np=np):
         else:
             arrayofbytes = array.view((np.uint8, (array.dtype.itemsize,)))
         arrayofbytes = np.moveaxis(arrayofbytes, -1, 0)
-        for arrayofbyte in arrayofbytes:
+        for ibyte in range(arrayofbytes.shape[0]):  # for JAX-sharding-friendliness
+            arrayofbyte = arrayofbytes[ibyte]
             if nremainingbytes == 0:
                 toret.append([])
                 nremainingbytes = dtype.itemsize

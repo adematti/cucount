@@ -127,8 +127,9 @@ class Particles(numpy.Particles):
         self.index_value = IndexValue(**index_value)
         if not self.index_value('individual_weight'):
             # Let's add weights in any case (required arguments to count2)
-            weights = [jnp.ones_like(self.positions, shape=self.positions.shape[0])] + _make_list_weights(weights)
-            self.values, self.index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=jnp)
+            self.values = [jnp.ones_like(self.positions, shape=self.positions.shape[0])] + self.values
+            index_value['individual_weight'] = 1
+            self.index_value = IndexValue(**index_value)
 
         if with_sharding and exchange:
             self.positions = make_array_from_process_local_data(self.positions, pad='mean', sharding_mesh=sharding_mesh)
