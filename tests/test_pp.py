@@ -557,26 +557,27 @@ def test_jax(distributed=False):
     import jax
     from jax import config
     config.update('jax_enable_x64', True)
-    #res_numpy = count_numpy()
+    res_numpy = count_numpy()
     if distributed: jax.distributed.initialize()
 
-    def count_jax():
+    def count_jax_manual():
         from jax.experimental.shard_map import shard_map
         from jax.sharding import Mesh, PartitionSpec as P
 
-        from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs, setup_logging
+        from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs, MeshAttrs, setup_logging
         #setup_logging("error")
         particles1 = Particles(positions1, weights1)
         particles2 = Particles(positions2, weights2)
         battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-        count = lambda *particles: count2(*particles, battrs=battrs)
+        mattrs = MeshAttrs(particles1, particles2, battrs=battrs)
+        count = lambda *particles: count2(particles, battrs=battrs, mattrs=mattrs)
         if distributed:
             sharding_mesh = Mesh(jax.devices(), ('x',))
-            count = shard_map(lambda *particles: jax.lax.psum(count2(*particles, battrs=battrs), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))
+            count = shard_map(lambda *particles: jax.lax.psum(count2(*particles, battrs=battrs, mattrs=mattrs), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))
         toret = count(particles1, particles2)
         return toret['weight']
 
-    def count_jax2():
+    def count_jax():
         from cucount.jax import count2, Particles, BinAttrs, SelectionAttrs, create_sharding_mesh, setup_logging
         #setup_logging("error")
         particles1 = Particles(positions1, weights1)
@@ -587,10 +588,10 @@ def test_jax(distributed=False):
         return toret['weight']
 
     res_jax = count_jax()
-    res_jax2 = count_jax2()
+    res_jax_manual = count_jax_manual()
     if distributed: jax.distributed.shutdown()
-    assert np.allclose(res_jax2, res_jax)
-    #assert np.allclose(res_jax, res_numpy)
+    assert np.allclose(res_jax, res_jax_manual)
+    assert np.allclose(res_jax, res_numpy)
 
 
 def test_readme():
@@ -622,6 +623,39 @@ def test_readme():
     battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
     counts = count2(particles1, particles2, battrs=battrs)['weight']
     print(counts.sum(axis=-1))
+
+
+def test_readme2():
+    # Prepare catalogs
+    size = int(1e5)
+    boxsize = np.array((3000.,) * 3)
+    rng = np.random.RandomState(seed=42)
+
+    def generate_catalog(rng, size):
+        offset = boxsize
+        positions = rng.uniform(0., 1., (size, 3)) * boxsize + offset
+        weights = rng.uniform(0., 1., size)
+        return positions, weights
+
+    positions1, weights1 = generate_catalog(rng, size)
+    positions2, weights2 = generate_catalog(rng, size)
+    edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
+    los = 'midpoint'
+
+    import jax
+    jax.config.update("jax_enable_x64", True)
+    # Initialize distributed environment (if needed)
+    jax.distributed.initialize()
+    from cucount.jax import count2, Particles, BinAttrs, create_sharding_mesh
+
+    battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+
+    # Run distributed pair counts
+    with create_sharding_mesh():
+        # Pass exchange=True if input is distributed over multiple processes
+        particles1 = Particles(positions1, weights1)
+        particles2 = Particles(positions2, weights2)
+        counts = count2(particles1, particles2, battrs=battrs)
 
 
 def test_popcount():
@@ -739,10 +773,11 @@ def test_lsstypes():
     correlation.project(ells=[0, 2, 4]).plot(fn=dirname / 'test_lsstypes_natural.png')
 
 
-
 if __name__ == '__main__':
 
     setup_logging()
+
+
     test_analytic()
     test_lsstypes()
     #test_thetacut()
@@ -753,4 +788,5 @@ if __name__ == '__main__':
     #test_spectrum()
     #test_jax(distributed=True)
     #test_readme()
+    #test_readme2()
     #test_popcount()

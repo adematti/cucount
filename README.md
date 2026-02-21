@@ -81,10 +81,10 @@ from cucount.jax import count2, Particles, BinAttrs
 # Assume positions1, positions2, weights1, weights2 are already defined
 edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
 los = 'midpoint'
+battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
 
 particles1 = Particles(positions1, weights1)
 particles2 = Particles(positions2, weights2)
-battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
 
 counts = count2(particles1, particles2, battrs=battrs)
 # counts is a dictionary with key "weight"
@@ -98,42 +98,20 @@ Using [shard\_map](https://docs.jax.dev/en/latest/notebooks/shard_map.html), you
 
 ```python
 import jax
-from jax import config
-config.update("jax_enable_x64", True)
-
+jax.config.update("jax_enable_x64", True)
 # Initialize distributed environment (if needed)
 jax.distributed.initialize()
+from cucount.jax import count2, Particles, BinAttrs, create_sharding_mesh
 
-from jax.experimental.shard_map import shard_map
-from jax.sharding import Mesh, PartitionSpec as P
-from cucount.jax import count2, Particles, BinAttrs
-
-# Assume particles1 and particles2 are already defined
-edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
-los = 'midpoint'
 battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
 
-# Create sharding mesh
-devices = jax.devices()
-mesh = Mesh(devices, axis_names=('x',))
-
-# Define parallel pair-count function
-count2_parallel = shard_map(
-    lambda p1, p2: jax.lax.psum(count2(p1, p2, battrs=battrs), axis_name='x'),
-    mesh=mesh,
-    in_specs=(P('x'), P(None)),  # Shard only one input
-    out_specs=P(None)
-)
-
 # Run distributed pair counts
-counts = count2_parallel(particles1, particles2)
+with create_sharding_mesh():
+    # Pass exchange=True if input is distributed over multiple processes
+    particles1 = Particles(positions1, weights1)
+    particles2 = Particles(positions2, weights2)
+    counts = count2(particles1, particles2, battrs=battrs)
 ```
-
----
-
-## 🛠️ TODO
-
-- Implement periodic boundary conditions.
 
 ---
 
