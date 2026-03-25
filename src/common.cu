@@ -4,10 +4,16 @@
 #include "common.h"
 
 
-IndexValue get_index_value(int size_spin, int size_individual_weight, int size_bitwise_weight, int size_negative_weight) {
+IndexValue get_index_value(int size_split, int size_spin, int size_individual_weight, int size_bitwise_weight, int size_negative_weight) {
     // To check/modify when adding new weighting scheme
     IndexValue index_value = {0};  // sets everything to 0
+    if (size_split) {
+        index_value.start_split = index_value.size;
+        index_value.size_split = size_split;
+        index_value.size += size_split;
+    }
     if (size_spin) {
+        index_value.start_spin = index_value.size;
         index_value.size_spin = size_spin;
         index_value.size += size_spin;
     }
@@ -28,6 +34,7 @@ IndexValue get_index_value(int size_spin, int size_individual_weight, int size_b
     }
     return index_value;
 }
+
 
 size_t get_count2_size(IndexValue index_value1, IndexValue index_value2,
                         char names[][SIZE_NAME])
@@ -234,6 +241,7 @@ void free_device_particles(Particles *particles) {
     CUDA_CHECK(cudaFree(particles->positions));
     CUDA_CHECK(cudaFree(particles->values));
 }
+
 
 void free_device_mesh(Mesh *mesh) {
     // Free GPU memory

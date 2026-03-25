@@ -21,6 +21,7 @@ static MeshAttrs mattrs;
 static BinAttrs battrs;
 static SelectionAttrs sattrs;
 static WeightAttrs wattrs;
+static SplitAttrs spattrs;
 static IndexValue index_value[2] = {0};
 
 
@@ -38,7 +39,8 @@ static void free_owned_ptrs() {
 
 void set_attrs_py(MeshAttrs_py mattrs_py, BinAttrs_py battrs_py,
                  WeightAttrs_py wattrs_py = WeightAttrs_py(),
-                 const SelectionAttrs_py sattrs_py = SelectionAttrs_py()) {
+                 const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
+                 const SplitAttrs_py spattrs_py = SplitAttrs_py()) {
     // free previously allocated host copies (if any)
     free_owned_ptrs();
 
@@ -46,6 +48,7 @@ void set_attrs_py(MeshAttrs_py mattrs_py, BinAttrs_py battrs_py,
     battrs = battrs_py.data();
     wattrs = wattrs_py.data();
     sattrs = sattrs_py.data();
+    spattrs = spattrs_py.data();
 
     // --- Make owned host copies for battrs.array entries (if provided) ---
     // Assumes battrs.asize[i] holds element count and battrs_py.array[i] is provided.
@@ -84,8 +87,8 @@ void set_attrs_py(MeshAttrs_py mattrs_py, BinAttrs_py battrs_py,
 }
 
 
-void set_index_value_py(const size_t iparticle, const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0, const int size_negative_weight = 0) {
-    index_value[iparticle] = get_index_value(size_spin, size_individual_weight, size_bitwise_weight, size_negative_weight);
+void set_index_value_py(const size_t iparticle, const int size_split = 0, const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0, const int size_negative_weight = 0) {
+    index_value[iparticle] = get_index_value(size_split, size_spin, size_individual_weight, size_bitwise_weight, size_negative_weight);
 }
 
 
@@ -114,7 +117,6 @@ Particles get_ffi_particles(ffi::Buffer<ffi::F64> positions, ffi::Buffer<ffi::F6
     particles.index_value = index_value;
     return particles;
 }
-
 
 
 ffi::Error count2Impl(cudaStream_t stream,
@@ -199,16 +201,21 @@ PYBIND11_MODULE(ffi_cucount, m) {
     py::class_<MeshAttrs_py>(m, "MeshAttrs", py::module_local())
         .def(py::init<py::kwargs>());
 
+    py::class_<SplitAttrs_py>(m, "SplitAttrs", py::module_local())
+        .def(py::init<py::kwargs>());
+
     m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
 
     m.def("set_attrs", &set_attrs_py, "Set attributes",
         py::arg("mattrs"),
         py::arg("battrs"),
         py::arg("wattrs") = WeightAttrs_py(), // Default value
-        py::arg("sattrs") = SelectionAttrs_py()); // Default value
+        py::arg("sattrs") = SelectionAttrs_py(),
+        py::arg("spattrs") = SplitAttrs_py());
 
     m.def("set_index_value", &set_index_value_py, "Set value indices",
         py::arg("iparticle"),
+        py::arg("size_split") = 0,
         py::arg("size_spin") = 0,
         py::arg("size_individual_weight") = 0,
         py::arg("size_bitwise_weight") = 0,

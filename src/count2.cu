@@ -292,8 +292,21 @@ __device__ FLOAT get_bessel(int ell, FLOAT x) {
 
 __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2,
                                   FLOAT *value1, FLOAT *value2, IndexValue index_value1, IndexValue index_value2,
-                                  BinAttrs battrs, WeightAttrs wattrs) {
+                                  BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs) {
     int ibin = 0;
+    // Start with split
+    if (index_value1.size_split && index_value2.size_split) {
+        if (spattrs.mode == SPLIT_JACKKNIFE) {
+            INT split1 = *((*INT) &(value1[index_value.start_split]));
+            INT split1 = *((*INT) &(value2[index_value.start_split]));
+            if (split2 == split1) {
+                ibin += split1;
+            }
+            else {
+                ibin += spattrs.nsplits + split2;
+            }
+        }
+    }
     FLOAT diff[NDIM];
     difference(diff, position2, position1);
     const FLOAT s2 = dot(diff, diff);
@@ -540,7 +553,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
     }
 }
 
-__global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs) {
+__global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs) {
 
     size_t tid = threadIdx.x;
 
@@ -576,14 +589,14 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh me
                         continue;
                     }
                     add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                               value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs);
+                               value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs, spattrs);
                 }
             }
         }
     }
 }
 
-__global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs) {
+__global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs) {
 
     size_t tid = threadIdx.x;
 
@@ -622,7 +635,7 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh 
                             continue;
                         }
                         add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                                   value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs);
+                                   value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs, spattrs);
                     }
                 }
             }
@@ -651,7 +664,9 @@ __global__ void reduce_kernel(const FLOAT *block_counts,
 }
 
 
-void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, BinAttrs battrs, WeightAttrs wattrs, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
+void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
+    const SelectionAttrs sattrs, BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs,
+    DeviceMemoryBuffer *buffer, cudaStream_t stream) {
 
     // counts expected on the device already
     int nblocks, nthreads_per_block;
@@ -662,7 +677,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs, const 
     float elapsed_time;
 
     // Determine output array size based on spin parameters
-    size_t csize = get_count2_size(list_mesh[0].index_value, list_mesh[1].index_value, NULL) * battrs.size;
+    size_t csize = get_count2_size(list_mesh[0].index_value, list_mesh[1].index_value, NULL) * battrs.size * spattrs.size;
 
     // Initialize histograms
     CUDA_CHECK(cudaMemset(counts, 0, csize * sizeof(FLOAT)));
