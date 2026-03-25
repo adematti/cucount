@@ -13,7 +13,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
 from cucountlib import ffi_cucount
-from cucount.numpy import BinAttrs, SelectionAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, count2_analytic, setup_logging, _setup_cucount_logging
+from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, count2_analytic, setup_logging, _setup_cucount_logging
 from cucount import numpy
 
 
@@ -120,17 +120,16 @@ class IndexValue(numpy.IndexValue):
 class Particles(numpy.Particles):
 
     @default_sharding_mesh
-    def __init__(self, positions, weights=None, spin_values=None, positions_type='pos', index_value=None, exchange=False, sharding_mesh=None):
+    def __init__(self, positions, weights=None, spin_values=None, splits=None, positions_type='pos', index_value=None, exchange=False, sharding_mesh=None):
         self.positions = _format_positions(positions, positions_type=positions_type, np=jnp)
         with_sharding = bool(sharding_mesh.axis_names)
-        self.values, index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=jnp)
+        self.values, index_value = _format_values(weights=weights, spin_values=spin_values, splits=splits, index_value=index_value, np=jnp)
         self.index_value = IndexValue(**index_value)
         if not self.index_value('individual_weight'):
             # Let's add weights in any case (required arguments to count2)
             self.values = [jnp.ones_like(self.positions, shape=self.positions.shape[0])] + self.values
             index_value['individual_weight'] = 1
             self.index_value = IndexValue(**index_value)
-
         if with_sharding and exchange:
             self.positions = make_array_from_process_local_data(self.positions, pad='mean', sharding_mesh=sharding_mesh)
             self.values = [make_array_from_process_local_data(value, pad=0, sharding_mesh=sharding_mesh) for value in self.values]
@@ -139,14 +138,15 @@ class Particles(numpy.Particles):
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 
-def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None):
+def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs, wattrs: WeightAttrs=None,
+                     sattrs: SelectionAttrs=None, spattrs: SplitAttrs=None):
     mattrs._to_c()
-    ffi_cucount.set_attrs(mattrs._to_c(), battrs, wattrs=wattrs._to_c(), sattrs=sattrs)
+    ffi_cucount.set_attrs(mattrs._to_c(), battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs)
     for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value._to_c())
     dtype = jnp.float64
     bsize, bshape = battrs.size, tuple(battrs.shape)
     names = ffi_cucount.get_count2_names()
-    res_type = jax.ShapeDtypeStruct((len(names) * bsize,), dtype)
+    res_type = jax.ShapeDtypeStruct((len(names) * spattrs.size * bsize,), dtype)
     # Max values
     nblocks = 256
     # Two meshes
@@ -172,17 +172,20 @@ def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs,
     # Buffer for count2: edges
     size += sum(s + 1 for s in bshape)
     # Buffer for count2: nblocks * counts
-    size += nblocks * bsize * len(names)  # up to factor 3 (shear-shear)
+    size += nblocks * len(names) * spattrs.size * bsize  # up to factor 3 (shear-shear)
     buffer_type = jax.ShapeDtypeStruct((size,), dtype)
     call = jax.ffi.ffi_call('count2', (res_type, buffer_type))
 
     args = sum(([particle.positions, _concatenate_values(particle.values, np=jnp)] for particle in particles), start=[])
     counts = call(*args)[0]
-    return {name: counts[icount * bsize:(icount + 1) * bsize].reshape(bshape) for icount, name in enumerate(names)}
+    shape = tuple(bshape)
+    if spattrs.nsplits: shape = (spattrs.size,) + shape
+    return {name: counts[icount * spattrs.size * bsize:(icount + 1) * spattrs.size * bsize].reshape(shape) for icount, name in enumerate(names)}
 
 
 @default_sharding_mesh
-def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None, mattrs: MeshAttrs=None, sharding_mesh=None):
+def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None,
+           spattrs: SplitAttrs=None, mattrs: MeshAttrs=None, sharding_mesh=None):
     """
     Perform two-point pair counts using the native cucount library.
 
@@ -224,9 +227,11 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     _setup_cucount_logging()
     if wattrs is None: wattrs = WeightAttrs()
     if sattrs is None: sattrs = SelectionAttrs()
+    if spattrs is None: spattrs = SplitAttrs()
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
     wattrs.check(*particles)
-    count2 = _count2 = partial(_count2_no_shard, mattrs=mattrs, battrs=battrs, wattrs=wattrs, sattrs=sattrs)
+    spattrs.check(*particles)
+    count2 = _count2 = partial(_count2_no_shard, mattrs=mattrs, battrs=battrs, wattrs=wattrs, sattrs=sattrs, spattrs=spattrs)
     if sharding_mesh.axis_names:
         #assert all(particle.exchanged for particle in particles), 'All input particles should be exchanged'
         count2 = shard_map(lambda *particles: jax.lax.psum(_count2(*particles), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))

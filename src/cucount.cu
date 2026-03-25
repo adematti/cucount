@@ -205,10 +205,14 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
 
     // Return named arrays reshaped to bin shape
     py::dict result;
+    std::vector<ssize_t> total_shape;
+    total_shape.push_back(static_cast<ssize_t>(spattrs.size));
+    auto bshape = battrs_py.shape();
+    total_shape.insert(total_shape.end(), bshape.begin(), bshape.end());
     // Return appropriate result based on spin parameters
     for (size_t icount=0; icount<ncounts; icount++) {
-        py::array_t<FLOAT> array_py({(ssize_t)battrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr + icount * battrs.size, counts_py);
-        result[names[icount]] = array_py.attr("reshape")(battrs_py.shape()).cast<py::array_t<FLOAT>>();
+        py::array_t<FLOAT> array_py({(ssize_t)battrs.size * spattrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr + icount * battrs.size * spattrs.size, counts_py);
+        result[names[icount]] = array_py.attr("reshape")(total_shape).cast<py::array_t<FLOAT>>();
     }
     return result;
 }
@@ -258,7 +262,9 @@ PYBIND11_MODULE(cucount, m) {
         .def(py::init<py::kwargs>());
 
     py::class_<SplitAttrs_py>(m, "SplitAttrs", py::module_local())
-        .def(py::init<py::kwargs>());
+        .def(py::init<py::kwargs>())
+        .def_readonly("nsplits", &SplitAttrs_py::nsplits);
+        .def_readonly("size", &SplitAttrs_py::size);
 
     m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
 

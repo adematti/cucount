@@ -303,7 +303,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
                 ibin += split1;
             }
             else {
-                ibin += spattrs.nsplits + split2;
+                ibin += spattrs.nsplits + split1;
             }
         }
     }

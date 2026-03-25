@@ -536,12 +536,12 @@ struct SplitAttrs_py {
     size_t size;
 
     // Default constructor
-    SplitAttrs_py() : mode(SPLIT_NONE), nsplits(0), size(0) {}
+    SplitAttrs_py() : mode(SPLIT_NONE), nsplits(0), size(1) {}
 
     // Constructor from Python dictionary
     // Expected format: {"mode": "jackknife", "nsplits": 100}
     SplitAttrs_py(const py::kwargs& kwargs)
-        : mode(SPLIT_NONE), nsplits(0), size(0) {
+        : mode(SPLIT_NONE), nsplits(0), size(1) {
 
         if (kwargs.size() == 0) {
             throw std::invalid_argument("SplitAttrs requires at least 'mode' and 'nsplits' arguments");

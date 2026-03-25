@@ -773,6 +773,55 @@ def test_lsstypes():
     correlation.project(ells=[0, 2, 4]).plot(fn=dirname / 'test_lsstypes_natural.png')
 
 
+def test_jackknife():
+    # Prepare catalogs
+    size = int(1e5)
+    boxsize = np.array((3000.,) * 3)
+    rng = np.random.RandomState(seed=42)
+
+    nsplits = 10
+
+    def generate_catalog(rng, size, nsplits=10):
+        offset = boxsize
+        positions = rng.uniform(0., 1., (size, 3)) * boxsize + offset
+        weights = rng.uniform(0., 1., size)
+        splits = rng.randint(nsplits, size)
+        return positions, weights, splits
+
+    positions1, weights1, splits1 = generate_catalog(rng, size, nsplits=nsplits)
+    positions2, weights2, splits2 = generate_catalog(rng, size, nsplits=nsplits)
+    edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
+    los = 'midpoint'
+
+    def count_numpy(spattrs=True, mask1=Ellipsis, mask2=Ellipsis):
+        from cucount.numpy import count2, Particles, BinAttrs, SplitAttrs
+        particles1 = Particles(positions1[mask1], weights1[mask1], splits=splits1 if spattrs else None)
+        particles2 = Particles(positions2[mask2], weights2[mask2], splits=splits2 if spattrs else None)
+        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+        if spattrs:
+            spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
+        return count2(particles1, particles2, battrs=battrs, spattrs=spattrs)['weight']
+
+    def count_jax(spattrs=True, mask1=Ellipsis, mask2=Ellipsis):
+        from cucount.jax import count2, Particles, BinAttrs, SplitAttrs
+        particles1 = Particles(positions1[mask1], weights1[mask1], splits=splits1 if spattrs else None)
+        particles2 = Particles(positions2[mask2], weights2[mask2], splits=splits2 if spattrs else None)
+        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+        if spattrs:
+            spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
+        return count2(particles1, particles2, battrs=battrs, spattrs=spattrs)['weight']
+
+    counts_numpy = count_numpy()
+    counts_jax = count_jax()
+    assert np.allclose(counts_jax, counts_numpy)
+
+    for isplit in range(nsplits):
+        tmp = count_numpy(spattrs=False, mask1=splits1 == isplit, mask2=splits2 == isplit)
+        assert np.allclose(tmp, counts_numpy[isplit])
+        tmp = count_numpy(spattrs=False, mask1=splits1 == isplit, mask2=splits2 != isplit)
+        assert np.allclose(tmp, counts_numpy[isplit])
+
+
 if __name__ == '__main__':
 
     setup_logging()
