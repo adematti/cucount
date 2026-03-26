@@ -64,15 +64,21 @@ def count2(*particles: Particles, battrs: BinAttrs=None, wattrs: WeightAttrs=Non
     raw_counts = count2(*(particles * 2 if autocorr else particles), battrs=battrs, wattrs=wattrs, **kwargs)
     auto_weights = wattrs(*(particles[:1] * 2))
     cross_weights = [wattrs(particle) for particle in particles]
-    zero_index = tuple(np.flatnonzero((0 >= edges[:, 0]) & (0 < edges[:, 1])) for edges in battrs.edges().values())
+    cross_weights += [cross_weights[-1]] * (2 - len(cross_weights))
+
+    # Preparation to remove self pairs (in a jax and numpy-friendly way)
+    zero_masks = tuple((0 >= edges[:, 0]) & (0 < edges[:, 1]) for edges in battrs.edges().values())
+    zero = np.zeros(tuple(mask.size for mask in zero_masks))
+    zero[np.ix_(*zero_masks)] = 1.
 
     result = {}
     for key, counts in raw_counts.items():
-        if particles[0].index_value.get('split'):  # With jackknife
+        if particles[0].index_value('split'):  # With jackknife
             spattrs = kwargs['spattrs']
             ii_counts, ij_counts, ji_counts = {}, {}, {}
             for isplit in range(spattrs.nsplits):
                 masks_i = [particle.get('split')[0] == isplit for particle in particles]
+                masks_i += [masks_i[-1]] * (2 - len(masks_i))
                 # ii counts
                 _counts = counts[isplit]
                 _cross_weights = [cross_weights[i] * masks_i[i] for i in range(len(cross_weights))]
@@ -82,7 +88,7 @@ def count2(*particles: Particles, battrs: BinAttrs=None, wattrs: WeightAttrs=Non
                     auto_sum = (auto_weights * masks_i[0]).sum()
                     norm = norm - auto_sum
                     # Correct auto-pairs
-                    _counts = _counts.at[zero_index].add(-auto_sum)
+                    _counts = _counts - auto_sum * zero
                 ii_counts[isplit] = count2_to_lsstypes(counts=_counts, norm=norm, attrs=dict(wsum=wsum))
                 # ij counts
                 _counts = counts[spattrs.nsplits + isplit]
@@ -95,18 +101,17 @@ def count2(*particles: Particles, battrs: BinAttrs=None, wattrs: WeightAttrs=Non
                 _cross_weights = (cross_weights[0] * (~masks_i[0]), cross_weights[1] * masks_i[1])
                 wsum = [w.sum() for w in _cross_weights]
                 norm = prod(wsum)
-                ij_counts[isplit] = count2_to_lsstypes(counts=_counts, norm=norm, attrs=dict(wsum=wsum))
+                ji_counts[isplit] = count2_to_lsstypes(counts=_counts, norm=norm, attrs=dict(wsum=wsum))
             result[key] = types.Count2Jackknife(ii_counts, ij_counts, ji_counts)
 
         else:
-
             wsum = [w.sum() for w in cross_weights]
             norm = prod(wsum)
             if autocorr:
                 auto_sum = auto_weights.sum()
                 norm = norm - auto_sum
                 # Correct auto-pairs
-                counts = counts.at[zero_index].add(-auto_sum)
+                counts = counts - auto_sum * zero
             result[key] = count2_to_lsstypes(counts=counts, norm=norm, attrs=dict(wsum=wsum))
 
     return result

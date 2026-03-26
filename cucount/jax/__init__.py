@@ -13,7 +13,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
 from cucountlib import ffi_cucount
-from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weights, _format_positions, _format_values, _concatenate_values, count2_analytic, setup_logging, _setup_cucount_logging
+from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weights, _format_positions, _format_values, _stack_values, count2_analytic, setup_logging, _setup_cucount_logging
 from cucount import numpy
 
 
@@ -134,6 +134,15 @@ class Particles(numpy.Particles):
             self.positions = make_array_from_process_local_data(self.positions, pad='mean', sharding_mesh=sharding_mesh)
             self.values = [make_array_from_process_local_data(value, pad=0, sharding_mesh=sharding_mesh) for value in self.values]
 
+    @classmethod
+    def concatenate(cls, others):
+        """Concatenate particles."""
+        new = cls.__new__(cls)
+        new.index_value = others[0].index_value.clone()
+        new.values = [jnp.concatenate(values, axis=0) for values in zip(*[other.values for other in others])]
+        new.positions = jnp.concatenate([other.positions for other in others], axis=0)
+        return new
+
 
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
@@ -176,7 +185,7 @@ def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs,
     buffer_type = jax.ShapeDtypeStruct((size,), dtype)
     call = jax.ffi.ffi_call('count2', (res_type, buffer_type))
 
-    args = sum(([particle.positions, _concatenate_values(particle.values, np=jnp)] for particle in particles), start=[])
+    args = sum(([particle.positions, _stack_values(particle.values, np=jnp)] for particle in particles), start=[])
     counts = call(*args)[0]
     shape = tuple(bshape)
     if spattrs.nsplits: shape = (spattrs.size,) + shape

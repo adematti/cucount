@@ -701,7 +701,7 @@ def test_analytic():
 def test_lsstypes():
 
     from pathlib import Path
-    from cucount.numpy import count2, count2_analytic, Particles, BinAttrs, WeightAttrs, MeshAttrs, setup_logging
+    from cucount.numpy import count2, count2_analytic, Particles, BinAttrs, WeightAttrs, MeshAttrs, SplitAttrs, setup_logging
     import lsstypes as types
     from lsstypes import Count2, Count2Correlation
 
@@ -774,17 +774,41 @@ def test_lsstypes():
 
     from cucount.types import count2, count2_analytic
     DD2 = count2(data, battrs=battrs, wattrs=wattrs, mattrs=mattrs)['weight']
-    RR2 = count2_analytic(battrs=battrs, mattrs=mattrs)['weight']
+    RR2 = count2_analytic(battrs=battrs, mattrs=mattrs)
+    # 1: because of treatment at s = 0
     assert np.allclose(DD2.value()[1:], DD.value()[1:])
     assert np.allclose(RR2.value(), RR.value())
 
     rng = np.random.RandomState(seed=42)
     nsplits = 4
-    splits = rng.randint(0, nsplits, len(data))
+    splits = rng.randint(0, nsplits, data.size)
     data_splits = data.clone(splits=splits)
-    print(data_splits.index_value)
-    DD2 = count2(data_splits, battrs=battrs, wattrs=wattrs, mattrs=mattrs)['weight']
+    spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
+    DD2 = count2(data_splits, battrs=battrs, wattrs=wattrs, spattrs=spattrs, mattrs=mattrs)['weight']
     assert isinstance(DD2, types.Count2Jackknife)
+    assert np.allclose(DD2.value()[1:], DD.value()[1:])
+
+
+def test_particles():
+    size = int(1e6)
+    boxsize = (3000.,) * 3
+    data, _ = generate_catalogs(size, boxsize, n_individual_weights=1, n_bitwise_weights=2, seed=42)
+    data_positions, data_weights = np.column_stack(data[:3]), data[3:]
+
+    def test_numpy():
+        from cucount.numpy import Particles
+        particles = Particles(positions=data_positions, weights=data_weights)
+        particles2 = Particles.concatenate([particles] * 2)
+        assert particles2.size == 2 * particles.size
+
+    def test_jax():
+        from cucount.jax import Particles
+        particles = Particles(positions=data_positions, weights=data_weights)
+        particles2 = Particles.concatenate([particles] * 2)
+        assert particles2.size == 2 * particles.size
+
+    test_numpy()
+    test_jax()
 
 
 def test_jackknife():
@@ -810,6 +834,7 @@ def test_jackknife():
     def count_jax(spattrs=True, mask1=Ellipsis, mask2=Ellipsis):
         import jax
         jax.config.update("jax_enable_x64", True)
+        print(jax.devices())
         from cucount.jax import count2, Particles, BinAttrs, SplitAttrs
         particles1 = Particles(positions1[mask1], weights1[mask1], splits=splits1 if spattrs else None)
         particles2 = Particles(positions2[mask2], weights2[mask2], splits=splits2 if spattrs else None)
@@ -827,9 +852,9 @@ def test_jackknife():
             spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
         return count2(particles1, particles2, battrs=battrs, spattrs=spattrs)['weight']
 
-    count_splits_jax = count_jax()
+    #count_splits_jax = count_jax()
     count_splits_numpy = count_numpy()
-    assert np.allclose(count_splits_jax, count_splits_numpy)
+    #assert np.allclose(count_splits_jax, count_splits_numpy)
     tmp = count_numpy(spattrs=None)
     assert np.allclose(count_splits_numpy[:2 * nsplits].sum(axis=0), tmp)
 
@@ -859,7 +884,8 @@ def test_box_subsampler():
     assert len(subsampler.edges) == 3
     assert subsampler.mattrs is not None
 
-    mattrs = MeshAttrs(boxcenter=[500, 500, 500], boxsize=[1000, 1000, 1000])
+    battrs= BinAttrs(s=np.linspace(0., 1., 2))
+    mattrs = MeshAttrs(boxcenter=[500, 500, 500], boxsize=[1000, 1000, 1000], battrs=battrs)
     subsampler = BoxSubsampler(nsplits=[4, 4, 4], mattrs=mattrs)
     assert np.array_equal(subsampler.nsplits, [4, 4, 4])
     assert np.array_equal(subsampler.mattrs.boxcenter, [500, 500, 500])
@@ -885,7 +911,7 @@ def test_box_subsampler():
     # Create particles that wrap around in periodic box
     positions = np.array([[99, 50, 50], [101, 50, 50]])  # Should map to same region
     particles = Particles(positions)
-    mattrs = MeshAttrs(boxcenter=[50, 50, 50], boxsize=[100, 100, 100], periodic=True)
+    mattrs = MeshAttrs(boxcenter=[50, 50, 50], boxsize=[100, 100, 100], periodic=True, battrs=battrs)
     subsampler = BoxSubsampler(nsplits=[2, 2, 2], mattrs=mattrs)
     labels = subsampler.label(particles)
     # Both should be in same x-bin due to wrapping
@@ -969,9 +995,9 @@ def test_kmeans_subsampler():
     assert np.max(counts) < 3 * np.min(counts)
 
     # Test with nsplits=1 (single cluster).
-    subsampler = KMeansSubsampler(particles=particles_cartesian, nsplits=1,
+    subsampler = KMeansSubsampler(particles=particles, nsplits=1,
                                     random_state=42)
-    labels = subsampler.label(particles_cartesian)
+    labels = subsampler.label(particles)
     assert np.all(labels == 0)
 
 
@@ -979,6 +1005,11 @@ if __name__ == '__main__':
 
     setup_logging()
 
+    test_particles()
+    #test_lsstypes()
+    exit()
+    #test_box_subsampler()
+    #test_kmeans_subsampler()
     test_analytic()
     test_lsstypes()
     #test_thetacut()

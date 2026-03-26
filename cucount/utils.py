@@ -1,6 +1,6 @@
 import numpy as np
 
-from cucount.numpy import Particles, MeshAttrs, WeightAttrs
+from cucount.numpy import Particles, MeshAttrs, WeightAttrs, BinAttrs
 
 
 class BoxSubsampler(object):
@@ -57,7 +57,7 @@ class BoxSubsampler(object):
 
         if mattrs is None:
             assert particles is not None, 'Provide particles when mattrs is not provided'
-            mattrs = MeshAttrs(*particles)
+            mattrs = MeshAttrs(particles, battrs=BinAttrs(s=np.linspace(0., 1., 2)))
         self.mattrs = mattrs
 
         ndim = 3
@@ -199,8 +199,7 @@ class KMeansSubsampler(object):
         if wattrs is None:
             wattrs = WeightAttrs()
 
-        weights = wattrs(particles.weights)
-
+        weights = wattrs(particles) * np.ones(particles.size)
         kwargs.setdefault('n_init', 10)
         from sklearn import cluster
 

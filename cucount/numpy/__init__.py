@@ -318,7 +318,7 @@ class MeshAttrs(object):
             Whether to use periodic boundary conditions.
         """
         positions = [p.positions if isinstance(p, Particles) else p for p in positions]
-        nparticles = sum(p.shape[0] for p in positions) // len(positions)
+        nparticles = sum(p.shape[0] for p in positions) // len(positions) if len(positions) else 1
 
         def _get_extent(*positions):
             """Return minimum physical extent (min, max) corresponding to input positions."""
@@ -532,7 +532,7 @@ def _format_values(weights=None, spin_values=None, splits=None, index_value=None
     return values, kwargs
 
 
-def _concatenate_values(values, np=np):
+def _stack_values(values, np=np):
     if len(values) == 0:
         return None
     cvalues = []
@@ -600,13 +600,23 @@ class Particles(object):
     def size(self):
         return self.positions.shape[0]
 
+    @classmethod
+    def concatenate(cls, others):
+        """Concatenate particles."""
+        new = cls.__new__(cls)
+        new.index_value = others[0].index_value.clone()
+        new.values = [np.concatenate(values, axis=0) for values in zip(*[other.values for other in others])]
+        new.positions = np.concatenate([other.positions for other in others], axis=0)
+        return new
+
     def clone(self, **kwargs):
         """Copy and replace positions, weights, spin_values, etc."""
         kwargs.setdefault('positions', self.positions)
-        if 'weights' not in kwargs and 'spin_values' not in kwargs:
+        if not any(name in kwargs for name in ['weights', 'spin_values', 'splits']):
             kwargs.setdefault('index_value', self.index_value)  # preserve index_value
         kwargs.setdefault('weights', self.get('weights'))
         kwargs.setdefault('spin_values', self.get('spin') or None)
+        kwargs.setdefault('splits', self.get('split') or None)
         return self.__class__(**kwargs)
 
     def get(self, name):
@@ -674,7 +684,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     wattrs.check(*particles)
     spattrs.check(*particles)
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
-    particles = [cucountlib.cucount.Particles(p.positions, values=_concatenate_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
+    particles = [cucountlib.cucount.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
     return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=nthreads)
 
 
