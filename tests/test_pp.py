@@ -570,7 +570,7 @@ def test_jax(distributed=False):
         particles2 = Particles(positions2, weights2)
         battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
         mattrs = MeshAttrs(particles1, particles2, battrs=battrs)
-        count = lambda *particles: count2(particles, battrs=battrs, mattrs=mattrs)
+        count = lambda *particles: count2(*particles, battrs=battrs, mattrs=mattrs)
         if distributed:
             sharding_mesh = Mesh(jax.devices(), ('x',))
             count = shard_map(lambda *particles: jax.lax.psum(count2(*particles, battrs=battrs, mattrs=mattrs), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))
@@ -776,7 +776,6 @@ def test_lsstypes():
 if __name__ == '__main__':
 
     setup_logging()
-
 
     test_analytic()
     test_lsstypes()
