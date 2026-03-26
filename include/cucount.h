@@ -564,7 +564,7 @@ struct SplitAttrs_py {
         }
         // Calculate size
         if (mode == SPLIT_JACKKNIFE) {
-            size = 2 * nsplits;
+            size = 3 * nsplits;
         }
     }
 
