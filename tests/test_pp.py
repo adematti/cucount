@@ -772,6 +772,20 @@ def test_lsstypes():
     correlation = types.read(fn)
     correlation.project(ells=[0, 2, 4]).plot(fn=dirname / 'test_lsstypes_natural.png')
 
+    from cucount.types import count2, count2_analytic
+    DD2 = count2(data, battrs=battrs, wattrs=wattrs, mattrs=mattrs)['weight']
+    RR2 = count2_analytic(battrs=battrs, mattrs=mattrs)['weight']
+    assert np.allclose(DD2.value()[1:], DD.value()[1:])
+    assert np.allclose(RR2.value(), RR.value())
+
+    rng = np.random.RandomState(seed=42)
+    nsplits = 4
+    splits = rng.randint(0, nsplits, len(data))
+    data_splits = data.clone(splits=splits)
+    print(data_splits.index_value)
+    DD2 = count2(data_splits, battrs=battrs, wattrs=wattrs, mattrs=mattrs)['weight']
+    assert isinstance(DD2, types.Count2Jackknife)
+
 
 def test_jackknife():
     # Prepare catalogs
@@ -817,13 +831,15 @@ def test_jackknife():
     count_splits_numpy = count_numpy()
     assert np.allclose(count_splits_jax, count_splits_numpy)
     tmp = count_numpy(spattrs=None)
-    assert np.allclose(count_splits_numpy.sum(axis=0), tmp)
+    assert np.allclose(count_splits_numpy[:2 * nsplits].sum(axis=0), tmp)
 
     for isplit in range(nsplits):
         tmp = count_numpy(spattrs=None, mask1=splits1 == isplit, mask2=splits2 == isplit)
         assert np.allclose(count_splits_numpy[isplit], tmp)
         tmp = count_numpy(spattrs=None, mask1=splits1 == isplit, mask2=splits2 != isplit)
         assert np.allclose(count_splits_numpy[nsplits + isplit], tmp)
+        tmp = count_numpy(spattrs=None, mask1=splits1 != isplit, mask2=splits2 == isplit)
+        assert np.allclose(count_splits_numpy[2 * nsplits + isplit], tmp)
 
 
 def test_box_subsampler():

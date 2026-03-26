@@ -610,6 +610,7 @@ class Particles(object):
         return self.__class__(**kwargs)
 
     def get(self, name):
+        """Get positions, weights, etc."""
         if name == 'positions':
             return self.positions
         if name == 'weights':
