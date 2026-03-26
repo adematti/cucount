@@ -570,7 +570,7 @@ def test_jax(distributed=False):
         particles2 = Particles(positions2, weights2)
         battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
         mattrs = MeshAttrs(particles1, particles2, battrs=battrs)
-        count = lambda *particles: count2(particles, battrs=battrs, mattrs=mattrs)
+        count = lambda *particles: count2(*particles, battrs=battrs, mattrs=mattrs)
         if distributed:
             sharding_mesh = Mesh(jax.devices(), ('x',))
             count = shard_map(lambda *particles: jax.lax.psum(count2(*particles, battrs=battrs, mattrs=mattrs), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))
@@ -802,6 +802,8 @@ def test_particles():
         assert particles2.size == 2 * particles.size
 
     def test_jax():
+        import jax
+        jax.config.update("jax_enable_x64", True)
         from cucount.jax import Particles
         particles = Particles(positions=data_positions, weights=data_weights)
         particles2 = Particles.concatenate([particles] * 2)
@@ -1005,19 +1007,17 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    test_particles()
-    #test_lsstypes()
-    exit()
-    #test_box_subsampler()
-    #test_kmeans_subsampler()
     test_analytic()
-    test_lsstypes()
+    test_particles()
     #test_thetacut()
     for mode in ['smu', 'rppi', 'theta']:
         test_corrfunc_cutsky(mode)
     for mode in ['smu', 'rppi']:
         test_corrfunc_cubic(mode)
     test_jackknife()
+    test_lsstypes()
+    test_box_subsampler()
+    test_kmeans_subsampler()
     #test_spectrum()
     #test_jax(distributed=True)
     #test_readme()
