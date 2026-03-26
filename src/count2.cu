@@ -7,6 +7,7 @@
 
 __device__ __constant__ MeshAttrs device_mattrs;
 __device__ __constant__ SelectionAttrs device_sattrs;
+__device__ __constant__ SplitAttrs device_spattrs;
 //__device__ __constant__ BinAttrs device_battrs;
 
 
@@ -292,18 +293,18 @@ __device__ FLOAT get_bessel(int ell, FLOAT x) {
 
 __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2,
                                   FLOAT *value1, FLOAT *value2, IndexValue index_value1, IndexValue index_value2,
-                                  BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs) {
-    int ibin = 0;
+                                  BinAttrs battrs, WeightAttrs wattrs) {
     // Start with split
+    size_t isplit = 0;
     if (index_value1.size_split && index_value2.size_split) {
-        if (spattrs.mode == SPLIT_JACKKNIFE) {
-            INT split1 = *((*INT) &(value1[index_value.start_split]));
-            INT split1 = *((*INT) &(value2[index_value.start_split]));
+        if (device_spattrs.mode == SPLIT_JACKKNIFE) {
+            INT split1 = *((INT *) &(value1[index_value1.start_split]));
+            INT split2 = *((INT *) &(value2[index_value2.start_split]));
             if (split2 == split1) {
-                ibin += split1;
+                isplit += split1;
             }
             else {
-                ibin += spattrs.nsplits + split1;
+                isplit += device_spattrs.nsplits + split1;
             }
         }
     }
@@ -382,7 +383,7 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             mu2 = 0.;
         };
     }
-
+    size_t ibin = 0;
     for (i = 0; i < battrs.ndim; i++) {
         var = battrs.var[i];
         FLOAT value = 0;
@@ -497,9 +498,11 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         wsize = 1;
         weight[0] = pair_weight;
     }
+    size_t weight_stride = device_spattrs.size * battrs.size;
     if (i == battrs.ndim) {
+        size_t offset = isplit * battrs.size + ibin;
         for (size_t iweight = 0; iweight < wsize; iweight++) {
-            atomicAdd(&(counts[ibin + iweight * battrs.size]), weight[iweight]);
+            atomicAdd(&(counts[offset + iweight * weight_stride]), weight[iweight]);
         }
     }
 
@@ -510,10 +513,10 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
             size_t ell;
             if (battrs.asize[i] > 0) ell = (size_t) battrs.array[i][ill];
             else ell = ill * ellstep + ellmin;
-            size_t ibin_loc = ibin * battrs.shape[i] + ill;
+            size_t offset = isplit * battrs.size + ibin * battrs.shape[i] + ill;
             FLOAT leg = (2 * ell + 1) * legendre_cache[ell];
             for (size_t iweight = 0; iweight < wsize; iweight++) {
-                atomicAdd(&(counts[ibin_loc + iweight * battrs.size]), weight[iweight] * leg);
+                atomicAdd(&(counts[offset + iweight * weight_stride]), weight[iweight] * leg);
             }
         }
     }
@@ -543,17 +546,18 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
                 } else {
                     k = ik * battrs.step[ik_dim] + battrs.min[ik_dim];
                 }
-                size_t ibin_loc = (ibin * nk + ik) * npole + ill;
+                size_t offset = isplit * battrs.size + (ibin * nk + ik) * npole + ill;
                 FLOAT leg_bessel = leg * get_bessel(ell, k * s);
                 for (size_t iweight = 0; iweight < wsize; iweight++) {
-                    atomicAdd(&(counts[ibin_loc + iweight * battrs.size]), weight[iweight] * leg_bessel);
+                    atomicAdd(&(counts[offset + iweight * weight_stride]), weight[iweight] * leg_bessel);
                 }
             }
         }
     }
 }
 
-__global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs) {
+
+__global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs) {
 
     size_t tid = threadIdx.x;
 
@@ -589,14 +593,14 @@ __global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh me
                         continue;
                     }
                     add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                               value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs, spattrs);
+                               value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs);
                 }
             }
         }
     }
 }
 
-__global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs) {
+__global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs) {
 
     size_t tid = threadIdx.x;
 
@@ -635,7 +639,7 @@ __global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh 
                             continue;
                         }
                         add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                                   value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs, spattrs);
+                                   value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs);
                     }
                 }
             }
@@ -685,6 +689,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
     // Copy constants to device
     CUDA_CHECK(cudaMemcpyToSymbol(device_mattrs, &mattrs, sizeof(MeshAttrs)));
     CUDA_CHECK(cudaMemcpyToSymbol(device_sattrs, &sattrs, sizeof(SelectionAttrs)));
+    CUDA_CHECK(cudaMemcpyToSymbol(device_spattrs, &spattrs, sizeof(SplitAttrs)));
     //CUDA_CHECK(cudaMemcpyToSymbol(device_battrs, &battrs, sizeof(BinAttrs)));
     BinAttrs device_battrs = battrs;
     for (size_t i = 0; i < battrs.ndim; i++) {

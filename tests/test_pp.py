@@ -779,19 +779,30 @@ def test_jackknife():
     boxsize = np.array((3000.,) * 3)
     rng = np.random.RandomState(seed=42)
 
-    nsplits = 10
+    nsplits = 2
 
     def generate_catalog(rng, size, nsplits=10):
         offset = boxsize
         positions = rng.uniform(0., 1., (size, 3)) * boxsize + offset
         weights = rng.uniform(0., 1., size)
-        splits = rng.randint(nsplits, size)
+        splits = rng.randint(0, nsplits, size)
         return positions, weights, splits
 
     positions1, weights1, splits1 = generate_catalog(rng, size, nsplits=nsplits)
     positions2, weights2, splits2 = generate_catalog(rng, size, nsplits=nsplits)
     edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
     los = 'midpoint'
+
+    def count_jax(spattrs=True, mask1=Ellipsis, mask2=Ellipsis):
+        import jax
+        jax.config.update("jax_enable_x64", True)
+        from cucount.jax import count2, Particles, BinAttrs, SplitAttrs
+        particles1 = Particles(positions1[mask1], weights1[mask1], splits=splits1 if spattrs else None)
+        particles2 = Particles(positions2[mask2], weights2[mask2], splits=splits2 if spattrs else None)
+        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+        if spattrs:
+            spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
+        return count2(particles1, particles2, battrs=battrs, spattrs=spattrs)['weight']
 
     def count_numpy(spattrs=True, mask1=Ellipsis, mask2=Ellipsis):
         from cucount.numpy import count2, Particles, BinAttrs, SplitAttrs
@@ -802,30 +813,22 @@ def test_jackknife():
             spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
         return count2(particles1, particles2, battrs=battrs, spattrs=spattrs)['weight']
 
-    def count_jax(spattrs=True, mask1=Ellipsis, mask2=Ellipsis):
-        from cucount.jax import count2, Particles, BinAttrs, SplitAttrs
-        particles1 = Particles(positions1[mask1], weights1[mask1], splits=splits1 if spattrs else None)
-        particles2 = Particles(positions2[mask2], weights2[mask2], splits=splits2 if spattrs else None)
-        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-        if spattrs:
-            spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
-        return count2(particles1, particles2, battrs=battrs, spattrs=spattrs)['weight']
-
-    counts_numpy = count_numpy()
-    counts_jax = count_jax()
-    assert np.allclose(counts_jax, counts_numpy)
+    count_splits_jax = count_jax()
+    count_splits_numpy = count_numpy()
+    assert np.allclose(count_splits_jax, count_splits_numpy)
+    tmp = count_numpy(spattrs=None)
+    assert np.allclose(count_splits_numpy.sum(axis=0), tmp)
 
     for isplit in range(nsplits):
-        tmp = count_numpy(spattrs=False, mask1=splits1 == isplit, mask2=splits2 == isplit)
-        assert np.allclose(tmp, counts_numpy[isplit])
-        tmp = count_numpy(spattrs=False, mask1=splits1 == isplit, mask2=splits2 != isplit)
-        assert np.allclose(tmp, counts_numpy[isplit])
+        tmp = count_numpy(spattrs=None, mask1=splits1 == isplit, mask2=splits2 == isplit)
+        assert np.allclose(count_splits_numpy[isplit], tmp)
+        tmp = count_numpy(spattrs=None, mask1=splits1 == isplit, mask2=splits2 != isplit)
+        assert np.allclose(count_splits_numpy[nsplits + isplit], tmp)
 
 
 if __name__ == '__main__':
 
     setup_logging()
-
 
     test_analytic()
     test_lsstypes()
@@ -834,6 +837,7 @@ if __name__ == '__main__':
         test_corrfunc_cutsky(mode)
     for mode in ['smu', 'rppi']:
         test_corrfunc_cubic(mode)
+    test_jackknife()
     #test_spectrum()
     #test_jax(distributed=True)
     #test_readme()

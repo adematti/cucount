@@ -615,7 +615,7 @@ class Particles(object):
         if name == 'weights':
             weights = []
             for name, sl in self.index_value(return_type=slice).items():
-                if name != 'spin': weights += self.values[sl]
+                if name not in ['split', 'spin']: weights += self.values[sl]
             return weights
         return self.values[self.index_value(name, return_type=slice)]
 

@@ -137,7 +137,7 @@ ffi::Error count2Impl(cudaStream_t stream,
     membuffer.nblocks = 256;
     set_mesh(list_particles, list_mesh, mattrs, &membuffer, stream);
     // Perform the computation
-    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, wattrs, &membuffer, stream);
+    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, wattrs, spattrs, &membuffer, stream);
     free_owned_ptrs();
 
     cudaError_t last_error = cudaGetLastError();
@@ -203,7 +203,7 @@ PYBIND11_MODULE(ffi_cucount, m) {
 
     py::class_<SplitAttrs_py>(m, "SplitAttrs", py::module_local())
         .def(py::init<py::kwargs>())
-        .def_readonly("nsplits", &SplitAttrs_py::nsplits);
+        .def_readonly("nsplits", &SplitAttrs_py::nsplits)
         .def_readonly("size", &SplitAttrs_py::size);
 
     m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");

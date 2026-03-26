@@ -544,7 +544,7 @@ struct SplitAttrs_py {
         : mode(SPLIT_NONE), nsplits(0), size(1) {
 
         if (kwargs.size() == 0) {
-            throw std::invalid_argument("SplitAttrs requires at least 'mode' and 'nsplits' arguments");
+            return;
         }
         // Extract mode
         if (kwargs.contains("mode")) {
@@ -570,11 +570,11 @@ struct SplitAttrs_py {
 
     // Convert to plain C SplitAttrs
     SplitAttrs data() const {
-        SplitAttrs sattrs;
-        sattrs.mode = mode;
-        sattrs.nsplits = nsplits;
-        sattrs.size = size;
-        return sattrs;
+        SplitAttrs spattrs;
+        spattrs.mode = mode;
+        spattrs.nsplits = nsplits;
+        spattrs.size = size;
+        return spattrs;
     }
 
 };

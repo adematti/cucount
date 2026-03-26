@@ -79,10 +79,6 @@ struct Particles_py {
 };
 
 
-
-
-
-// ...existing code...
 py::object count2_py(Particles_py& particles1, Particles_py& particles2,
                     MeshAttrs_py mattrs_py, BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(),
                     const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
@@ -206,7 +202,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     // Return named arrays reshaped to bin shape
     py::dict result;
     std::vector<ssize_t> total_shape;
-    total_shape.push_back(static_cast<ssize_t>(spattrs.size));
+    if (spattrs.nsplits) total_shape.push_back(static_cast<ssize_t>(spattrs.size));
     auto bshape = battrs_py.shape();
     total_shape.insert(total_shape.end(), bshape.begin(), bshape.end());
     // Return appropriate result based on spin parameters
@@ -221,7 +217,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
 // Bind the function and structs to Python
 PYBIND11_MODULE(cucount, m) {
     py::class_<Particles_py>(m, "Particles", py::module_local())
-    .def(py::init<py::array_t<FLOAT>, py::array_t<FLOAT>, int, int, int, int>(),
+    .def(py::init<py::array_t<FLOAT>, py::array_t<FLOAT>, int, int, int, int, int>(),
          py::arg("positions"),
          py::arg("values") = py::none(),
          py::arg("size_split") = 0,
@@ -263,7 +259,7 @@ PYBIND11_MODULE(cucount, m) {
 
     py::class_<SplitAttrs_py>(m, "SplitAttrs", py::module_local())
         .def(py::init<py::kwargs>())
-        .def_readonly("nsplits", &SplitAttrs_py::nsplits);
+        .def_readonly("nsplits", &SplitAttrs_py::nsplits)
         .def_readonly("size", &SplitAttrs_py::size);
 
     m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
