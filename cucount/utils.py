@@ -147,7 +147,7 @@ class KMeansSubsampler(object):
     """
 
     def __init__(self, particles, nsplits=8, nside=None, mode='cartesian',
-                 random_state=None, wattrs: WeightAttrs = None, **kwargs):
+                 random_state=None, wattrs: WeightAttrs=None, **kwargs):
         """
         Initialize :class:`KMeansSubsampler`.
 

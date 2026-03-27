@@ -56,7 +56,7 @@ def count2(*particles: Particles, battrs: BinAttrs=None, wattrs: WeightAttrs=Non
 
     if wattrs is None: wattrs = WeightAttrs()
     autocorr = len(particles) == 1
-    use_jax = _use_jax(particles)
+    use_jax = _use_jax(particles[0])
     if use_jax:
         from cucount.jax import count2
     else:

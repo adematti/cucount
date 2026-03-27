@@ -25,8 +25,7 @@ def create_sharding_mesh(device_mesh_shape=None):
         count = len(jax.devices())
         device_mesh_shape = (count,)
     device_mesh_shape = tuple(s for s in device_mesh_shape if s > 1)
-    devices = mesh_utils.create_device_mesh(device_mesh_shape)
-    return sharding.Mesh(devices, axis_names=list('xyz'[:len(device_mesh_shape)]))
+    return jax.make_mesh(device_mesh_shape, axis_names=list('xyz'[:len(device_mesh_shape)]), axis_types=(jax.sharding.AxisType.Auto,) * len(device_mesh_shape))
 
 
 def get_sharding_mesh():

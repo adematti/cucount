@@ -616,7 +616,7 @@ class Particles(object):
             kwargs.setdefault('index_value', self.index_value)  # preserve index_value
         kwargs.setdefault('weights', self.get('weights'))
         kwargs.setdefault('spin_values', self.get('spin') or None)
-        kwargs.setdefault('splits', self.get('split') or None)
+        kwargs.setdefault('splits', (self.get('split') or [None])[0])
         return self.__class__(**kwargs)
 
     def get(self, name):
