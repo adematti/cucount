@@ -29,10 +29,10 @@ struct Particles_py {
 
     // Single constructor accepting optional sky_coords and spin_values (can be None)
     Particles_py(py::array_t<FLOAT> positions_, py::array_t<FLOAT> values_ = py::none(),
-        const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0, const int size_negative_weight = 0)
+        const int size_split = 0, const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0, const int size_negative_weight = 0)
         : positions(positions_), values(py::array_t<FLOAT>()) {
 
-        this->index_value = get_index_value(size_spin, size_individual_weight, size_bitwise_weight, size_negative_weight);
+        this->index_value = get_index_value(size_split, size_spin, size_individual_weight, size_bitwise_weight, size_negative_weight);
         //printf("%d %d %d %d\n", this->index_value.start_spin, this->index_value.size_spin, this->index_value.start_individual_weight, this->index_value.size_individual_weight);
 
         // Ensure positions are C-contiguous
@@ -79,18 +79,17 @@ struct Particles_py {
 };
 
 
-
-
-
-// ...existing code...
 py::object count2_py(Particles_py& particles1, Particles_py& particles2,
                     MeshAttrs_py mattrs_py, BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(),
-                    const SelectionAttrs_py sattrs_py = SelectionAttrs_py(), const int nthreads = 1) {
+                    const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
+                    const SplitAttrs_py spattrs_py = SplitAttrs_py(),
+                    const int nthreads = 1) {
 
     BinAttrs battrs = battrs_py.data();
     WeightAttrs wattrs = wattrs_py.data();
     SelectionAttrs sattrs = sattrs_py.data();
     MeshAttrs mattrs = mattrs_py.data();
+    SplitAttrs spattrs = spattrs_py.data();
     //for (size_t axis = 0; axis < NDIM; axis++) printf("boxsize %.4f %.4f\n", mattrs.boxsize[axis], mattrs.boxcenter[axis]);
 
     // prepare host-side particle descriptors (point into numpy buffers)
@@ -105,7 +104,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     // number of counts and total size per-count
     char names[MAX_NWEIGHT][SIZE_NAME];
     size_t ncounts = get_count2_size(p1_host.index_value, p2_host.index_value, names);
-    size_t csize = ncounts * battrs.size;
+    size_t csize = ncounts * battrs.size * spattrs.size;
 
     // Host output (accumulated across GPUs)
     py::array_t<FLOAT> counts_py(csize);
@@ -135,7 +134,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
         // if no particles in this chunk, skip launching heavy work (leave zero contribution)
         if (nchunk == 0) continue;
 
-        workers.emplace_back([dev, start, nchunk, &p1_host, &p2_host, &battrs, &mattrs, &sattrs, &wattrs, ncounts, csize, &dev_results]() {
+        workers.emplace_back([dev, start, nchunk, &p1_host, &p2_host, &battrs, &mattrs, &sattrs, &wattrs, &spattrs, ncounts, csize, &dev_results]() {
             // set device for this thread
             CUDA_CHECK(cudaSetDevice(dev));
             // create CUDA stream
@@ -174,7 +173,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
             CUDA_CHECK(cudaMemsetAsync(device_counts, 0, csize * sizeof(FLOAT), stream));
 
             // run count2 on this device (asynchronous on stream)
-            count2(device_counts, list_mesh_dev, mattrs, sattrs, battrs, wattrs, membuffer, stream);
+            count2(device_counts, list_mesh_dev, mattrs, sattrs, battrs, wattrs, spattrs, membuffer, stream);
 
             // synchronize device stream to ensure kernel completion before copyback
             CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -195,17 +194,21 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     for (auto &t : workers) t.join();
 
     // accumulate per-GPU results into final counts_py
-    for (int dev = 0; dev < ngpus; ++dev) {
+    for (int dev=0; dev<ngpus; ++dev) {
         if (dev_results[dev].empty()) continue;
-        for (size_t i = 0; i < csize; ++i) counts_ptr[i] += dev_results[dev][i];
+        for (size_t i=0; i<csize; ++i) counts_ptr[i] += dev_results[dev][i];
     }
 
     // Return named arrays reshaped to bin shape
     py::dict result;
+    std::vector<ssize_t> total_shape;
+    if (spattrs.nsplits) total_shape.push_back(static_cast<ssize_t>(spattrs.size));
+    auto bshape = battrs_py.shape();
+    total_shape.insert(total_shape.end(), bshape.begin(), bshape.end());
     // Return appropriate result based on spin parameters
-    for (size_t icount = 0; icount < ncounts; icount++) {
-        py::array_t<FLOAT> array_py({(ssize_t)battrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr + icount * battrs.size, counts_py);
-        result[names[icount]] = array_py.attr("reshape")(battrs_py.shape()).cast<py::array_t<FLOAT>>();
+    for (size_t icount=0; icount<ncounts; icount++) {
+        py::array_t<FLOAT> array_py({(ssize_t)battrs.size * spattrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr + icount * battrs.size * spattrs.size, counts_py);
+        result[names[icount]] = array_py.attr("reshape")(total_shape).cast<py::array_t<FLOAT>>();
     }
     return result;
 }
@@ -214,9 +217,10 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
 // Bind the function and structs to Python
 PYBIND11_MODULE(cucount, m) {
     py::class_<Particles_py>(m, "Particles", py::module_local())
-    .def(py::init<py::array_t<FLOAT>, py::array_t<FLOAT>, int, int, int, int>(),
+    .def(py::init<py::array_t<FLOAT>, py::array_t<FLOAT>, int, int, int, int, int>(),
          py::arg("positions"),
          py::arg("values") = py::none(),
+         py::arg("size_split") = 0,
          py::arg("size_spin") = 0,
          py::arg("size_individual_weight") = 0,
          py::arg("size_bitwise_weight") = 0,
@@ -253,6 +257,11 @@ PYBIND11_MODULE(cucount, m) {
     py::class_<MeshAttrs_py>(m, "MeshAttrs", py::module_local())
         .def(py::init<py::kwargs>());
 
+    py::class_<SplitAttrs_py>(m, "SplitAttrs", py::module_local())
+        .def(py::init<py::kwargs>())
+        .def_readonly("nsplits", &SplitAttrs_py::nsplits)
+        .def_readonly("size", &SplitAttrs_py::size);
+
     m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
 
     m.def("count2", &count2_py, "Take particle positions and weights (numpy arrays), perform 2-pt counts on the GPU and return a numpy array",
@@ -262,5 +271,6 @@ PYBIND11_MODULE(cucount, m) {
         py::arg("battrs"),
         py::arg("wattrs") = WeightAttrs_py(), // Default value
         py::arg("sattrs") = SelectionAttrs_py(),
+        py::arg("spattrs") = SplitAttrs_py(),
         py::arg("nthreads") = 1); // Default value
 }

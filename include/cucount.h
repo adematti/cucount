@@ -40,9 +40,10 @@ VAR_TYPE string_to_var_type(const std::string& var_name) {
     throw std::invalid_argument("Invalid VAR_TYPE string: " + var_name);
 }
 
+
 // inverse mapping for VAR_TYPE -> string
-std::string var_type_to_string(VAR_TYPE v) {
-    switch (v) {
+std::string var_type_to_string(VAR_TYPE var_type) {
+    switch (var_type) {
         case VAR_NONE: return "";
         case VAR_S: return "s";
         case VAR_MU: return "mu";
@@ -69,8 +70,8 @@ LOS_TYPE string_to_los_type(const std::string& los_name) {
 
 
 // inverse mapping for LOS_TYPE -> string
-std::string los_type_to_string(LOS_TYPE v) {
-    switch (v) {
+std::string los_type_to_string(LOS_TYPE los_type) {
+    switch (los_type) {
         case LOS_NONE: return "";
         case LOS_FIRSTPOINT: return "firstpoint";
         case LOS_ENDPOINT: return "endpoint";
@@ -510,5 +511,72 @@ struct MeshAttrs_py {
     }
 };
 
+
+// Helper functions for SPLIT_TYPE conversion
+SPLIT_TYPE string_to_split_type(const std::string& split_name) {
+    if (split_name == "jackknife") return SPLIT_JACKKNIFE;
+    if (split_name == "none") return SPLIT_NONE;
+    throw std::invalid_argument("Invalid SPLIT_TYPE string: " + split_name);
+}
+
+
+std::string split_type_to_string(SPLIT_TYPE split_type) {
+    switch (split_type) {
+        case SPLIT_JACKKNIFE: return "jackknife";
+        case SPLIT_NONE: return "none";
+        default: return "none";
+    }
+}
+
+
+// Expose the SplitAttrs struct to Python
+struct SplitAttrs_py {
+    SPLIT_TYPE mode;
+    size_t nsplits;
+    size_t size;
+
+    // Default constructor
+    SplitAttrs_py() : mode(SPLIT_NONE), nsplits(0), size(1) {}
+
+    // Constructor from Python dictionary
+    // Expected format: {"mode": "jackknife", "nsplits": 100}
+    SplitAttrs_py(const py::kwargs& kwargs)
+        : mode(SPLIT_NONE), nsplits(0), size(1) {
+
+        if (kwargs.size() == 0) {
+            return;
+        }
+        // Extract mode
+        if (kwargs.contains("mode")) {
+            std::string mode_str = py::cast<std::string>(kwargs["mode"]);
+            mode = string_to_split_type(mode_str);
+        } else {
+            throw std::invalid_argument("SplitAttrs requires 'mode' argument");
+        }
+        // Extract nsplits
+        if (kwargs.contains("nsplits")) {
+            nsplits = py::cast<size_t>(kwargs["nsplits"]);
+            if ((mode != SPLIT_NONE) & (nsplits < 1)) {
+                throw std::invalid_argument("Number of splits must be >= 1");
+            }
+        } else {
+            throw std::invalid_argument("SplitAttrs requires 'nsplits' argument");
+        }
+        // Calculate size
+        if (mode == SPLIT_JACKKNIFE) {
+            size = 3 * nsplits;
+        }
+    }
+
+    // Convert to plain C SplitAttrs
+    SplitAttrs data() const {
+        SplitAttrs spattrs;
+        spattrs.mode = mode;
+        spattrs.nsplits = nsplits;
+        spattrs.size = size;
+        return spattrs;
+    }
+
+};
 
 #endif

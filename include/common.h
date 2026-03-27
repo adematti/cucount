@@ -29,6 +29,7 @@ void log_message(LogLevel level, const char *format, ...);
 typedef enum {MESH_NONE, MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
 typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_RP, VAR_PI, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
 typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT, LOS_X, LOS_Y, LOS_Z} LOS_TYPE;
+typedef enum {SPLIT_NONE, SPLIT_JACKKNIFE} SPLIT_TYPE;
 
 
 #define atomicAddSizet(address, val)                            \
@@ -58,7 +59,7 @@ typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT, LOS_X, LOS_Y
 
 typedef struct {
     // To check/modify when adding new weighting scheme
-    size_t start_spin, size_spin, start_individual_weight, size_individual_weight, start_bitwise_weight, size_bitwise_weight,
+    size_t start_split, size_split, start_spin, size_spin, start_individual_weight, size_individual_weight, start_bitwise_weight, size_bitwise_weight,
     start_negative_weight, size_negative_weight, size;
 } IndexValue;
 
@@ -108,6 +109,13 @@ typedef struct {
 
 
 typedef struct {
+    SPLIT_TYPE mode;
+    size_t nsplits;
+    size_t size;
+} SplitAttrs;
+
+
+typedef struct {
     size_t meshsize[NDIM];
     FLOAT boxsize[NDIM];
     FLOAT boxcenter[NDIM];
@@ -150,7 +158,7 @@ struct DeviceMemoryBuffer {
 };
 
 
-IndexValue get_index_value(int size_spin, int size_individual_weight, int size_bitwise_weight, int size_negative_weight);
+IndexValue get_index_value(int size_split, int size_spin, int size_individual_weight, int size_bitwise_weight, int size_negative_weight);
 
 size_t get_count2_size(IndexValue index_value1, IndexValue index_value2, char names[][SIZE_NAME]);
 

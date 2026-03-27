@@ -235,6 +235,21 @@ class SelectionAttrs(cucountlib.cucount.SelectionAttrs):
     """
 
 
+class SplitAttrs(cucountlib.cucount.SplitAttrs):
+    """
+    Provide split attributes:
+    - mode = 'jackknife'
+    - nsplits = total number of splits
+    """
+    def check(self, *particles):
+        for particle in particles:
+            if self.nsplits:
+                assert len(particle.index_value('split', return_type=list)) == 1, 'splits must be provided when SplitAttrs is set'
+                #assert particle.get('split').max() < self.nsplits, 'particle.get("split") must be less than SplitAttrs.nsplits'
+            else:
+                assert len(particle.index_value('split', return_type=list)) == 0, 'splits provided but SplitAttrs is not set'
+
+
 class BinAttrs(cucountlib.cucount.BinAttrs):
     """
     Provide binning:
@@ -288,28 +303,22 @@ class MeshAttrs(object):
         ----------
         *positions : array-like or Particles
             List of positions arrays.
-
         boxsize : array-like of 3 floats, optional
             Box size along each axis. If None, determined from positions.
-
         meshsize : array-like of 3 floats, optional
             Size of the mesh along each axis. If None, determined from battrs or sattrs.
-
         refine : float, default=1.
             Refine mesh by this factor; > 1 to increase the resolution of the mesh used to speed-up pair counting;
             < 1 to decrease the resolution (only impact running time).
-
         battrs : BinAttrs, optional
             Binning attributes. Used to determine cellsize if cellsize is None.
-
         sattrs : SelectionAttrs, optional
             Selection attributes. Used to determine boxsize if boxsize is None.
-
         periodic : bool, default=False
             Whether to use periodic boundary conditions.
         """
         positions = [p.positions if isinstance(p, Particles) else p for p in positions]
-        nparticles = sum(p.shape[0] for p in positions) // len(positions)
+        nparticles = sum(p.shape[0] for p in positions) // len(positions) if len(positions) else 1
 
         def _get_extent(*positions):
             """Return minimum physical extent (min, max) corresponding to input positions."""
@@ -427,7 +436,7 @@ class MeshAttrs(object):
 @dataclass(init=False)
 class IndexValue(object):
     # To check/modify when adding new weighting scheme
-    _fields = ['spin', 'individual_weight', 'bitwise_weight', 'negative_weight']
+    _fields = ['split', 'spin', 'individual_weight', 'bitwise_weight', 'negative_weight']
 
     def __init__(self, **kwargs):
         sizes = {name: 0 for name in self._fields}
@@ -482,8 +491,11 @@ def _make_list_weights(weights):
     return list(weights)
 
 
-def _format_values(weights=None, spin_values=None, index_value=None, np=np):
+def _format_values(weights=None, spin_values=None, splits=None, index_value=None, np=np):
     values, kwargs = [], {}
+    if splits is not None:
+        values += [splits]
+        kwargs.update(split=1)
     if spin_values is not None:
         spin_values = _make_list_weights(spin_values)
         _spin_values = []
@@ -520,7 +532,7 @@ def _format_values(weights=None, spin_values=None, index_value=None, np=np):
     return values, kwargs
 
 
-def _concatenate_values(values, np=np):
+def _stack_values(values, np=np):
     if len(values) == 0:
         return None
     cvalues = []
@@ -578,9 +590,9 @@ class Particles(object):
     values: np.ndarray
     index_value: IndexValue
 
-    def __init__(self, positions, weights=None, spin_values=None, positions_type='pos', index_value=None):
+    def __init__(self, positions, weights=None, spin_values=None, splits=None, positions_type='pos', index_value=None):
         # To check/modify when adding new weighting scheme
-        self.values, index_value = _format_values(weights=weights, spin_values=spin_values, index_value=index_value, np=np)
+        self.values, index_value = _format_values(weights=weights, spin_values=spin_values, splits=splits, index_value=index_value, np=np)
         self.index_value = IndexValue(**index_value)
         self.positions = _format_positions(positions, positions_type=positions_type, np=np)
 
@@ -588,22 +600,33 @@ class Particles(object):
     def size(self):
         return self.positions.shape[0]
 
+    @classmethod
+    def concatenate(cls, others):
+        """Concatenate particles."""
+        new = cls.__new__(cls)
+        new.index_value = others[0].index_value.clone()
+        new.values = [np.concatenate(values, axis=0) for values in zip(*[other.values for other in others])]
+        new.positions = np.concatenate([other.positions for other in others], axis=0)
+        return new
+
     def clone(self, **kwargs):
         """Copy and replace positions, weights, spin_values, etc."""
         kwargs.setdefault('positions', self.positions)
-        if 'weights' not in kwargs and 'spin_values' not in kwargs:
+        if not any(name in kwargs for name in ['weights', 'spin_values', 'splits']):
             kwargs.setdefault('index_value', self.index_value)  # preserve index_value
         kwargs.setdefault('weights', self.get('weights'))
         kwargs.setdefault('spin_values', self.get('spin') or None)
+        kwargs.setdefault('splits', (self.get('split') or [None])[0])
         return self.__class__(**kwargs)
 
     def get(self, name):
+        """Get positions, weights, etc."""
         if name == 'positions':
             return self.positions
         if name == 'weights':
             weights = []
             for name, sl in self.index_value(return_type=slice).items():
-                if name != 'spin': weights += self.values[sl]
+                if name not in ['split', 'spin']: weights += self.values[sl]
             return weights
         return self.values[self.index_value(name, return_type=slice)]
 
@@ -621,7 +644,8 @@ class Particles(object):
         return new
 
 
-def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None, mattrs: MeshAttrs=None, nthreads: int=1):
+def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None,
+           spattrs: SplitAttrs=None, mattrs: MeshAttrs=None, nthreads: int=1):
     """
     Perform two-point pair counts using the native cucount library.
 
@@ -640,6 +664,8 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         (no weights) is used.
     sattrs : SelectionAttrs, optional
         Selection attributes to restrict pairs. If None, defaults to SelectionAttrs().
+    spattrs : SplitAttrs, optional
+        Split attributes (for jackknife). If None, defaults to SplitAttrs().
     mattrs : MeshAttrs, optional
         Mesh attributes (periodic, cellsize). If None, defaults to MeshAttrs().
     nthreads : int, optional
@@ -653,11 +679,13 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     _setup_cucount_logging()
     assert len(particles) == 2
     if wattrs is None: wattrs = WeightAttrs()
-    wattrs.check(*particles)
     if sattrs is None: sattrs = SelectionAttrs()
+    if spattrs is None: spattrs = SplitAttrs()
+    wattrs.check(*particles)
+    spattrs.check(*particles)
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
-    particles = [cucountlib.cucount.Particles(p.positions, values=_concatenate_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
-    return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, nthreads=nthreads)
+    particles = [cucountlib.cucount.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
+    return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=nthreads)
 
 
 # Create a lookup table for set bits per byte
@@ -770,15 +798,12 @@ def joint_occurences(nrealizations=128, max_occurences=None, noffset=1, default_
     ----------
     nrealizations : int
         Number of realizations (including current realization).
-
     max_occurences : int, default=None
         Maximum number of occurences (including ``noffset``).
         If ``None``, defaults to ``nrealizations``.
-
     noffset : int, default=1
         The offset added to the bitwise count, typically 0 or 1.
         See "zero truncated estimator" and "efficient estimator" of arXiv:1912.08803.
-
     default_value : float, default=0.
         The default value of pairwise weights if the denominator is zero (defaulting to 0).
 

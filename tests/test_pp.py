@@ -701,7 +701,7 @@ def test_analytic():
 def test_lsstypes():
 
     from pathlib import Path
-    from cucount.numpy import count2, count2_analytic, Particles, BinAttrs, WeightAttrs, MeshAttrs, setup_logging
+    from cucount.numpy import count2, count2_analytic, Particles, BinAttrs, WeightAttrs, MeshAttrs, SplitAttrs, setup_logging
     import lsstypes as types
     from lsstypes import Count2, Count2Correlation
 
@@ -772,18 +772,252 @@ def test_lsstypes():
     correlation = types.read(fn)
     correlation.project(ells=[0, 2, 4]).plot(fn=dirname / 'test_lsstypes_natural.png')
 
+    from cucount.types import count2, count2_analytic
+    DD2 = count2(data, battrs=battrs, wattrs=wattrs, mattrs=mattrs)['weight']
+    RR2 = count2_analytic(battrs=battrs, mattrs=mattrs)
+    # 1: because of treatment at s = 0
+    assert np.allclose(DD2.value()[1:], DD.value()[1:])
+    assert np.allclose(RR2.value(), RR.value())
+
+    rng = np.random.RandomState(seed=42)
+    nsplits = 4
+    splits = rng.randint(0, nsplits, data.size)
+    data_splits = data.clone(splits=splits)
+    spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
+    DD2 = count2(data_splits, battrs=battrs, wattrs=wattrs, spattrs=spattrs, mattrs=mattrs)['weight']
+    assert isinstance(DD2, types.Count2Jackknife)
+    assert np.allclose(DD2.value()[1:], DD.value()[1:])
+
+
+def test_particles():
+    size = int(1e6)
+    boxsize = (3000.,) * 3
+    data, _ = generate_catalogs(size, boxsize, n_individual_weights=1, n_bitwise_weights=2, seed=42)
+    data_positions, data_weights = np.column_stack(data[:3]), data[3:]
+
+    def test_numpy():
+        from cucount.numpy import Particles
+        particles = Particles(positions=data_positions, weights=data_weights)
+        particles2 = Particles.concatenate([particles] * 2)
+        assert particles2.size == 2 * particles.size
+
+    def test_jax():
+        import jax
+        jax.config.update("jax_enable_x64", True)
+        from cucount.jax import Particles
+        particles = Particles(positions=data_positions, weights=data_weights)
+        particles2 = Particles.concatenate([particles] * 2)
+        assert particles2.size == 2 * particles.size
+
+    test_numpy()
+    test_jax()
+
+
+def test_jackknife():
+    # Prepare catalogs
+    size = int(1e5)
+    boxsize = np.array((3000.,) * 3)
+    rng = np.random.RandomState(seed=42)
+
+    nsplits = 2
+
+    def generate_catalog(rng, size, nsplits=10):
+        offset = boxsize
+        positions = rng.uniform(0., 1., (size, 3)) * boxsize + offset
+        weights = rng.uniform(0., 1., size)
+        splits = rng.randint(0, nsplits, size)
+        return positions, weights, splits
+
+    positions1, weights1, splits1 = generate_catalog(rng, size, nsplits=nsplits)
+    positions2, weights2, splits2 = generate_catalog(rng, size, nsplits=nsplits)
+    edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
+    los = 'midpoint'
+
+    def count_jax(spattrs=True, mask1=Ellipsis, mask2=Ellipsis):
+        import jax
+        jax.config.update("jax_enable_x64", True)
+        print(jax.devices())
+        from cucount.jax import count2, Particles, BinAttrs, SplitAttrs
+        particles1 = Particles(positions1[mask1], weights1[mask1], splits=splits1 if spattrs else None)
+        particles2 = Particles(positions2[mask2], weights2[mask2], splits=splits2 if spattrs else None)
+        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+        if spattrs:
+            spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
+        return count2(particles1, particles2, battrs=battrs, spattrs=spattrs)['weight']
+
+    def count_numpy(spattrs=True, mask1=Ellipsis, mask2=Ellipsis):
+        from cucount.numpy import count2, Particles, BinAttrs, SplitAttrs
+        particles1 = Particles(positions1[mask1], weights1[mask1], splits=splits1 if spattrs else None)
+        particles2 = Particles(positions2[mask2], weights2[mask2], splits=splits2 if spattrs else None)
+        battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+        if spattrs:
+            spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
+        return count2(particles1, particles2, battrs=battrs, spattrs=spattrs)['weight']
+
+    #count_splits_jax = count_jax()
+    count_splits_numpy = count_numpy()
+    #assert np.allclose(count_splits_jax, count_splits_numpy)
+    tmp = count_numpy(spattrs=None)
+    assert np.allclose(count_splits_numpy[:2 * nsplits].sum(axis=0), tmp)
+
+    for isplit in range(nsplits):
+        tmp = count_numpy(spattrs=None, mask1=splits1 == isplit, mask2=splits2 == isplit)
+        assert np.allclose(count_splits_numpy[isplit], tmp)
+        tmp = count_numpy(spattrs=None, mask1=splits1 == isplit, mask2=splits2 != isplit)
+        assert np.allclose(count_splits_numpy[nsplits + isplit], tmp)
+        tmp = count_numpy(spattrs=None, mask1=splits1 != isplit, mask2=splits2 == isplit)
+        assert np.allclose(count_splits_numpy[2 * nsplits + isplit], tmp)
+
+
+def test_box_subsampler():
+
+    from cucount.numpy import Particles, MeshAttrs
+    from cucount.utils import BoxSubsampler
+
+    def particles_cartesian():
+        """Create test particles in a unit box."""
+        np.random.seed(42)
+        positions = np.random.uniform(0, 100, (1000, 3))
+        return Particles(positions)
+
+    subsampler = BoxSubsampler(particles=particles_cartesian(), nsplits=8)
+    assert subsampler.nsplits.shape == (3,)
+    assert np.all(subsampler.nsplits == 2)  # 8 = 2^3
+    assert len(subsampler.edges) == 3
+    assert subsampler.mattrs is not None
+
+    battrs= BinAttrs(s=np.linspace(0., 1., 2))
+    mattrs = MeshAttrs(boxcenter=[500, 500, 500], boxsize=[1000, 1000, 1000], battrs=battrs)
+    subsampler = BoxSubsampler(nsplits=[4, 4, 4], mattrs=mattrs)
+    assert np.array_equal(subsampler.nsplits, [4, 4, 4])
+    assert np.array_equal(subsampler.mattrs.boxcenter, [500, 500, 500])
+
+    for nsplits_scalar in [8, 27, 64]:
+        subsampler = BoxSubsampler(particles=particles_cartesian(), nsplits=nsplits_scalar)
+        assert np.prod(subsampler.nsplits) == nsplits_scalar
+
+    subsampler = BoxSubsampler(particles=particles_cartesian(), nsplits=[2, 3, 4])
+    assert np.array_equal(subsampler.nsplits, [2, 3, 4])
+
+    subsampler = BoxSubsampler(particles=particles_cartesian(), nsplits=8)
+    labels = subsampler.label(particles_cartesian())
+    assert labels.shape == (particles_cartesian().positions.shape[0],)
+    assert np.all(labels >= 0) and np.all(labels < 8)
+    # Check that all regions are populated
+    unique_labels = np.unique(labels)
+    assert len(unique_labels) == 8, f"Expected 8 regions, got {len(unique_labels)}"
+
+    labels2 = subsampler.label(particles_cartesian().positions)
+    assert np.array_equal(labels2, labels)
+
+    # Create particles that wrap around in periodic box
+    positions = np.array([[99, 50, 50], [101, 50, 50]])  # Should map to same region
+    particles = Particles(positions)
+    mattrs = MeshAttrs(boxcenter=[50, 50, 50], boxsize=[100, 100, 100], periodic=True, battrs=battrs)
+    subsampler = BoxSubsampler(nsplits=[2, 2, 2], mattrs=mattrs)
+    labels = subsampler.label(particles)
+    # Both should be in same x-bin due to wrapping
+    assert labels[0] % 4 == labels[1] % 4  # Same x-bin (first 2 bits)
+
+
+def test_kmeans_subsampler():
+
+    from cucount.numpy import Particles
+    from cucount.utils import KMeansSubsampler
+
+    def particles_cartesian():
+        """Create test particles with clear cluster structure."""
+        np.random.seed(42)
+        # Create 4 clusters in corners
+        cluster1 = np.random.normal([10, 10, 10], 2, (250, 3))
+        cluster2 = np.random.normal([10, 90, 10], 2, (250, 3))
+        cluster3 = np.random.normal([90, 10, 10], 2, (250, 3))
+        cluster4 = np.random.normal([90, 90, 10], 2, (250, 3))
+        positions = np.vstack([cluster1, cluster2, cluster3, cluster4])
+        return Particles(positions)
+
+    def particles_angular():
+        """Create test particles on a sphere."""
+        np.random.seed(42)
+        # Random points on unit sphere
+        theta = np.random.uniform(0, 2*np.pi, 1000)
+        phi = np.arccos(np.random.uniform(-1, 1, 1000))
+        x = np.sin(phi) * np.cos(theta)
+        y = np.sin(phi) * np.sin(theta)
+        z = np.cos(phi)
+        positions = np.column_stack([x, y, z])
+        return Particles(positions)
+
+    subsampler = KMeansSubsampler(particles=particles_cartesian(), nsplits=4,
+                                    random_state=42)
+    assert subsampler.nsplits == 4
+    assert subsampler.nside is None
+    assert subsampler.kmeans.n_clusters == 4
+
+    particles = particles_cartesian()
+    weights = np.random.uniform(0.5, 1.5, particles.positions.shape[0])
+    particles.weights = weights
+    subsampler = KMeansSubsampler(particles=particles, nsplits=4,
+                                    random_state=42)
+    assert subsampler.kmeans is not None
+
+    subsampler = KMeansSubsampler(particles=particles_angular(), nsplits=8,
+                                    mode='angular', random_state=42)
+    assert subsampler.nsplits == 8
+    assert subsampler.nside is None
+
+    subsampler = KMeansSubsampler(particles=particles_angular(), nsplits=4,
+                                    mode='angular', nside=16, random_state=42)
+    assert subsampler.nsplits == 4
+    assert subsampler.nside == 16
+    assert subsampler.nest == False
+
+    # Test labeling in Cartesian mode
+    particles = particles_cartesian()
+    subsampler = KMeansSubsampler(particles=particles, nsplits=4,
+                                    random_state=42)
+    labels = subsampler.label(particles)
+    assert labels.shape == (particles.positions.shape[0],)
+    assert np.all(labels >= 0) and np.all(labels < 4)
+
+    # Check that all clusters are populated
+    unique_labels = np.unique(labels)
+    assert len(unique_labels) == 4
+    labels2 = subsampler.label(particles.positions)
+    assert np.array_equal(labels2, labels)
+
+    # Test that clusters are reasonably balanced
+    subsampler = KMeansSubsampler(particles=particles, nsplits=4,
+                                    random_state=42)
+    labels = subsampler.label(particles)
+    counts = np.bincount(labels, minlength=4)
+    # Check that no cluster is empty
+    assert np.all(counts > 0)
+    # Check that clusters are roughly balanced (within 2x)
+    assert np.max(counts) < 3 * np.min(counts)
+
+    # Test with nsplits=1 (single cluster).
+    subsampler = KMeansSubsampler(particles=particles, nsplits=1,
+                                    random_state=42)
+    labels = subsampler.label(particles)
+    assert np.all(labels == 0)
+
 
 if __name__ == '__main__':
 
     setup_logging()
 
     test_analytic()
-    test_lsstypes()
+    test_particles()
     #test_thetacut()
     for mode in ['smu', 'rppi', 'theta']:
         test_corrfunc_cutsky(mode)
     for mode in ['smu', 'rppi']:
         test_corrfunc_cubic(mode)
+    test_jackknife()
+    test_lsstypes()
+    test_box_subsampler()
+    test_kmeans_subsampler()
     #test_spectrum()
     #test_jax(distributed=True)
     #test_readme()
