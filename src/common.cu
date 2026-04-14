@@ -36,38 +36,6 @@ IndexValue get_index_value(int size_split, int size_spin, int size_individual_we
 }
 
 
-size_t get_count2_size(IndexValue index_value1, IndexValue index_value2,
-                        char names[][SIZE_NAME])
-{
-    // To check/modify when adding new weighting scheme
-    int s1 = (index_value1.size_spin > 0);
-    int s2 = (index_value2.size_spin > 0);
-    size_t n = 1 + s1 + s2;
-
-    if (names == NULL) {
-        return n;
-    }
-    /* clear first buffers to be safe */
-    size_t i;
-    for (i = 0; i < MAX_NWEIGHT; ++i) {
-        names[i][0] = '\0';
-    }
-
-    if (s1 && s2) {
-        strncpy(names[0], "weight_plus_plus", SIZE_NAME-1);
-        strncpy(names[1], "weight_plus_cross", SIZE_NAME-1);
-        strncpy(names[2], "weight_cross_cross", SIZE_NAME-1);
-    } else if (s1 ^ s2) {
-        strncpy(names[0], "weight_plus", SIZE_NAME-1);
-        strncpy(names[1], "weight_cross", SIZE_NAME-1);
-    } else {
-        strncpy(names[0], "weight", SIZE_NAME-1);
-    }
-
-    return n;
-}
-
-
 // Wrapper for calloc with error handling
 void* my_calloc(size_t num, size_t size) {
     void* ptr = calloc(num, size);

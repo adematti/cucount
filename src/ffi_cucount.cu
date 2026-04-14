@@ -5,25 +5,45 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <string>
+#include <type_traits>
 
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/api/ffi.h"
 
 #include "mesh.h"
 #include "count2.h"
+#include "count3close.h"
 #include "common.h"
 #include "cucount.h"
 
 namespace py = pybind11;
 namespace ffi = xla::ffi;
 
-static MeshAttrs mattrs;
-static BinAttrs battrs;
-static SelectionAttrs sattrs;
-static WeightAttrs wattrs;
-static SplitAttrs spattrs;
-static IndexValue index_value[2] = {0};
+// -----------------------------------------------------------------------------
+// Static state for count2
+// -----------------------------------------------------------------------------
 
+static MeshAttrs mattrs2;
+static BinAttrs battrs2;
+static SelectionAttrs sattrs2;
+static WeightAttrs wattrs2;
+static SplitAttrs spattrs2;
+static IndexValue index_value2[2] = {0};
+
+// -----------------------------------------------------------------------------
+// Static state for count3close
+// -----------------------------------------------------------------------------
+
+static MeshAttrs mattrs3;
+static BinAttrs battrs3_ab;
+static BinAttrs battrs3_ac;
+static BinAttrs battrs3_bc;
+static bool has_battrs3_bc = false;
+static SelectionAttrs sattrs3_ab;
+static SelectionAttrs sattrs3_ac;
+static WeightAttrs wattrs3;
+static IndexValue index_value3[3] = {0};
 
 // keep ownership of host-side copies created here so pointers stay valid
 static std::vector<void*> owned_host_ptrs;
@@ -36,80 +56,182 @@ static void free_owned_ptrs() {
     owned_host_ptrs.clear();
 }
 
+// -----------------------------------------------------------------------------
+// Owned host-copy helpers
+// -----------------------------------------------------------------------------
 
-void set_attrs_py(MeshAttrs_py mattrs_py, BinAttrs_py battrs_py,
-                 WeightAttrs_py wattrs_py = WeightAttrs_py(),
-                 const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
-                 const SplitAttrs_py spattrs_py = SplitAttrs_py()) {
-    // free previously allocated host copies (if any)
-    free_owned_ptrs();
-
-    mattrs = mattrs_py.data();
-    battrs = battrs_py.data();
-    wattrs = wattrs_py.data();
-    sattrs = sattrs_py.data();
-    spattrs = spattrs_py.data();
-
-    // --- Make owned host copies for battrs.array entries (if provided) ---
-    // Assumes battrs.asize[i] holds element count and battrs_py.array[i] is provided.
-    for (size_t i = 0; i < (size_t)battrs.ndim; i++) {
-        if (battrs.asize[i] != 0) {
-            // compute count and allocate
-            FLOAT *buf = (FLOAT*) std::malloc(battrs.asize[i] * sizeof(FLOAT));
+static void own_bin_attrs_arrays(BinAttrs *battrs) {
+    for (size_t i = 0; i < (size_t)battrs->ndim; i++) {
+        if (battrs->asize[i] != 0 && battrs->array[i] != nullptr) {
+            FLOAT *buf = (FLOAT*) std::malloc(battrs->asize[i] * sizeof(FLOAT));
             if (!buf) throw std::bad_alloc();
-            // copy from py::array_t backing memory
-            std::memcpy(buf, battrs.array[i], battrs.asize[i] * sizeof(FLOAT));
-            battrs.array[i] = buf;
+            std::memcpy(buf, battrs->array[i], battrs->asize[i] * sizeof(FLOAT));
+            battrs->array[i] = buf;
             owned_host_ptrs.push_back(buf);
         }
     }
-    // --- Make owned host copies for wattrs.bitwise.p_correction_nbits (if provided) ---
-    if (wattrs.bitwise.p_nbits > 0) {
-        size_t size = wattrs.bitwise.p_nbits * wattrs.bitwise.p_nbits;
+}
+
+static void own_weight_attrs_arrays(WeightAttrs *wattrs) {
+    // Bitwise
+    if (wattrs->bitwise.p_nbits > 0 && wattrs->bitwise.p_correction_nbits != nullptr) {
+        size_t size = wattrs->bitwise.p_nbits * wattrs->bitwise.p_nbits;
         FLOAT *buf = (FLOAT*) std::malloc(size * sizeof(FLOAT));
         if (!buf) throw std::bad_alloc();
-        std::memcpy(buf, wattrs.bitwise.p_correction_nbits, size * sizeof(FLOAT));
-        wattrs.bitwise.p_correction_nbits = buf;
+        std::memcpy(buf, wattrs->bitwise.p_correction_nbits, size * sizeof(FLOAT));
+        wattrs->bitwise.p_correction_nbits = buf;
         owned_host_ptrs.push_back(buf);
     }
-    // --- Make owned host copies for wattrs.angular.sep / weight (if provided) ---
-    if (wattrs.angular.size > 0) {
-        FLOAT *sep_buf = (FLOAT*) std::malloc(wattrs.angular.size * sizeof(FLOAT));
-        FLOAT *weight_buf = (FLOAT*) std::malloc(wattrs.angular.size * sizeof(FLOAT));
-        if (!sep_buf || !weight_buf) {std::free(sep_buf); std::free(weight_buf); throw std::bad_alloc();}
-        std::memcpy(sep_buf, wattrs.angular.sep, wattrs.angular.size * sizeof(FLOAT));
-        std::memcpy(weight_buf, wattrs.angular.weight, wattrs.angular.size * sizeof(FLOAT));
-        wattrs.angular.sep = sep_buf;
-        wattrs.angular.weight = weight_buf;
-        owned_host_ptrs.push_back(sep_buf);
-        owned_host_ptrs.push_back(weight_buf);
+
+    // Angular axis arrays
+    for (size_t idim = 0; idim < wattrs->angular.ndim; ++idim) {
+        if (wattrs->angular.sep[idim] != nullptr) {
+            const size_t n = wattrs->angular.shape[idim];
+            FLOAT *buf = (FLOAT*) std::malloc(n * sizeof(FLOAT));
+            if (!buf) throw std::bad_alloc();
+            std::memcpy(buf, wattrs->angular.sep[idim], n * sizeof(FLOAT));
+            wattrs->angular.sep[idim] = buf;
+            owned_host_ptrs.push_back(buf);
+        }
+        if (wattrs->angular.edges[idim] != nullptr) {
+            const size_t n = wattrs->angular.shape[idim] + 1;
+            FLOAT *buf = (FLOAT*) std::malloc(n * sizeof(FLOAT));
+            if (!buf) throw std::bad_alloc();
+            std::memcpy(buf, wattrs->angular.edges[idim], n * sizeof(FLOAT));
+            wattrs->angular.edges[idim] = buf;
+            owned_host_ptrs.push_back(buf);
+        }
+    }
+
+    // Angular weight table
+    if (wattrs->angular.size > 0 && wattrs->angular.weight != nullptr) {
+        FLOAT *buf = (FLOAT*) std::malloc(wattrs->angular.size * sizeof(FLOAT));
+        if (!buf) throw std::bad_alloc();
+        std::memcpy(buf, wattrs->angular.weight, wattrs->angular.size * sizeof(FLOAT));
+        wattrs->angular.weight = buf;
+        owned_host_ptrs.push_back(buf);
     }
 }
 
+// -----------------------------------------------------------------------------
+// Python setters for count2 attrs
+// -----------------------------------------------------------------------------
 
-void set_index_value_py(const size_t iparticle, const int size_split = 0, const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0, const int size_negative_weight = 0) {
-    index_value[iparticle] = get_index_value(size_split, size_spin, size_individual_weight, size_bitwise_weight, size_negative_weight);
+void set_count2_attrs_py(
+    MeshAttrs_py mattrs_py,
+    BinAttrs_py battrs_py,
+    WeightAttrs_py wattrs_py = WeightAttrs_py(),
+    const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
+    const SplitAttrs_py spattrs_py = SplitAttrs_py())
+{
+    free_owned_ptrs();
+
+    mattrs2 = mattrs_py.data();
+    battrs2 = battrs_py.data();
+    wattrs2 = wattrs_py.data();
+    sattrs2 = sattrs_py.data();
+    spattrs2 = spattrs_py.data();
+
+    own_bin_attrs_arrays(&battrs2);
+    own_weight_attrs_arrays(&wattrs2);
 }
 
+// -----------------------------------------------------------------------------
+// Python setters for count3close attrs
+// -----------------------------------------------------------------------------
+
+void set_count3close_attrs_py(
+    MeshAttrs_py mattrs_py,
+    BinAttrs_py battrs_ab_py,
+    BinAttrs_py battrs_ac_py,
+    py::object battrs_bc_obj = py::none(),
+    WeightAttrs_py wattrs_py = WeightAttrs_py(),
+    const SelectionAttrs_py sattrs_ab_py = SelectionAttrs_py(),
+    const SelectionAttrs_py sattrs_ac_py = SelectionAttrs_py())
+{
+    free_owned_ptrs();
+
+    mattrs3 = mattrs_py.data();
+    battrs3_ab = battrs_ab_py.data();
+    battrs3_ac = battrs_ac_py.data();
+
+    has_battrs3_bc = !battrs_bc_obj.is_none();
+    if (has_battrs3_bc) {
+        BinAttrs_py battrs_bc_py = py::cast<BinAttrs_py>(battrs_bc_obj);
+        battrs3_bc = battrs_bc_py.data();
+    } else {
+        battrs3_bc = BinAttrs{0};
+    }
+
+    wattrs3 = wattrs_py.data();
+    sattrs3_ab = sattrs_ab_py.data();
+    sattrs3_ac = sattrs_ac_py.data();
+
+    own_bin_attrs_arrays(&battrs3_ab);
+    own_bin_attrs_arrays(&battrs3_ac);
+    if (has_battrs3_bc) own_bin_attrs_arrays(&battrs3_bc);
+    own_weight_attrs_arrays(&wattrs3);
+}
+
+// -----------------------------------------------------------------------------
+// Index-value setters
+// -----------------------------------------------------------------------------
+
+void set_count2_index_value_py(
+    const size_t iparticle,
+    const int size_split = 0,
+    const int size_spin = 0,
+    const int size_individual_weight = 0,
+    const int size_bitwise_weight = 0,
+    const int size_negative_weight = 0)
+{
+    index_value2[iparticle] = get_index_value(
+        size_split, size_spin, size_individual_weight, size_bitwise_weight, size_negative_weight);
+}
+
+void set_count3close_index_value_py(
+    const size_t iparticle,
+    const int size_split = 0,
+    const int size_spin = 0,
+    const int size_individual_weight = 0,
+    const int size_bitwise_weight = 0,
+    const int size_negative_weight = 0)
+{
+    index_value3[iparticle] = get_index_value(
+        size_split, size_spin, size_individual_weight, size_bitwise_weight, size_negative_weight);
+}
+
+// -----------------------------------------------------------------------------
+// Name helpers
+// -----------------------------------------------------------------------------
 
 std::vector<std::string> get_count2_names_py() {
     char names[MAX_NWEIGHT][SIZE_NAME];
-    size_t ncounts = get_count2_size(index_value[0], index_value[1], names);
+    size_t ncounts = get_count2_size(index_value2[0], index_value2[1], names);
     std::vector<std::string> toret;
     for (size_t icount = 0; icount < ncounts; icount++) toret.push_back(names[icount]);
     return toret;
 }
 
+std::vector<std::string> get_count3close_names_py() {
+    return {"weight"};
+}
+
+// -----------------------------------------------------------------------------
+// FFI helpers
+// -----------------------------------------------------------------------------
 
 void set_mem_buffer(DeviceMemoryBuffer *membuffer, ffi::ResultBuffer<ffi::F64> buffer) {
     membuffer->ptr = (void *) buffer->typed_data();
     membuffer->size = buffer->dimensions().front() * 8 / sizeof(char);
-    //CUDA_CHECK(cudaMemset(membuffer.ptr, 0, membuffer.size));
     membuffer->offset = 0;
 }
 
-
-Particles get_ffi_particles(ffi::Buffer<ffi::F64> positions, ffi::Buffer<ffi::F64> values, IndexValue index_value) {
+Particles get_ffi_particles(
+    ffi::Buffer<ffi::F64> positions,
+    ffi::Buffer<ffi::F64> values,
+    IndexValue index_value)
+{
     Particles particles;
     particles.positions = positions.typed_data();
     particles.values = values.typed_data();
@@ -118,41 +240,49 @@ Particles get_ffi_particles(ffi::Buffer<ffi::F64> positions, ffi::Buffer<ffi::F6
     return particles;
 }
 
+// -----------------------------------------------------------------------------
+// count2 FFI impl
+// -----------------------------------------------------------------------------
 
-ffi::Error count2Impl(cudaStream_t stream,
-                      ffi::Buffer<ffi::F64> positions1,
-                      ffi::Buffer<ffi::F64> values1,
-                      ffi::Buffer<ffi::F64> positions2,
-                      ffi::Buffer<ffi::F64> values2,
-                      ffi::ResultBuffer<ffi::F64> counts,
-                      ffi::ResultBuffer<ffi::F64> buffer) {
-
+ffi::Error count2Impl(
+    cudaStream_t stream,
+    ffi::Buffer<ffi::F64> positions1,
+    ffi::Buffer<ffi::F64> values1,
+    ffi::Buffer<ffi::F64> positions2,
+    ffi::Buffer<ffi::F64> values2,
+    ffi::ResultBuffer<ffi::F64> counts,
+    ffi::ResultBuffer<ffi::F64> buffer)
+{
     Particles list_particles[MAX_NMESH];
     Mesh list_mesh[MAX_NMESH];
-    for (size_t imesh=0; imesh < MAX_NMESH; imesh++) list_particles[imesh].size = 0;
-    list_particles[0] = get_ffi_particles(positions1, values1, index_value[0]);
-    list_particles[1] = get_ffi_particles(positions2, values2, index_value[1]);
+
+    for (size_t imesh = 0; imesh < MAX_NMESH; imesh++) {
+        list_particles[imesh].size = 0;
+        list_mesh[imesh].total_nparticles = 0;
+    }
+
+    list_particles[0] = get_ffi_particles(positions1, values1, index_value2[0]);
+    list_particles[1] = get_ffi_particles(positions2, values2, index_value2[1]);
+
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
     membuffer.nblocks = 256;
-    set_mesh(list_particles, list_mesh, mattrs, &membuffer, stream);
-    // Perform the computation
-    count2(counts->typed_data(), list_mesh, mattrs, sattrs, battrs, wattrs, spattrs, &membuffer, stream);
-    free_owned_ptrs();
+
+    set_mesh(list_particles, list_mesh, mattrs2, &membuffer, stream);
+    count2(counts->typed_data(), list_mesh, mattrs2, sattrs2, battrs2, wattrs2, spattrs2, &membuffer, stream);
 
     cudaError_t last_error = cudaGetLastError();
     if (last_error != cudaSuccess) {
-      return ffi::Error::Internal(
-          std::string("CUDA error: ") + cudaGetErrorString(last_error));
+        return ffi::Error::Internal(
+            std::string("CUDA error: ") + cudaGetErrorString(last_error));
     }
     return ffi::Error::Success();
 }
 
-
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
     count2ffi, count2Impl,
     ffi::Ffi::Bind()
-        .Ctx<ffi::PlatformStream<cudaStream_t>>()  // stream
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
         .Arg<ffi::Buffer<ffi::F64>>()
         .Arg<ffi::Buffer<ffi::F64>>()
         .Arg<ffi::Buffer<ffi::F64>>()
@@ -161,42 +291,138 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ret<ffi::Buffer<ffi::F64>>()
 );
 
+// -----------------------------------------------------------------------------
+// count3close FFI impl
+// -----------------------------------------------------------------------------
+
+ffi::Error count3closeImpl(
+    cudaStream_t stream,
+    ffi::Buffer<ffi::F64> positions1,
+    ffi::Buffer<ffi::F64> values1,
+    ffi::Buffer<ffi::F64> positions2,
+    ffi::Buffer<ffi::F64> values2,
+    ffi::Buffer<ffi::F64> positions3,
+    ffi::Buffer<ffi::F64> values3,
+    ffi::ResultBuffer<ffi::F64> counts,
+    ffi::ResultBuffer<ffi::F64> buffer)
+{
+    Particles list_particles[MAX_NMESH];
+    Mesh list_mesh[MAX_NMESH];
+
+    for (size_t imesh = 0; imesh < MAX_NMESH; imesh++) {
+        list_particles[imesh].size = 0;
+        list_mesh[imesh].total_nparticles = 0;
+    }
+
+    list_particles[0] = get_ffi_particles(positions1, values1, index_value3[0]);
+    list_particles[1] = get_ffi_particles(positions2, values2, index_value3[1]);
+    list_particles[2] = get_ffi_particles(positions3, values3, index_value3[2]);
+
+    DeviceMemoryBuffer membuffer;
+    set_mem_buffer(&membuffer, buffer);
+    membuffer.nblocks = 256;
+
+    set_mesh(list_particles, list_mesh, mattrs3, &membuffer, stream);
+
+    Mesh list_mesh_ab[MAX_NMESH];
+    Mesh list_mesh_ac[MAX_NMESH];
+    for (size_t imesh = 0; imesh < MAX_NMESH; imesh++) {
+        list_mesh_ab[imesh].total_nparticles = 0;
+        list_mesh_ac[imesh].total_nparticles = 0;
+    }
+    list_mesh_ab[0] = list_mesh[0];
+    list_mesh_ab[1] = list_mesh[1];
+    list_mesh_ac[0] = list_mesh[0];
+    list_mesh_ac[1] = list_mesh[2];
+
+    ClosePairs close_ab = {0};
+    ClosePairs close_ac = {0};
+
+    fill_close_pairs(&close_ab, list_mesh_ab, mattrs3, sattrs3_ab, &membuffer, stream);
+    fill_close_pairs(&close_ac, list_mesh_ac, mattrs3, sattrs3_ac, &membuffer, stream);
+
+    BinAttrs *battrs_local[3] = {
+        &battrs3_ab,
+        &battrs3_ac,
+        has_battrs3_bc ? &battrs3_bc : nullptr
+    };
+
+    count3_close(
+        counts->typed_data(),
+        close_ab,
+        close_ac,
+        list_mesh,
+        mattrs3,
+        battrs_local,
+        wattrs3,
+        &membuffer,
+        stream);
+
+    cudaError_t last_error = cudaGetLastError();
+    if (last_error != cudaSuccess) {
+        return ffi::Error::Internal(
+            std::string("CUDA error: ") + cudaGetErrorString(last_error));
+    }
+    return ffi::Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    count3closeffi, count3closeImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+);
+
+// -----------------------------------------------------------------------------
+// Capsule helper
+// -----------------------------------------------------------------------------
 
 template <typename T>
 py::capsule EncapsulateFfiCall(T *fn) {
-  // This check is optional, but it can be helpful for avoiding invalid handlers.
-  static_assert(std::is_invocable_r_v<XLA_FFI_Error *, T, XLA_FFI_CallFrame *>,
-                "Encapsulated function must be and XLA FFI handler");
-  return py::capsule(reinterpret_cast<void *>(fn));
+    static_assert(std::is_invocable_r_v<XLA_FFI_Error *, T, XLA_FFI_CallFrame *>,
+                  "Encapsulated function must be an XLA FFI handler");
+    return py::capsule(reinterpret_cast<void *>(fn));
 }
 
+// -----------------------------------------------------------------------------
+// Module
+// -----------------------------------------------------------------------------
 
-// Bind the function and structs to Python
 PYBIND11_MODULE(ffi_cucount, m) {
-    // Register classes first!
     py::class_<BinAttrs_py>(m, "BinAttrs", py::module_local())
-        .def(py::init<py::kwargs>()) // Accept Python kwargs
+        .def(py::init<py::kwargs>())
         .def_property_readonly("shape", &BinAttrs_py::shape)
         .def_property_readonly("size", &BinAttrs_py::size)
         .def_property_readonly("ndim", &BinAttrs_py::ndim)
-        .def_property_readonly("varnames", &BinAttrs_py::varnames, "Return list of variable names in order (e.g. ['s','mu'])")
-        .def_property_readonly("losnames", &BinAttrs_py::losnames, "Return list of line-of-sight names in order")
+        .def_property_readonly("varnames", &BinAttrs_py::varnames,
+            "Return list of variable names in order (e.g. ['s','mu'])")
+        .def_property_readonly("losnames", &BinAttrs_py::losnames,
+            "Return list of line-of-sight names in order")
         .def_readonly("var", &BinAttrs_py::var)
         .def_readonly("min", &BinAttrs_py::min)
         .def_readonly("max", &BinAttrs_py::max)
-        .def_readonly("step", &BinAttrs_py::step) // The lambda approach is safer to avoid exposing internal mutable containers
-        .def_property_readonly("array", [](const BinAttrs_py &b) -> std::vector<py::array_t<FLOAT>> {return b.array;});
+        .def_readonly("step", &BinAttrs_py::step)
+        .def_property_readonly("array",
+            [](const BinAttrs_py &b) -> std::vector<py::array_t<FLOAT>> { return b.array; });
 
     py::class_<SelectionAttrs_py>(m, "SelectionAttrs", py::module_local())
-        .def(py::init<py::kwargs>()) // Accept Python kwargs
+        .def(py::init<py::kwargs>())
         .def_property_readonly("ndim", &SelectionAttrs_py::ndim)
-        .def_property_readonly("varnames", &SelectionAttrs_py::varnames, "Return list of variable names in order (e.g. ['theta'])")
+        .def_property_readonly("varnames", &SelectionAttrs_py::varnames,
+            "Return list of variable names in order (e.g. ['theta'])")
         .def_readonly("var", &SelectionAttrs_py::var)
         .def_readonly("min", &SelectionAttrs_py::min)
         .def_readonly("max", &SelectionAttrs_py::max);
 
     py::class_<WeightAttrs_py>(m, "WeightAttrs", py::module_local())
-        .def(py::init<py::kwargs>()); // Accept Python kwargs
+        .def(py::init<py::kwargs>());
 
     py::class_<MeshAttrs_py>(m, "MeshAttrs", py::module_local())
         .def(py::init<py::kwargs>());
@@ -208,14 +434,15 @@ PYBIND11_MODULE(ffi_cucount, m) {
 
     m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
 
-    m.def("set_attrs", &set_attrs_py, "Set attributes",
+    // count2 setup
+    m.def("set_count2_attrs", &set_count2_attrs_py, "Set count2 attributes",
         py::arg("mattrs"),
         py::arg("battrs"),
-        py::arg("wattrs") = WeightAttrs_py(), // Default value
+        py::arg("wattrs") = WeightAttrs_py(),
         py::arg("sattrs") = SelectionAttrs_py(),
         py::arg("spattrs") = SplitAttrs_py());
 
-    m.def("set_index_value", &set_index_value_py, "Set value indices",
+    m.def("set_count2_index_value", &set_count2_index_value_py, "Set count2 value indices",
         py::arg("iparticle"),
         py::arg("size_split") = 0,
         py::arg("size_spin") = 0,
@@ -223,10 +450,48 @@ PYBIND11_MODULE(ffi_cucount, m) {
         py::arg("size_bitwise_weight") = 0,
         py::arg("size_negative_weight") = 0);
 
-    // Expose helper to get output names
-    m.def("get_count2_names",
-          &get_count2_names_py,
-          "Return list of output names for count2.");
+    m.def("get_count2_names", &get_count2_names_py,
+        "Return list of output names for count2.");
 
     m.def("count2", []() { return EncapsulateFfiCall(count2ffi); });
+
+    // backward-compatible aliases
+    m.def("set_attrs", &set_count2_attrs_py, "Set count2 attributes",
+        py::arg("mattrs"),
+        py::arg("battrs"),
+        py::arg("wattrs") = WeightAttrs_py(),
+        py::arg("sattrs") = SelectionAttrs_py(),
+        py::arg("spattrs") = SplitAttrs_py());
+
+    m.def("set_index_value", &set_count2_index_value_py, "Set count2 value indices",
+        py::arg("iparticle"),
+        py::arg("size_split") = 0,
+        py::arg("size_spin") = 0,
+        py::arg("size_individual_weight") = 0,
+        py::arg("size_bitwise_weight") = 0,
+        py::arg("size_negative_weight") = 0);
+
+    // count3close setup
+    m.def("set_count3close_attrs", &set_count3close_attrs_py, "Set count3close attributes",
+        py::arg("mattrs"),
+        py::arg("battrs_ab"),
+        py::arg("battrs_ac"),
+        py::arg("battrs_bc") = py::none(),
+        py::arg("wattrs") = WeightAttrs_py(),
+        py::arg("sattrs_ab") = SelectionAttrs_py(),
+        py::arg("sattrs_ac") = SelectionAttrs_py());
+
+    m.def("set_count3close_index_value", &set_count3close_index_value_py,
+        "Set count3close value indices",
+        py::arg("iparticle"),
+        py::arg("size_split") = 0,
+        py::arg("size_spin") = 0,
+        py::arg("size_individual_weight") = 0,
+        py::arg("size_bitwise_weight") = 0,
+        py::arg("size_negative_weight") = 0);
+
+    m.def("get_count3close_names", &get_count3close_names_py,
+        "Return list of output names for count3close.");
+
+    m.def("count3close", []() { return EncapsulateFfiCall(count3closeffi); });
 }

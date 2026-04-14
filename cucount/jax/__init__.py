@@ -149,7 +149,7 @@ jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs, wattrs: WeightAttrs=None,
                      sattrs: SelectionAttrs=None, spattrs: SplitAttrs=None):
     mattrs._to_c()
-    ffi_cucount.set_attrs(mattrs._to_c(), battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs)
+    ffi_cucount.set_count2_attrs(mattrs._to_c(), battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs)
     for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value._to_c())
     dtype = jnp.float64
     bsize, bshape = battrs.size, tuple(battrs.shape)
@@ -244,3 +244,191 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         #assert all(particle.exchanged for particle in particles), 'All input particles should be exchanged'
         count2 = shard_map(lambda *particles: jax.lax.psum(_count2(*particles), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))
     return count2(*particles)
+
+
+
+jax.ffi.register_ffi_target("count3close", ffi_cucount.count3close(), platform="CUDA")
+
+
+def _count3close_no_shard(*particles: Particles,
+                          mattrs: MeshAttrs,
+                          battrs_ab: BinAttrs,
+                          battrs_ac: BinAttrs,
+                          battrs_bc: BinAttrs = None,
+                          wattrs: WeightAttrs = None,
+                          sattrs_ab: SelectionAttrs = None,
+                          sattrs_ac: SelectionAttrs = None):
+    mattrs._to_c()
+    ffi_cucount.set_count3close_attrs(
+        mattrs._to_c(),
+        battrs_ab,
+        battrs_ac,
+        battrs_bc,
+        wattrs=wattrs._to_c(),
+        sattrs_ab=sattrs_ab,
+        sattrs_ac=sattrs_ac,
+    )
+    for i, p in enumerate(particles):
+        ffi_cucount.set_count3close_index_value(i, **p.index_value._to_c())
+
+    dtype = jnp.float64
+
+    size_ab, shape_ab = battrs_ab.size, tuple(battrs_ab.shape)
+    size_ac, shape_ac = battrs_ac.size, tuple(battrs_ac.shape)
+    if battrs_bc is not None:
+        size_bc, shape_bc = battrs_bc.size, tuple(battrs_bc.shape)
+    else:
+        size_bc, shape_bc = 1, ()
+
+    bsize = size_ab * size_ac * size_bc
+    out_shape = shape_ab + shape_ac + shape_bc
+
+    names = ffi_cucount.get_count3close_names()
+    res_type = jax.ShapeDtypeStruct((len(names) * bsize,), dtype)
+
+    # Max values
+    nblocks = 256
+
+    # Three meshes
+    meshsize = mattrs.meshsize.prod()
+    meshsize3 = 3 * meshsize
+
+    # Estimate buffer size
+    size = 0
+
+    # Buffer for mesh
+    # nparticles, cumnparticles
+    size += 2 * meshsize3
+
+    # index, positions, spositions, values
+    size += sum(particle.positions.shape[0] for particle in particles)
+    size += 2 * sum(particle.positions.size for particle in particles)
+    size += sum(particle.index_value.size * particle.positions.shape[0] for particle in particles)
+
+    # Buffer for recursive scan
+    size += 2 * 3 * (meshsize + 1024 - 1) // 1024
+
+    # Buffer for angular upweights
+    if wattrs.angular is not None:
+        size += 2 * wattrs.angular.weight.size
+
+    # Buffer for bitwise correction
+    if wattrs.bitwise is not None and wattrs.bitwise.p_correction_nbits is not None:
+        size += wattrs.bitwise.p_correction_nbits.size
+
+    # Buffer for close pairs (A,B) and (A,C)
+    # crude upper bound: offsets for primaries + secondary indices for all secondaries
+    size += particles[0].positions.shape[0] + 1
+    size += particles[0].positions.shape[0] + 1
+    size += particles[0].positions.shape[0] * particles[1].positions.shape[0]
+    size += particles[0].positions.shape[0] * particles[2].positions.shape[0]
+
+    # Buffer for count3_close: edges
+    size += sum(s + 1 for s in shape_ab)
+    size += sum(s + 1 for s in shape_ac)
+    if battrs_bc is not None:
+        size += sum(s + 1 for s in shape_bc)
+
+    # Buffer for count3_close: nblocks * counts
+    size += nblocks * len(names) * bsize
+
+    buffer_type = jax.ShapeDtypeStruct((size,), dtype)
+    call = jax.ffi.ffi_call("count3close", (res_type, buffer_type))
+
+    args = sum(
+        ([particle.positions, _stack_values(particle.values, np=jnp)] for particle in particles),
+        start=[]
+    )
+    counts = call(*args)[0]
+
+    return {
+        name: counts[icount * bsize:(icount + 1) * bsize].reshape(out_shape)
+        for icount, name in enumerate(names)
+    }
+
+
+@default_sharding_mesh
+def count3close(*particles: Particles,
+                battrs_ab: BinAttrs,
+                battrs_ac: BinAttrs,
+                battrs_bc: BinAttrs = None,
+                wattrs: WeightAttrs = None,
+                sattrs_ab: SelectionAttrs = None,
+                sattrs_ac: SelectionAttrs = None,
+                mattrs: MeshAttrs = None,
+                sharding_mesh=None):
+    """
+    Perform close-triplet counts using the native cucount library.
+
+    This computes 3-point counts by first building close-pair lists for (A, B)
+    and (A, C), then calling the underlying GPU count3_close implementation.
+
+    Parameters
+    ----------
+    *particles : Particles
+        Exactly three Particles instances: primary catalog A, and secondary
+        catalogs B and C.
+    battrs_ab : BinAttrs
+        Binning specification for the AB pair.
+    battrs_ac : BinAttrs
+        Binning specification for the AC pair.
+    battrs_bc : BinAttrs, optional
+        Optional binning specification for the BC pair. If None, BC binning is
+        omitted and passed as NULL to the native layer.
+    wattrs : WeightAttrs, optional
+        Weight attributes. If None, defaults to WeightAttrs().
+    sattrs_ab : SelectionAttrs, optional
+        Close-pair selection used to build the AB neighbor list.
+    sattrs_ac : SelectionAttrs, optional
+        Close-pair selection used to build the AC neighbor list.
+    mattrs : MeshAttrs, optional
+        Mesh attributes. If None, defaults to MeshAttrs(*particles, ...).
+
+    Returns
+    -------
+    result : dict
+        Dict of named arrays. Currently this is typically just {'weight': array}.
+
+    Note
+    ----
+    Computation is distributed if in the context of a sharding mesh.
+    """
+    assert jax.config.read("jax_enable_x64"), "for cucount you have to enable float64"
+    assert len(particles) == 3
+
+    _setup_cucount_logging()
+
+    if wattrs is None:
+        wattrs = WeightAttrs()
+    if sattrs_ab is None:
+        sattrs_ab = SelectionAttrs()
+    if sattrs_ac is None:
+        sattrs_ac = SelectionAttrs()
+    if mattrs is None:
+        mattrs = MeshAttrs(*particles, sattrs=sattrs_ab, battrs=battrs_ab)
+
+    wattrs.check(*particles)
+
+    count3close = _count3close = partial(
+        _count3close_no_shard,
+        mattrs=mattrs,
+        battrs_ab=battrs_ab,
+        battrs_ac=battrs_ac,
+        battrs_bc=battrs_bc,
+        wattrs=wattrs,
+        sattrs_ab=sattrs_ab,
+        sattrs_ac=sattrs_ac,
+    )
+
+    if sharding_mesh.axis_names:
+        count3close = shard_map(
+            lambda *particles: jax.lax.psum(
+                _count3close(*particles),
+                sharding_mesh.axis_names
+            ),
+            mesh=sharding_mesh,
+            in_specs=(P(sharding_mesh.axis_names), P(None), P(None)),
+            out_specs=P(None),
+        )
+
+    return count3close(*particles)

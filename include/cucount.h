@@ -344,110 +344,231 @@ struct SelectionAttrs_py {
 
 
 // Expose the WeightAttrs struct to Python
+
 struct WeightAttrs_py {
     std::vector<size_t> spin;
-    // New members for 'bitwise' and 'angular' options
+
+    // Bitwise
     FLOAT bitwise_default_value = 0.0;
     FLOAT bitwise_nrealizations = 0.0;
     int bitwise_noffset = 0;
     py::array_t<FLOAT> bitwise_p_correction_nbits;
-    py::array_t<FLOAT> angular_sep;
+
+    // Angular
+    std::vector<py::array_t<FLOAT>> angular_sep;
+    std::vector<py::array_t<FLOAT>> angular_edges;
     py::array_t<FLOAT> angular_weight;
 
-    // Default constructor
     WeightAttrs_py() {}
 
-    // Constructor that takes a Python dictionary
     WeightAttrs_py(const py::kwargs& kwargs) {
         for (auto item : kwargs) {
-            // Extract the variable name and range tuple
             std::string var_name = py::cast<std::string>(item.first);
+
             if (var_name == "spin") {
-                if (py::isinstance<py::iterable>(item.second)) {
-                    for (auto v : py::cast<py::iterable>(item.second)) {
-                        spin.push_back(py::cast<size_t>(v));
-                    }
+                if (!py::isinstance<py::iterable>(item.second)) {
+                    throw std::invalid_argument(
+                        "Invalid type for 'spin' (expected iterable)");
                 }
-                else {
-                    throw std::invalid_argument("Invalid type for 'spin' (expected iterable)");
+                for (auto v : py::cast<py::iterable>(item.second)) {
+                    spin.push_back(py::cast<size_t>(v));
                 }
             }
+
             else if (var_name == "angular") {
-                // Accept either dict {'sep': array, 'weight': array} or tuple (sep, weight)
-                if (py::isinstance<py::dict>(item.second)) {
-                    py::dict d = py::cast<py::dict>(item.second);
-                    if (!d.contains("sep") || !d.contains("weight")) {
-                        throw std::invalid_argument("'angular' dict must contain keys 'sep' and 'weight'");
-                    }
-                    angular_sep = py::array_t<FLOAT>(d["sep"].attr("copy")());
-                    angular_weight = py::array_t<FLOAT>(d["weight"].attr("copy")());
-                }
-                else if (py::isinstance<py::tuple>(item.second)) {
-                    py::tuple t = py::cast<py::tuple>(item.second);
-                    if (t.size() != 2) {
-                        throw std::invalid_argument("'angular' tuple must have length 2: (sep, weight)");
-                    }
-                    angular_sep = py::array_t<FLOAT>(t[0].attr("copy")());
-                    angular_weight = py::array_t<FLOAT>(t[1].attr("copy")());
-                }
-                else {
-                    throw std::invalid_argument("Invalid type for 'angular' (expected dict or tuple)");
-                }
-                if (angular_sep.size() != angular_weight.size()) {
-                    throw std::invalid_argument("'angular' arrays 'sep' and 'weight' must have the same length");
-                }
-            }
-            else if (var_name == "bitwise") {
-                // Expect a dict: {'num': float, 'noffset': int, 'p_correction_nbits': 2D array}
                 if (!py::isinstance<py::dict>(item.second)) {
-                    throw std::invalid_argument("'bitwise' must be provided as a dict with keys 'num','noffset','p_correction_nbits'");
+                    throw std::invalid_argument(
+                        "Invalid type for 'angular' (expected dict)");
                 }
+
                 py::dict d = py::cast<py::dict>(item.second);
 
-                // keys are optional -- use existing defaults if absent
-                if (d.contains("default_value")) bitwise_default_value = py::cast<FLOAT>(d["default_value"]);
-                if (d.contains("nrealizations")) bitwise_nrealizations = py::cast<FLOAT>(d["nrealizations"]);
-                if (d.contains("noffset")) bitwise_noffset = py::cast<int>(d["noffset"]);
+                const bool has_sep = d.contains("sep");
+                const bool has_edges = d.contains("edges");
+                const bool has_weight = d.contains("weight");
+
+                if (!has_weight) {
+                    throw std::invalid_argument(
+                        "'angular' dict must contain key 'weight'");
+                }
+                if (has_sep == has_edges) {
+                    throw std::invalid_argument(
+                        "'angular' dict must contain exactly one of 'sep' or 'edges'");
+                }
+
+                angular_weight = py::array_t<FLOAT>(d["weight"].attr("copy")());
+
+                if (has_sep) {
+                    if (!py::isinstance<py::iterable>(d["sep"])) {
+                        throw std::invalid_argument(
+                            "'angular.sep' must be an iterable of 1D arrays");
+                    }
+                    for (auto obj : py::cast<py::iterable>(d["sep"])) {
+                        auto arr = py::array_t<FLOAT>(py::cast<py::object>(obj).attr("copy")());
+                        if (arr.ndim() != 1) {
+                            throw std::invalid_argument(
+                                "Each entry of 'angular.sep' must be a 1D array");
+                        }
+                        angular_sep.push_back(std::move(arr));
+                    }
+                }
+
+                if (has_edges) {
+                    if (!py::isinstance<py::iterable>(d["edges"])) {
+                        throw std::invalid_argument(
+                            "'angular.edges' must be an iterable of 1D arrays");
+                    }
+                    for (auto obj : py::cast<py::iterable>(d["edges"])) {
+                        auto arr = py::array_t<FLOAT>(py::cast<py::object>(obj).attr("copy")());
+                        if (arr.ndim() != 1) {
+                            throw std::invalid_argument(
+                                "Each entry of 'angular.edges' must be a 1D array");
+                        }
+                        angular_edges.push_back(std::move(arr));
+                    }
+                }
+
+                const bool use_sep = !angular_sep.empty();
+                const bool use_edges = !angular_edges.empty();
+
+                if (use_sep == use_edges) {
+                    throw std::invalid_argument(
+                        "'angular' must define exactly one of 'sep' or 'edges'");
+                }
+
+                if (!angular_weight.size()) {
+                    throw std::invalid_argument(
+                        "'angular.weight' must be provided and non-empty");
+                }
+
+                py::buffer_info winfo = angular_weight.request();
+                if (winfo.ndim < 1 || winfo.ndim > (int)MAX_NBIN) {
+                    throw std::invalid_argument(
+                        "'angular.weight' must have ndim between 1 and MAX_NBIN");
+                }
+
+                if (use_sep) {
+                    if ((ssize_t) angular_sep.size() != winfo.ndim) {
+                        throw std::invalid_argument(
+                            "'angular.sep' must contain one 1D array per weight dimension");
+                    }
+                    for (ssize_t i = 0; i < winfo.ndim; i++) {
+                        if ((ssize_t) angular_sep[i].size() != winfo.shape[i]) {
+                            throw std::invalid_argument(
+                                "Each 'angular.sep[i]' must have length weight.shape(i)");
+                        }
+                    }
+                }
+
+                if (use_edges) {
+                    if ((ssize_t) angular_edges.size() != winfo.ndim) {
+                        throw std::invalid_argument(
+                            "'angular.edges' must contain one 1D array per weight dimension");
+                    }
+                    for (ssize_t i = 0; i < winfo.ndim; i++) {
+                        if ((ssize_t) angular_edges[i].size() != winfo.shape[i] + 1) {
+                            throw std::invalid_argument(
+                                "Each 'angular.edges[i]' must have length weight.shape(i) + 1");
+                        }
+                    }
+                }
+            }
+
+            else if (var_name == "bitwise") {
+                if (!py::isinstance<py::dict>(item.second)) {
+                    throw std::invalid_argument(
+                        "'bitwise' must be provided as a dict with keys "
+                        "'default_value', 'nrealizations', 'noffset', 'p_correction_nbits'");
+                }
+
+                py::dict d = py::cast<py::dict>(item.second);
+
+                if (d.contains("default_value")) {
+                    bitwise_default_value = py::cast<FLOAT>(d["default_value"]);
+                }
+                if (d.contains("nrealizations")) {
+                    bitwise_nrealizations = py::cast<FLOAT>(d["nrealizations"]);
+                }
+                if (d.contains("noffset")) {
+                    bitwise_noffset = py::cast<int>(d["noffset"]);
+                }
                 if (d.contains("p_correction_nbits")) {
                     auto pcorr = py::cast<py::array_t<FLOAT>>(d["p_correction_nbits"]);
                     if (pcorr.ndim() != 2) {
-                        throw std::invalid_argument("'p_correction_nbits' must be a 2D array");
+                        throw std::invalid_argument(
+                            "'p_correction_nbits' must be a 2D array");
                     }
-                    if (pcorr.shape(1) != pcorr.shape(0)) {
-                        throw std::invalid_argument("'p_correction_nbits' must be a square array");
+                    if (pcorr.shape(0) != pcorr.shape(1)) {
+                        throw std::invalid_argument(
+                            "'p_correction_nbits' must be a square array");
                     }
                     bitwise_p_correction_nbits = py::array_t<FLOAT>(pcorr.attr("copy")());
                 }
             }
+
             else {
-                throw std::invalid_argument("Invalid argument '" + var_name + "' for WeightAttrs");
+                throw std::invalid_argument(
+                    "Invalid argument '" + var_name + "' for WeightAttrs");
             }
         }
     }
 
     WeightAttrs data() {
         WeightAttrs wattrs = {0};
+
         for (size_t i = 0; i < MAX_NMESH; i++) {
             wattrs.spin[i] = 0;
             if (i < spin.size()) wattrs.spin[i] = spin[i];
         }
 
-        // -- Angular weight --
-        if (angular_sep.size()) {
-            wattrs.angular.size = angular_sep.size();
-            wattrs.angular.sep = angular_sep.mutable_data();
+        // Angular
+        for (size_t i = 0; i < MAX_NBIN; i++) {
+            wattrs.angular.sep[i] = nullptr;
+            wattrs.angular.edges[i] = nullptr;
+            wattrs.angular.shape[i] = 0;
+        }
+        wattrs.angular.weight = nullptr;
+        wattrs.angular.size = 0;
+        wattrs.angular.ndim = 0;
+
+        if (angular_weight.size()) {
+            py::buffer_info winfo = angular_weight.request();
+
+            wattrs.angular.ndim = static_cast<size_t>(winfo.ndim);
+            wattrs.angular.size = static_cast<size_t>(angular_weight.size());
             wattrs.angular.weight = angular_weight.mutable_data();
+
+            for (ssize_t i = 0; i < winfo.ndim; i++) {
+                wattrs.angular.shape[i] = static_cast<size_t>(winfo.shape[i]);
+            }
+
+            if (!angular_sep.empty()) {
+                for (size_t i = 0; i < wattrs.angular.ndim; i++) {
+                    wattrs.angular.sep[i] = angular_sep[i].mutable_data();
+                }
+            }
+
+            if (!angular_edges.empty()) {
+                for (size_t i = 0; i < wattrs.angular.ndim; i++) {
+                    wattrs.angular.edges[i] = angular_edges[i].mutable_data();
+                }
+            }
         }
 
-        // -- Bitwise weight --
+        // Bitwise
         wattrs.bitwise.default_value = bitwise_default_value;
         wattrs.bitwise.nrealizations = bitwise_nrealizations;
         wattrs.bitwise.noffset = bitwise_noffset;
+        wattrs.bitwise.p_nbits = 0;
+        wattrs.bitwise.p_correction_nbits = nullptr;
 
         if (bitwise_p_correction_nbits.size()) {
-            wattrs.bitwise.p_nbits = bitwise_p_correction_nbits.shape(0);
-            wattrs.bitwise.p_correction_nbits = bitwise_p_correction_nbits.mutable_data();
+            wattrs.bitwise.p_nbits =
+                static_cast<size_t>(bitwise_p_correction_nbits.shape(0));
+            wattrs.bitwise.p_correction_nbits =
+                bitwise_p_correction_nbits.mutable_data();
         }
+
         return wattrs;
     }
 };

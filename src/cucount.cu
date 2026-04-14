@@ -214,6 +214,239 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
 }
 
 
+
+inline void free_device_close_pairs(ClosePairs *cpairs, DeviceMemoryBuffer *buffer)
+{
+    if (cpairs->offsets) {
+        my_device_free(cpairs->offsets, buffer);
+        cpairs->offsets = NULL;
+    }
+    if (cpairs->secondary) {
+        my_device_free(cpairs->secondary, buffer);
+        cpairs->secondary = NULL;
+    }
+    cpairs->nprimaries = 0;
+    cpairs->npairs = 0;
+}
+
+
+py::object count3close_py(
+    Particles_py& particles1,
+    Particles_py& particles2,
+    Particles_py& particles3,
+    MeshAttrs_py mattrs_py,
+    BinAttrs_py battrs_ab_py,
+    BinAttrs_py battrs_ac_py,
+    py::object battrs_bc_obj = py::none(),
+    WeightAttrs_py wattrs_py = WeightAttrs_py(),
+    const SelectionAttrs_py sattrs_ab_py = SelectionAttrs_py(),
+    const SelectionAttrs_py sattrs_ac_py = SelectionAttrs_py(),
+    const int nthreads = 1)
+{
+    MeshAttrs mattrs = mattrs_py.data();
+    BinAttrs battrs_ab = battrs_ab_py.data();
+    BinAttrs battrs_ac = battrs_ac_py.data();
+
+    const bool has_bc = !battrs_bc_obj.is_none();
+    BinAttrs_py battrs_bc_py;
+    BinAttrs battrs_bc = {0};
+    if (has_bc) {
+        battrs_bc_py = py::cast<BinAttrs_py>(battrs_bc_obj);
+        battrs_bc = battrs_bc_py.data();
+    }
+
+    BinAttrs *battrs[3] = {
+        &battrs_ab,
+        &battrs_ac,
+        has_bc ? &battrs_bc : nullptr
+    };
+
+    WeightAttrs wattrs = wattrs_py.data();
+    SelectionAttrs sattrs_ab = sattrs_ab_py.data();
+    SelectionAttrs sattrs_ac = sattrs_ac_py.data();
+
+    // prepare host-side particle descriptors (point into numpy buffers)
+    Particles p1_host = particles1.data();
+    Particles p2_host = particles2.data();
+    Particles p3_host = particles3.data();
+
+    // number of GPUs available
+    int ngpus = 1;
+    CUDA_CHECK(cudaGetDeviceCount(&ngpus));
+    ngpus = MIN(nthreads, ngpus);
+
+    // number of counts and total size per-count
+    char names[1][SIZE_NAME] = {"weight"};
+    const size_t ncounts = 1;
+
+    size_t bsize = battrs_ab.size * battrs_ac.size;
+    if (has_bc) bsize *= battrs_bc.size;
+    size_t csize = ncounts * bsize;
+
+    // Host output (accumulated across GPUs)
+    py::array_t<FLOAT> counts_py(csize);
+    auto counts_ptr = counts_py.mutable_data();
+    std::fill_n(counts_ptr, csize, static_cast<FLOAT>(0.0));
+
+    // Partition particles1 across GPUs (split by primary particle index)
+    const size_t n1 = p1_host.size;
+    std::vector<size_t> starts(ngpus), ends(ngpus);
+    for (int d = 0; d < ngpus; ++d) {
+        starts[d] = (d * n1) / ngpus;
+        ends[d] = ((d + 1) * n1) / ngpus;
+    }
+
+    // Prepare container for per-GPU results
+    std::vector<std::vector<FLOAT>> dev_results(ngpus);
+
+    // Launch one std::thread per GPU so each thread can set its own current device
+    std::vector<std::thread> workers;
+    workers.reserve(ngpus);
+
+    for (int dev = 0; dev < ngpus; ++dev) {
+        const size_t start = starts[dev];
+        const size_t end = ends[dev];
+        const size_t nchunk = (end > start) ? (end - start) : 0;
+        if (nchunk == 0) continue;
+
+        workers.emplace_back(
+            [dev, start, nchunk,
+             &p1_host, &p2_host, &p3_host,
+             &mattrs, &sattrs_ab, &sattrs_ac, &wattrs,
+             &battrs_ab, &battrs_ac, &battrs_bc,
+             has_bc, bsize, csize, &dev_results]()
+        {
+            CUDA_CHECK(cudaSetDevice(dev));
+
+            cudaStream_t stream;
+            CUDA_CHECK(cudaStreamCreate(&stream));
+
+            DeviceMemoryBuffer *membuffer = NULL;
+
+            // create host-side Particles describing the chunk
+            Particles chunk_p1 = p1_host;
+            chunk_p1.size = nchunk;
+            chunk_p1.positions = p1_host.positions + (start * NDIM);
+            if (p1_host.values != nullptr) {
+                size_t width = p1_host.index_value.size;
+                chunk_p1.values = p1_host.values + (start * width);
+            }
+
+            // copy chunk and full second/third catalogues to device
+            Particles list_particles_dev[MAX_NMESH];
+            for (size_t i = 0; i < MAX_NMESH; ++i) list_particles_dev[i].size = 0;
+            copy_particles_to_device(chunk_p1, &list_particles_dev[0], 3);
+            copy_particles_to_device(p2_host,   &list_particles_dev[1], 3);
+            copy_particles_to_device(p3_host,   &list_particles_dev[2], 3);
+
+            // build meshes on this device
+            Mesh list_mesh_dev[MAX_NMESH];
+            for (size_t i = 0; i < MAX_NMESH; ++i) list_mesh_dev[i].total_nparticles = 0;
+            set_mesh(list_particles_dev, list_mesh_dev, mattrs, membuffer, stream);
+
+            // free host->device particle structures (device-side meshes remain)
+            for (size_t i = 0; i < 3; ++i) free_device_particles(&(list_particles_dev[i]));
+
+            // Build close pairs A-B
+            Mesh list_mesh_ab[MAX_NMESH];
+            for (size_t i = 0; i < MAX_NMESH; ++i) list_mesh_ab[i].total_nparticles = 0;
+            list_mesh_ab[0] = list_mesh_dev[0];
+            list_mesh_ab[1] = list_mesh_dev[1];
+
+            ClosePairs close_ab = {0};
+            fill_close_pairs(&close_ab, list_mesh_ab, mattrs, sattrs_ab, membuffer, stream);
+
+            // Build close pairs A-C
+            Mesh list_mesh_ac[MAX_NMESH];
+            for (size_t i = 0; i < MAX_NMESH; ++i) list_mesh_ac[i].total_nparticles = 0;
+            list_mesh_ac[0] = list_mesh_dev[0];
+            list_mesh_ac[1] = list_mesh_dev[2];
+
+            ClosePairs close_ac = {0};
+            fill_close_pairs(&close_ac, list_mesh_ac, mattrs, sattrs_ac, membuffer, stream);
+
+            // allocate device histogram for this GPU
+            FLOAT *device_counts = (FLOAT*) my_device_malloc(csize * sizeof(FLOAT), membuffer);
+            CUDA_CHECK(cudaMemsetAsync(device_counts, 0, csize * sizeof(FLOAT), stream));
+
+            BinAttrs *battrs_local[3] = {
+                &battrs_ab,
+                &battrs_ac,
+                has_bc ? &battrs_bc : nullptr
+            };
+
+            // run count3_close on this device
+            count3_close(
+                device_counts,
+                close_ab,
+                close_ac,
+                list_mesh_dev,
+                mattrs,
+                battrs_local,
+                wattrs,
+                membuffer,
+                stream);
+
+            // synchronize device stream to ensure completion before copyback
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+
+            // copy device counts back to host
+            dev_results[dev].assign(csize, static_cast<FLOAT>(0.0));
+            CUDA_CHECK(cudaMemcpy(
+                dev_results[dev].data(),
+                device_counts,
+                csize * sizeof(FLOAT),
+                cudaMemcpyDeviceToHost));
+
+            // free device memory
+            my_device_free(device_counts, membuffer);
+            free_device_close_pairs(&close_ab, membuffer);
+            free_device_close_pairs(&close_ac, membuffer);
+
+            for (size_t i = 0; i < 3; ++i) free_device_mesh(&(list_mesh_dev[i]));
+
+            CUDA_CHECK(cudaStreamDestroy(stream));
+        });
+    }
+
+    // wait for all workers to finish
+    for (auto &t : workers) t.join();
+
+    // accumulate per-GPU results into final counts_py
+    for (int dev = 0; dev < ngpus; ++dev) {
+        if (dev_results[dev].empty()) continue;
+        for (size_t i = 0; i < csize; ++i) counts_ptr[i] += dev_results[dev][i];
+    }
+
+    // Return named arrays reshaped to bin shape
+    py::dict result;
+    std::vector<ssize_t> total_shape;
+
+    auto shape_ab = battrs_ab_py.shape();
+    auto shape_ac = battrs_ac_py.shape();
+    total_shape.insert(total_shape.end(), shape_ab.begin(), shape_ab.end());
+    total_shape.insert(total_shape.end(), shape_ac.begin(), shape_ac.end());
+
+    if (has_bc) {
+        auto shape_bc = battrs_bc_py.shape();
+        total_shape.insert(total_shape.end(), shape_bc.begin(), shape_bc.end());
+    }
+
+    for (size_t icount = 0; icount < ncounts; ++icount) {
+        py::array_t<FLOAT> array_py(
+            {(ssize_t)bsize},
+            {(ssize_t)sizeof(FLOAT)},
+            counts_ptr + icount * bsize,
+            counts_py);
+        result[names[icount]] =
+            array_py.attr("reshape")(total_shape).cast<py::array_t<FLOAT>>();
+    }
+
+    return result;
+}
+
+
+
 // Bind the function and structs to Python
 PYBIND11_MODULE(cucount, m) {
     py::class_<Particles_py>(m, "Particles", py::module_local())
@@ -273,4 +506,19 @@ PYBIND11_MODULE(cucount, m) {
         py::arg("sattrs") = SelectionAttrs_py(),
         py::arg("spattrs") = SplitAttrs_py(),
         py::arg("nthreads") = 1); // Default value
+
+    m.def("count3close", &count3close_py,
+        "Take three particle catalogs, build close-pair lists for (A,B) and (A,C), "
+        "run 3-point close counts on the GPU and return numpy arrays",
+        py::arg("particles1"),
+        py::arg("particles2"),
+        py::arg("particles3"),
+        py::arg("mattrs"),
+        py::arg("battrs_ab"),
+        py::arg("battrs_ac"),
+        py::arg("battrs_bc") = py::none(),
+        py::arg("wattrs") = WeightAttrs_py(),
+        py::arg("sattrs_ab") = SelectionAttrs_py(),
+        py::arg("sattrs_ac") = SelectionAttrs_py(),
+        py::arg("nthreads") = 1);
 }

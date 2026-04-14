@@ -5,170 +5,9 @@
 #include "common.h"
 #include "count2.h"
 
-__device__ __constant__ MeshAttrs device_mattrs;
-__device__ __constant__ SelectionAttrs device_sattrs;
+
 __device__ __constant__ SplitAttrs device_spattrs;
 //__device__ __constant__ BinAttrs device_battrs;
-
-
-__device__ inline FLOAT wrap_periodic_float(FLOAT dxyz, FLOAT boxsize) {
-    FLOAT half = 0.5 * boxsize;
-    FLOAT x = dxyz + half;
-    x = fmod(x, boxsize);  // negative if x is negative
-    if (x < 0) x += boxsize;
-    return x - half;
-}
-
-
-__device__ inline int wrap_periodic_int(int idx, int meshsize) {
-    int r = idx % meshsize;
-    return (r < 0) ? r + meshsize : r;
-}
-
-
-__device__ void set_angular_bounds(FLOAT *sposition, int *bounds) {
-    FLOAT cth, phi;
-    int icth, iphi;
-    FLOAT theta, th_hi, th_lo;
-    FLOAT phi_hi, phi_lo;
-    FLOAT cth_max, cth_min;
-
-    cth = sposition[2];
-    phi = atan2(sposition[1], sposition[0]);
-    if (phi < 0) phi += 2 * M_PI; // Wrap phi into [0, 2π]
-
-    // Compute pixel indices
-    icth = (cth >= 1) ? (device_mattrs.meshsize[0] - 1) : (int)(0.5 * (1 + cth) * device_mattrs.meshsize[0]);
-    iphi = (int)(0.5 * phi / M_PI * device_mattrs.meshsize[1]);
-
-    // Compute angular bounds
-    theta = acos(-1.0 + 2.0 * ((FLOAT)(icth + 0.5)) / device_mattrs.meshsize[0]);
-    th_hi = acos(-1.0 + 2.0 * ((FLOAT)(icth + 0.0)) / device_mattrs.meshsize[0]);
-    th_lo = acos(-1.0 + 2.0 * ((FLOAT)(icth + 1.0)) / device_mattrs.meshsize[0]);
-    phi_hi = 2 * M_PI * ((FLOAT)(iphi + 1.0) / device_mattrs.meshsize[1]);
-    phi_lo = 2 * M_PI * ((FLOAT)(iphi + 0.0) / device_mattrs.meshsize[1]);
-    FLOAT smax = acos(device_mattrs.smax);
-
-    // Handle edge cases for angular bounds
-    if (th_hi > M_PI - smax) {
-        cth_min = -1;
-        cth_max = cos(th_lo - smax);
-        bounds[2] = 0;
-        bounds[3] = device_mattrs.meshsize[1] - 1;
-    } else if (th_lo < smax) {
-        cth_min = cos(th_hi + smax);
-        cth_max = 1;
-        bounds[2] = 0;
-        bounds[3] = device_mattrs.meshsize[1] - 1;
-    } else {  // theta-stripe
-        FLOAT dphi, calpha = cos(smax);
-        cth_min = cos(th_hi + smax);
-        cth_max = cos(th_lo - smax);
-
-        if (theta < 0.5 * M_PI) {
-            FLOAT cth_lo = cos(th_lo);
-            dphi = acos(sqrt((calpha * calpha - cth_lo * cth_lo) / (1 - cth_lo * cth_lo)));
-        } else {
-            FLOAT cth_hi = cos(th_hi);
-            dphi = acos(sqrt((calpha * calpha - cth_hi * cth_hi) / (1 - cth_hi * cth_hi)));
-        }
-
-        if (dphi < M_PI) {
-            FLOAT phi_min = phi_lo - dphi;
-            FLOAT phi_max = phi_hi + dphi;
-            bounds[2] = (int)(floor(0.5 * phi_min / M_PI * device_mattrs.meshsize[1]));
-            bounds[3] = (int)(floor(0.5 * phi_max / M_PI * device_mattrs.meshsize[1]));
-        } else {
-            bounds[2] = 0;
-            bounds[3] = device_mattrs.meshsize[1] - 1;
-        }
-    }
-
-    // Apply mask bounds
-    cth_min = MAX(cth_min, device_mattrs.boxcenter[0] - device_mattrs.boxsize[0] / 2.);
-    cth_max = MIN(cth_max, device_mattrs.boxcenter[0] + device_mattrs.boxsize[0] / 2.);
-
-    bounds[0] = (int)(0.5 * (1 + cth_min) * device_mattrs.meshsize[0]);
-    bounds[1] = (int)(0.5 * (1 + cth_max) * device_mattrs.meshsize[0]);
-    if (bounds[0] < 0) bounds[0] = 0;
-    if (bounds[1] >= device_mattrs.meshsize[0]) bounds[1] = device_mattrs.meshsize[0] - 1;
-}
-
-/*
-__device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        int meshsize = (int) device_mattrs.meshsize[axis];
-        FLOAT offset = device_mattrs.boxcenter[axis] - device_mattrs.boxsize[axis] / 2;
-        int index = (int) ((position[axis] - offset) * meshsize / device_mattrs.boxsize[axis]);
-        index = wrap_periodic_int(index, meshsize);
-        int delta = (int) (device_mattrs.smax / device_mattrs.boxsize[axis] * meshsize + 1);
-        bounds[2 * axis] = index - delta;
-        bounds[2 * axis + 1] = index + delta;
-        if (device_mattrs.periodic == device_mattrs.periodic) {
-            bounds[2 * axis] = MAX(bounds[2 * axis], 0);
-            bounds[2 * axis + 1] = MIN(bounds[2 * axis + 1], meshsize - 1);
-        }
-        else if (2 * delta >= meshsize) {  // make sure to visit each cell only once
-            bounds[2 * axis] = 0;
-            bounds[2 * axis + 1] = meshsize - 1;
-        }
-    }
-}
-*/
-
-__device__ void set_cartesian_bounds(FLOAT *position, int *bounds) {
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        int meshsize = (int) device_mattrs.meshsize[axis];
-        FLOAT offset = device_mattrs.boxcenter[axis] - device_mattrs.boxsize[axis] / 2;
-        int index = (int) floor((position[axis] - offset) * meshsize / device_mattrs.boxsize[axis]);
-        index = wrap_periodic_int(index, meshsize);
-        int delta = (int) ceil(device_mattrs.smax / device_mattrs.boxsize[axis] * meshsize);
-        bounds[2 * axis] = index - delta;
-        bounds[2 * axis + 1] = index + delta;
-        if (device_mattrs.periodic == 0) {
-            bounds[2 * axis] = MAX(bounds[2 * axis], 0);
-            bounds[2 * axis + 1] = MIN(bounds[2 * axis + 1], meshsize - 1);
-        }
-        else if (2 * delta + 1 >= meshsize) {  // make sure to visit each cell at most once
-            bounds[2 * axis] = 0;
-            bounds[2 * axis + 1] = meshsize - 1;
-        }
-    }
-}
-
-
-__device__ inline void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        add[axis] = position1[axis] + position2[axis];
-        //if (device_mattrs.periodic) add[axis] = wrap_periodic_float(add[axis], device_mattrs.boxsize[axis]);
-    }
-}
-
-__device__ inline void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2) {
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        diff[axis] = position1[axis] - position2[axis];
-        if (device_mattrs.periodic) diff[axis] = wrap_periodic_float(diff[axis], device_mattrs.boxsize[axis]);
-    }
-}
-
-__device__ inline FLOAT dot(const FLOAT *position1, const FLOAT *position2) {
-    FLOAT d = 0.;
-    for (size_t axis = 0; axis < NDIM; axis++) d += position1[axis] * position2[axis];
-    return d;
-}
-
-__device__ inline bool is_selected(FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2) {
-    bool selected = 1;
-    for (size_t i = 0; i < device_sattrs.ndim; i++) {
-        int var = device_sattrs.var[i];
-        if (var == VAR_THETA) {
-            FLOAT costheta = dot(sposition1, sposition2);
-            selected &= (costheta >= device_sattrs.smin[i]) && (costheta <= device_sattrs.smax[i]);
-            //if (selected) printf("costheta %d %f %.4f %.4f ", i, costheta, device_sattrs.smin[i], device_sattrs.smax[i]);
-        }
-    }
-    return selected;
-}
 
 
 __device__ inline void compute_spin_projection_cartesian(
@@ -215,84 +54,8 @@ __device__ inline void compute_spin_projection_cartesian(
 }
 
 
-__device__ void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2) {
-    if ((ellmin % 2 == 0) && (ellstep % 2 == 0)) {
-        for (int ell = ellmin; ell <= ellmax; ell+=ellstep) {
-            if (ell == 0) {
-                legendre_cache[ell] = 1.;
-            }
-            else if (ell == 2) {
-                legendre_cache[ell] = (3.0 * mu2 - 1.0) / 2.0;
-            }
-            else if (ell == 4) {
-                FLOAT mu4 = mu2 * mu2;
-                legendre_cache[ell] = (35.0 * mu4 - 30.0 * mu2 + 3.0) / 8.0;
-            }
-            else if (ell == 6) {
-                FLOAT mu4 = mu2 * mu2;
-                FLOAT mu6 = mu4 * mu2;
-                legendre_cache[ell] = (231.0 * mu6 - 315.0 * mu4 + 105.0 * mu2 - 5.0) / 16.0;
-            }
-            else if (ell == 6) {
-                FLOAT mu4 = mu2 * mu2;
-                FLOAT mu6 = mu4 * mu2;
-                FLOAT mu8 = mu4 * mu4;
-                legendre_cache[ell] = (6435.0 * mu8 - 12012.0 * mu6 + 6930.0 * mu4 - 1260.0 * mu2 + 35.0) / 128.0;
-            }
-            else {
-                legendre_cache[ell] = 0.;
-            }
-        }
-    }
-    else {
-        legendre_cache[0] = 1.0; // P_0(mu) = 1
-        legendre_cache[1] = mu; // P_1(mu) = mu
-        for (int ell = 2; ell <= ellmax; ell++) {
-            legendre_cache[ell] = ((2.0 * ell - 1.0) * mu * legendre_cache[ell - 1] - (ell - 1.0) * legendre_cache[ell - 2]) / ell;
-        }
-    }
-}
-
-
-#define BESSEL_XMIN 0.1
-
-
-__device__ FLOAT get_bessel(int ell, FLOAT x) {
-    if (x < BESSEL_XMIN) {
-        FLOAT x2 = x * x;
-        switch (ell) {
-            case 0:
-                return 1. - x2 / 6. + x2 * x2 / 120. - x2 * x2 * x2 / 5040.;
-            case 2:
-                return x2 / 15. - x2 * x2 / 210. + x2 * x2 * x2 / 11340.;
-            case 4:
-                return x2 * x2 / 945.- x2 * x2 * x2 / 10395.;
-            default:
-                return 0.0;  // optionally handle unsupported ℓ values
-        }
-    } else {
-        FLOAT invx  = 1.0 / x;
-        FLOAT invx2 = invx * invx;
-        FLOAT invx3, invx4;
-        switch (ell) {
-            case 0:
-                return sin(x) * invx;
-            case 2:
-                return (3.0 * invx2 - 1.0) * sin(x) * invx - 3.0 * cos(x) * invx2;
-            case 4:
-                invx3 = invx2 * invx;
-                invx4 = invx2 * invx2;
-                //return sin(x) * (invx - 45.0 * invx3 + 105.0 * invx4) - cos(x) * (10.0 * invx - 105.0 * invx3);
-                return 5 * (2 * invx2 - 21 * invx4) * cos(x) + (invx - 45 * invx3 + 105 * invx2 * invx3) * sin(x);
-            default:
-                return 0.0;
-        }
-    }
-}
-
-
 template <int NSPLIT_TARGETS>
-__device__ inline void accumulate_weight(
+__device__ inline void accumulate_weight2(
     FLOAT *counts,
     const FLOAT *weight,
     size_t wsize,
@@ -328,7 +91,7 @@ __device__ inline void accumulate_weight(
 }
 
 
-__device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2,
+__device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2,
                                   FLOAT *value1, FLOAT *value2, IndexValue index_value1, IndexValue index_value2,
                                   BinAttrs battrs, WeightAttrs wattrs) {
     // Split targets:
@@ -439,18 +202,8 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         else if (var == VAR_RP) value = (s2 <= 0.) ? 0. : sqrt(s2 - s2 * mu2);
 
         if ((var != VAR_POLE) && (var != VAR_K)) {
-            int ibin_loc = 0;
-            if (battrs.asize[i] > 0) {
-                if ((value >= battrs.array[i][battrs.asize[i] - 1]) || (value < battrs.array[i][0])) return;
-                for (ibin_loc = battrs.asize[i] - 1; ibin_loc >= 0; ibin_loc--) {
-                    if (value >= battrs.array[i][ibin_loc]) break;
-                }
-            }
-            else {
-                ibin_loc = (int) floor((value - battrs.min[i]) / battrs.step[i]);
-            }
-            if ((ibin_loc >= 0) && (ibin_loc < battrs.shape[i])) ibin = ibin * battrs.shape[i] + ibin_loc;
-            else return;
+            int ibin_loc = get_bin_index(battrs, i, value);
+            if (ibin_loc < 0) return;
         }
         else {
             break;
@@ -484,20 +237,12 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
         pair_weight *= pair_bweight;
     }
 
-    AngularWeight angular = wattrs.angular;
-    if (angular.size) {
-        FLOAT pair_aweight = 1.;
-        FLOAT costheta = dot(sposition1, sposition2);
-        if (!(costheta > angular.sep[angular.size - 1] || (costheta <= angular.sep[0]))) {
-            for (size_t ibin_loc = 0; ibin_loc < angular.size - 1; ibin_loc++) {
-                if (costheta <= angular.sep[ibin_loc + 1]) {
-                    FLOAT frac = (costheta - angular.sep[ibin_loc]) / (angular.sep[ibin_loc + 1] - angular.sep[ibin_loc]);
-                    pair_aweight *= (1 - frac) * angular.weight[ibin_loc] + frac * angular.weight[ibin_loc + 1];
-                    break;
-                }
-            }
+    {
+        WeightAngular angular = wattrs.angular;
+        if (angular.size) {
+            FLOAT ct[1] = {dot(sposition1, sposition2)};
+            pair_weight *= lookup_angular_weight<1>(ct, angular);
         }
-        pair_weight *= pair_aweight;
     }
 
     if (index_value1.size_negative_weight && index_value2.size_negative_weight) {
@@ -602,113 +347,104 @@ __device__ inline void add_weight(FLOAT *counts, FLOAT *sposition1, FLOAT *sposi
 }
 
 
-__global__ void count2_angular_kernel(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs) {
 
-    size_t tid = threadIdx.x;
+struct Count2Op {
+    FLOAT *local_counts;
+    FLOAT *value1;
+    IndexValue index_value1;
+    IndexValue index_value2;
+    BinAttrs battrs;
+    WeightAttrs wattrs;
 
-    // Initialize local histogram
-    FLOAT *local_counts = &block_counts[blockIdx.x * csize];
-    // Zero initialize histogram for this block
-    for (int i = tid; i < csize; i += blockDim.x) local_counts[i] = 0;
-
-    __syncthreads();
-    // Global thread index
-    size_t stride = gridDim.x * blockDim.x;
-    size_t gid = tid + blockIdx.x * blockDim.x;
-
-    // Process particles
-    for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
-        FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
-        FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
-        FLOAT *value1 = &(mesh1.values[mesh1.index_value.size * ii]);
-        int bounds[2 * NDIM];
-        set_angular_bounds(sposition1, bounds);
-        for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
-            int icth_n = icth * device_mattrs.meshsize[1];
-            for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
-                int iphi_true = wrap_periodic_int(iphi, device_mattrs.meshsize[1]);
-                int icell = iphi_true + icth_n;
-                int np2 = mesh2.nparticles[icell];
-                size_t cum2 = mesh2.cumnparticles[icell];
-                FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);
-                FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
-                FLOAT *values2 = &(mesh2.values[mesh2.index_value.size * cum2]);
-                for (size_t jj = 0; jj < np2; jj++) {
-                    if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
-                        continue;
-                    }
-                    add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                               value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs);
-                }
-            }
-        }
+    __device__ inline void operator()(
+        size_t ii,
+        size_t jj,
+        FLOAT *position1,
+        FLOAT *sposition1,
+        FLOAT *position2,
+        FLOAT *sposition2,
+        FLOAT *value2)
+    {
+        (void)ii;
+        (void)jj;
+        add_weight2(
+            local_counts,
+            sposition1, sposition2,
+            position1, position2,
+            value1, value2,
+            index_value1, index_value2,
+            battrs, wattrs
+        );
     }
-}
-
-__global__ void count2_cartesian_kernel(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs) {
-
-    size_t tid = threadIdx.x;
-
-    // Initialize local histogram
-    FLOAT *local_counts = &block_counts[blockIdx.x * csize];
-    // Zero initialize histogram for this block
-    for (int i = tid; i < csize; i += blockDim.x) local_counts[i] = 0;
-
-    __syncthreads();
-    // Global thread index
-    size_t stride = gridDim.x * blockDim.x;
-    size_t gid = tid + blockIdx.x * blockDim.x;
-
-    // Process particles
-    for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
-        FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
-        FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
-        FLOAT *value1 = &(mesh1.values[mesh1.index_value.size * ii]);
-        int bounds[2 * NDIM];
-        set_cartesian_bounds(position1, bounds);
-        //printf("%d %d %d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
-        for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
-            int ix_n = wrap_periodic_int(ix, (int) device_mattrs.meshsize[0]) * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
-            for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
-                int iy_n = wrap_periodic_int(iy, (int) device_mattrs.meshsize[1]) *  device_mattrs.meshsize[2];
-                for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
-                    int iz_n = wrap_periodic_int(iz, (int) device_mattrs.meshsize[2]);
-                    int icell = ix_n + iy_n + iz_n;
-                    int np2 = mesh2.nparticles[icell];
-                    size_t cum2 = mesh2.cumnparticles[icell];
-                    FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);
-                    FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
-                    FLOAT *values2 = &(mesh2.values[mesh2.index_value.size * cum2]);
-                    for (size_t jj = 0; jj < np2; jj++) {
-                        if (!is_selected(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]))) {
-                            continue;
-                        }
-                        add_weight(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
-                                   value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs);
-                    }
-                }
-            }
-        }
-    }
-}
+};
 
 
-__global__ void reduce_kernel(const FLOAT *block_counts,
-                              int nblocks,
-                              FLOAT *final_counts,
-                              size_t size)
+__global__ void count2_angular_kernel(
+    FLOAT *block_counts,
+    size_t csize,
+    Mesh mesh1,
+    Mesh mesh2,
+    BinAttrs battrs,
+    WeightAttrs wattrs)
 {
-    // Flatten thread index across entire grid
-    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = blockDim.x * gridDim.x;
+    size_t tid = threadIdx.x;
 
-    // Loop over all i values this thread should handle
-    for (size_t i = tid; i < size; i += stride) {
-        FLOAT sum = 0;
-        for (int b = 0; b < nblocks; ++b) {
-            sum += block_counts[(size_t)b * size + i];
-        }
-        final_counts[i] = sum;
+    FLOAT *local_counts = &block_counts[blockIdx.x * csize];
+    for (int i = tid; i < csize; i += blockDim.x) local_counts[i] = 0;
+
+    __syncthreads();
+
+    size_t stride = gridDim.x * blockDim.x;
+    size_t gid = tid + blockIdx.x * blockDim.x;
+
+    for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
+        FLOAT *value1 = &(mesh1.values[mesh1.index_value.size * ii]);
+
+        Count2Op op{
+            local_counts,
+            value1,
+            mesh1.index_value,
+            mesh2.index_value,
+            battrs,
+            wattrs
+        };
+
+        for_each_selected_pair_angular(ii, mesh1, mesh2, op);
+    }
+}
+
+
+__global__ void count2_cartesian_kernel(
+    FLOAT *block_counts,
+    size_t csize,
+    Mesh mesh1,
+    Mesh mesh2,
+    BinAttrs battrs,
+    WeightAttrs wattrs)
+{
+    size_t tid = threadIdx.x;
+
+    FLOAT *local_counts = &block_counts[blockIdx.x * csize];
+    for (int i = tid; i < csize; i += blockDim.x) local_counts[i] = 0;
+
+    __syncthreads();
+
+    size_t stride = gridDim.x * blockDim.x;
+    size_t gid = tid + blockIdx.x * blockDim.x;
+
+    for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
+        FLOAT *value1 = &(mesh1.values[mesh1.index_value.size * ii]);
+
+        Count2Op op{
+            local_counts,
+            value1,
+            mesh1.index_value,
+            mesh2.index_value,
+            battrs,
+            wattrs
+        };
+
+        for_each_selected_pair_cartesian(ii, mesh1, mesh2, op);
     }
 }
 
@@ -736,36 +472,11 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
     CUDA_CHECK(cudaMemcpyToSymbol(device_sattrs, &sattrs, sizeof(SelectionAttrs)));
     CUDA_CHECK(cudaMemcpyToSymbol(device_spattrs, &spattrs, sizeof(SplitAttrs)));
     //CUDA_CHECK(cudaMemcpyToSymbol(device_battrs, &battrs, sizeof(BinAttrs)));
-    BinAttrs device_battrs = battrs;
-    for (size_t i = 0; i < battrs.ndim; i++) {
-        if (battrs.asize[i] > 0) {
-            //printf("ALLOCATING bin %d with size %d %d\n", i, battrs.asize[i], battrs.shape[i]);
-            FLOAT *device_array = (FLOAT*) my_device_malloc(battrs.asize[i] * sizeof(FLOAT), buffer);
-            CUDA_CHECK(cudaMemcpy(device_array, battrs.array[i], battrs.asize[i] * sizeof(FLOAT), cudaMemcpyHostToDevice));
-            device_battrs.array[i] = device_array;
-        }
-    }
-    WeightAttrs device_wattrs = wattrs;
-    if (wattrs.angular.size) {
-        FLOAT *device_sep = (FLOAT*) my_device_malloc(wattrs.angular.size * sizeof(FLOAT), buffer);
-        FLOAT *device_weight = (FLOAT*) my_device_malloc(wattrs.angular.size * sizeof(FLOAT), buffer);
-        CUDA_CHECK(cudaMemcpy(device_sep, wattrs.angular.sep, wattrs.angular.size * sizeof(FLOAT), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(device_weight, wattrs.angular.weight, wattrs.angular.size * sizeof(FLOAT), cudaMemcpyHostToDevice));
-        device_wattrs.angular.sep = device_sep;
-        device_wattrs.angular.weight = device_weight;
-    } else {
-        device_wattrs.angular.sep = NULL;
-        device_wattrs.angular.weight = NULL;
-    }
+    BinAttrs device_battrs;
+    copy_bin_attrs_to_device(&device_battrs, &battrs, buffer);
 
-    // Bitwise correction table: p_correction_nbits
-    if (wattrs.bitwise.p_nbits) {
-        FLOAT *device_p_correction_nbits = (FLOAT*) my_device_malloc(wattrs.bitwise.p_nbits * wattrs.bitwise.p_nbits * sizeof(FLOAT), buffer);
-        CUDA_CHECK(cudaMemcpy(device_p_correction_nbits, wattrs.bitwise.p_correction_nbits, wattrs.bitwise.p_nbits * wattrs.bitwise.p_nbits * sizeof(FLOAT), cudaMemcpyHostToDevice));
-        device_wattrs.bitwise.p_correction_nbits = device_p_correction_nbits;
-    } else {
-        device_wattrs.bitwise.p_correction_nbits = NULL;
-    }
+    WeightAttrs device_wattrs = wattrs;
+    copy_weight_attrs_to_device(&device_wattrs, &wattrs, buffer);
 
     // allocate histogram arrays
     // printf("ALLOCATING histogram\n");
@@ -782,7 +493,7 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
     else count2_cartesian_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, csize, list_mesh[0], list_mesh[1], device_battrs, device_wattrs);
 
     CUDA_CHECK(cudaDeviceSynchronize());
-    reduce_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, csize);
+    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, csize);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     CUDA_CHECK(cudaEventRecord(stop, stream));
@@ -793,16 +504,8 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
     // Free GPU memory
     my_device_free(block_counts, buffer);
 
-    for (size_t i = 0; i < battrs.ndim; i++) {
-        if (battrs.asize[i] > 0) my_device_free(device_battrs.array[i], buffer);
-    }
-    if (wattrs.angular.size) {
-        my_device_free(device_wattrs.angular.sep, buffer);
-        my_device_free(device_wattrs.angular.weight, buffer);
-    }
-    if (wattrs.bitwise.p_nbits) {
-        my_device_free(device_wattrs.bitwise.p_correction_nbits, buffer);
-    }
+    free_device_bin_attrs(&device_battrs, buffer);
+    free_device_weight_attrs(&device_wattrs, buffer);
 
     // Destroy CUDA events
     CUDA_CHECK(cudaEventDestroy(start));

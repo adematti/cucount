@@ -135,9 +135,12 @@ typedef struct {
 
 
 typedef struct {
-    FLOAT *sep;
+    FLOAT *sep[MAX_NBIN];    // if provided, separations; length of shape[i]
+    FLOAT *edges[MAX_NBIN];  // if provided, lower-bound edges; length of shape[i] + 1
     FLOAT *weight;
-    size_t size;
+    size_t shape[MAX_NBIN];  // length of sep and weight along each dimension
+    size_t size;  // total size, product of shape
+    size_t ndim;  // number of dimensions
 } AngularWeight;
 
 

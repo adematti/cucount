@@ -1,13 +1,11 @@
-// exclusive_scan_size_t.cu
-// Compile: nvcc -O3 -arch=sm_70 exclusive_scan_size_t.cu -o scan
-
 #include <cuda_runtime.h>
 #include <stdio.h>
 
 #define BLOCK_SIZE 512  // threads per block (scans 2*BLOCK_SIZE elements)
 
+
 __global__ void scan_block_kernel(const size_t *in, size_t *out, size_t *block_sums, size_t n) {
-    
+
     __shared__ size_t sdata[2 * BLOCK_SIZE];
 
     size_t tid = threadIdx.x;
@@ -96,4 +94,3 @@ void exclusive_scan_size_t_device(const size_t *d_in, size_t *d_out, size_t n, D
         if ((buffer) && (buffer->size > 0)) buffer->offset -= 2 * nblocks * sizeof(size_t);
     }
 }
-

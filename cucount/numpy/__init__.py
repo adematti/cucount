@@ -56,32 +56,169 @@ def setup_logging(level=logging.INFO, stream=sys.stdout,  **kwargs):
 
 
 @dataclass
-class AngularWeight(object):
-
-    sep: np.ndarray
-    weight: np.ndarray
+class AngularWeight:
+    sep: list | None = None
+    edges: list | None = None
+    weight: np.ndarray | None = None
     _np = np
 
+    def __init__(self, weight=None, **kwargs):
+        self.weight = self._np.asarray(weight, dtype=self._np.float64)
+        self.sep = None
+        self.edges = None
+
+        sep = kwargs.get("sep", None)
+        edges = kwargs.get("edges", None)
+
+        msg = "provide exactly one of sep or edges"
+        assert (sep is None) != (edges is None), msg
+
+        if sep is not None:
+            sep = _make_list_weights(sep)
+            self.sep = [self._np.asarray(arr, dtype=self._np.float64) for arr in sep]
+            assert len(self.sep) == self.weight.ndim, (
+                "provide a list of sep arrays, one for each dimension of weight"
+            )
+            for idim, arr in enumerate(self.sep):
+                assert arr.ndim == 1, f"sep[{idim}] must be 1D"
+                assert arr.shape[0] == self.weight.shape[idim], (
+                    f"sep[{idim}] must have length weight.shape[{idim}]"
+                )
+
+        else:
+            edges = _make_list_weights(edges)
+            self.edges = [self._np.asarray(arr, dtype=self._np.float64) for arr in edges]
+            assert len(self.edges) == self.weight.ndim, (
+                "provide a list of edges arrays, one for each dimension of weight"
+            )
+            for idim, arr in enumerate(self.edges):
+                assert arr.ndim == 1, f"edges[{idim}] must be 1D"
+                assert arr.shape[0] == self.weight.shape[idim] + 1, (
+                    f"edges[{idim}] must have length weight.shape[{idim}] + 1"
+                )
+
+    @property
+    def tabulation(self):
+        return "edges" if self.edges is not None else "sep"
+
     def tree_flatten(self):
-        children = (self.sep, self.weight)
-        aux_data = dict()
+        children = (getattr(self, self.tabulation), self.weight)
+        aux_data = dict(tabulation=self.tabulation)
         return children, aux_data
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        return cls(*children)
+        tabulation, weight = children
+        return cls(weight=weight, **{aux_data["tabulation"]: tabulation})
 
     def _to_c(self):
-        sep = np.cos(np.radians(self.sep))
-        argsort = np.argsort(sep)
-        state = {'sep': np.array(sep[argsort], dtype=np.float64), 'weight': np.array(self.weight[argsort], dtype=np.float64)}
+        """
+        Return a C-friendly representation:
+        - convert angular coordinates from degrees to cos(theta)
+        - sort each axis independently
+        - permute the weight array consistently across all dimensions
+        """
+        state = {"weight": np.array(self.weight, dtype=np.float64, copy=True)}
+
+        axes = getattr(self, self.tabulation)
+        converted = [np.cos(np.radians(axis)) for axis in axes]
+        argsorts = [np.argsort(axis) for axis in converted]
+        sorted_axes = [axis[idx] for axis, idx in zip(converted, argsorts)]
+
+        weight = state["weight"]
+        for idim, idx in enumerate(argsorts):
+            weight = np.take(weight, idx, axis=idim)
+
+        state[self.tabulation] = [np.array(axis, dtype=np.float64, copy=False) for axis in sorted_axes]
+        state["weight"] = np.array(weight, dtype=np.float64, copy=False)
         return state
 
     def __call__(self, sep):
-        """Return value of weights for given separation in degrees."""
-        costheta = self._np.cos(self._np.radians(sep))
+        """
+        Return angular weight for given separation(s) in degrees.
+
+        Parameters
+        ----------
+        sep : scalar or sequence
+            - If weight is 1D, sep may be a scalar or array.
+            - If weight is ND, sep must provide one coordinate per dimension:
+              e.g. (sep0, sep1, ..., sepN-1), where each entry may be scalar
+              or broadcastable array.
+
+        Returns
+        -------
+        weight : scalar or ndarray
+        """
         state = self._to_c()
-        return self._np.interp(costheta, state['sep'], state['weight'], left=1., right=1.)
+        weight = state["weight"]
+
+        # Normalize input into one entry per angular dimension
+        if self.weight.ndim == 1:
+            coords_in = [sep]
+        else:
+            assert isinstance(sep, (tuple, list)), (
+                f"for {self.weight.ndim}D angular weights, sep must be a tuple/list "
+                f"with one entry per dimension"
+            )
+            assert len(sep) == self.weight.ndim, (
+                f"expected {self.weight.ndim} separation arrays, got {len(sep)}"
+            )
+            coords_in = list(sep)
+
+        coords = [self._np.cos(self._np.radians(self._np.asarray(coord))) for coord in coords_in]
+        coords = self._np.broadcast_arrays(*coords)
+
+        if self.tabulation == "edges":
+            edges = state["edges"]
+
+            idxs = []
+            mask = self._np.ones(coords[0].shape, dtype=bool)
+            for coord, edge in zip(coords, edges):
+                idx = self._np.digitize(coord, edge, right=False) - 1
+                valid = (idx >= 0) & (idx < len(edge) - 1)
+                idxs.append(self._np.where(valid, idx, 0))
+                mask &= valid
+
+            values = weight[tuple(idxs)]
+            return self._np.where(mask, values, 1.0)
+
+        else:
+            seps = state["sep"]
+
+            if self.weight.ndim == 1:
+                return self._np.interp(coords[0], seps[0], weight, left=1.0, right=1.0)
+
+            # Multilinear interpolation on a rectilinear grid
+            idx0 = []
+            frac = []
+            mask = self._np.ones(coords[0].shape, dtype=bool)
+
+            for coord, grid in zip(coords, seps):
+                i0 = self._np.searchsorted(grid, coord, side="right") - 1
+                valid = (i0 >= 0) & (i0 < len(grid) - 1)
+                i0_safe = self._np.clip(i0, 0, len(grid) - 2)
+
+                g0 = grid[i0_safe]
+                g1 = grid[i0_safe + 1]
+                t = (coord - g0) / (g1 - g0)
+
+                idx0.append(i0_safe)
+                frac.append(t)
+                mask &= valid
+
+            out = self._np.zeros(coords[0].shape, dtype=weight.dtype)
+
+            # Sum over 2**ndim cell corners
+            for corner in range(1 << self.weight.ndim):
+                indices = []
+                coeff = 1.0
+                for idim in range(self.weight.ndim):
+                    upper = (corner >> idim) & 1
+                    indices.append(idx0[idim] + upper)
+                    coeff = coeff * (frac[idim] if upper else (1.0 - frac[idim]))
+                out = out + coeff * weight[tuple(indices)]
+
+            return self._np.where(mask, out, 1.0)
 
 
 @dataclass(init=False)
@@ -686,6 +823,66 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
     particles = [cucountlib.cucount.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
     return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=nthreads)
+
+
+def count3close(*particles: Particles,
+                battrs_ab: BinAttrs,
+                battrs_ac: BinAttrs,
+                battrs_bc: BinAttrs = None,
+                wattrs: WeightAttrs = None,
+                sattrs_ab: SelectionAttrs = None,
+                sattrs_ac: SelectionAttrs = None,
+                mattrs: MeshAttrs = None,
+                nthreads: int = 1):
+    """
+    Perform close-triplet counts using the native cucount library.
+
+    This is a thin frontend that prepares Python-side Particles and
+    Weight/Selection attributes and calls the underlying
+    cucountlib.cucount.count3close implementation (GPU-accelerated C/C++/CUDA).
+
+    Parameters
+    ----------
+    *particles : Particles
+        Exactly three Particles instances: primary catalog A, and secondary
+        catalogs B and C.
+    battrs_ab : BinAttrs
+        Binning specification for the AB pair.
+    battrs_ac : BinAttrs
+        Binning specification for the AC pair.
+    battrs_bc : BinAttrs, optional
+        Optional binning specification for the BC pair. If None, BC binning is
+        omitted.
+    wattrs : WeightAttrs, optional
+        Weight attributes. If None, defaults to WeightAttrs().
+    sattrs_ab : SelectionAttrs, optional
+        Selection attributes used to build the AB close-pair list. If None,
+        defaults to SelectionAttrs().
+    sattrs_ac : SelectionAttrs, optional
+        Selection attributes used to build the AC close-pair list. If None,
+        defaults to SelectionAttrs().
+    mattrs : MeshAttrs, optional
+        Mesh attributes. If None, defaults to MeshAttrs().
+    nthreads : int, optional
+        Number of GPUs (within the same node) to run in parallel on.
+
+    Returns
+    -------
+    result : dict
+        Output of the native count3close call. Typically a dict with a single
+        entry {'weight': array}.
+    """
+    _setup_cucount_logging()
+    assert len(particles) == 3
+    if wattrs is None: wattrs = WeightAttrs()
+    if sattrs_ab is None: sattrs_ab = SelectionAttrs()
+    if sattrs_ac is None: sattrs_ac = SelectionAttrs()
+    wattrs.check(*particles)
+    if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs_ab, battrs=battrs_ab)
+    particles = [cucountlib.cucount.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
+    kwargs = dict(battrs_ab=battrs_ab, battrs_ac=battrs_ac, wattrs=wattrs._to_c(), sattrs_ab=sattrs_ab, sattrs_ac=sattrs_ac, nthreads=nthreads)
+    if battrs_bc is not None: kwargs["battrs_bc"] = battrs_bc
+    return cucountlib.cucount.count3close(*particles, mattrs._to_c(), **kwargs)
 
 
 # Create a lookup table for set bits per byte
