@@ -4,9 +4,11 @@
 #include <cstring>  // for std::memcpy
 #include <thread>
 #include <vector>
+#include <memory>
 
 #include "mesh.h"
 #include "count2.h"
+#include "count3close.h"
 #include "common.h"
 #include "cucount.h"
 
@@ -214,22 +216,6 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
 }
 
 
-
-inline void free_device_close_pairs(ClosePairs *cpairs, DeviceMemoryBuffer *buffer)
-{
-    if (cpairs->offsets) {
-        my_device_free(cpairs->offsets, buffer);
-        cpairs->offsets = NULL;
-    }
-    if (cpairs->secondary) {
-        my_device_free(cpairs->secondary, buffer);
-        cpairs->secondary = NULL;
-    }
-    cpairs->nprimaries = 0;
-    cpairs->npairs = 0;
-}
-
-
 py::object count3close_py(
     Particles_py& particles1,
     Particles_py& particles2,
@@ -248,18 +234,12 @@ py::object count3close_py(
     BinAttrs battrs_ac = battrs_ac_py.data();
 
     const bool has_bc = !battrs_bc_obj.is_none();
-    BinAttrs_py battrs_bc_py;
-    BinAttrs battrs_bc = {0};
+    std::unique_ptr<BinAttrs_py> battrs_bc_py;
+    BinAttrs battrs_bc{};
     if (has_bc) {
-        battrs_bc_py = py::cast<BinAttrs_py>(battrs_bc_obj);
-        battrs_bc = battrs_bc_py.data();
+        battrs_bc_py = std::make_unique<BinAttrs_py>(py::cast<BinAttrs_py>(battrs_bc_obj));
+        battrs_bc = battrs_bc_py->data();
     }
-
-    BinAttrs *battrs[3] = {
-        &battrs_ab,
-        &battrs_ac,
-        has_bc ? &battrs_bc : nullptr
-    };
 
     WeightAttrs wattrs = wattrs_py.data();
     SelectionAttrs sattrs_ab = sattrs_ab_py.data();
@@ -428,7 +408,7 @@ py::object count3close_py(
     total_shape.insert(total_shape.end(), shape_ac.begin(), shape_ac.end());
 
     if (has_bc) {
-        auto shape_bc = battrs_bc_py.shape();
+        auto shape_bc = battrs_bc_py->shape();
         total_shape.insert(total_shape.end(), shape_bc.begin(), shape_bc.end());
     }
 

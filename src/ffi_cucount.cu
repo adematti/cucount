@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <type_traits>
+#include <memory>
 
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/api/ffi.h"
@@ -155,12 +156,12 @@ void set_count3close_attrs_py(
     battrs3_ab = battrs_ab_py.data();
     battrs3_ac = battrs_ac_py.data();
 
-    has_battrs3_bc = !battrs_bc_obj.is_none();
-    if (has_battrs3_bc) {
-        BinAttrs_py battrs_bc_py = py::cast<BinAttrs_py>(battrs_bc_obj);
-        battrs3_bc = battrs_bc_py.data();
-    } else {
-        battrs3_bc = BinAttrs{0};
+    const bool has_bc = !battrs_bc_obj.is_none();
+    std::unique_ptr<BinAttrs_py> battrs_bc_py;
+    BinAttrs battrs3_bc{};
+    if (has_bc) {
+        battrs_bc_py = std::make_unique<BinAttrs_py>(py::cast<BinAttrs_py>(battrs_bc_obj));
+        battrs3_bc = battrs_bc_py->data();
     }
 
     wattrs3 = wattrs_py.data();

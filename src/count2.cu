@@ -202,7 +202,7 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
         else if (var == VAR_RP) value = (s2 <= 0.) ? 0. : sqrt(s2 - s2 * mu2);
 
         if ((var != VAR_POLE) && (var != VAR_K)) {
-            int ibin_loc = get_bin_index(battrs, i, value);
+            int ibin_loc = get_bin_index(&battrs, i, value);
             if (ibin_loc < 0) return;
         }
         else {
@@ -238,7 +238,7 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
     }
 
     {
-        WeightAngular angular = wattrs.angular;
+        AngularWeight angular = wattrs.angular;
         if (angular.size) {
             FLOAT ct[1] = {dot(sposition1, sposition2)};
             pair_weight *= lookup_angular_weight<1>(ct, angular);
@@ -279,13 +279,13 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
 
     if (i == battrs.ndim) {
         if (nsplit_targets == 0) {
-            accumulate_weight<0>(counts, weight, wsize, ibin, battrs.size, device_spattrs.size, split_targets);
+            accumulate_weight2<0>(counts, weight, wsize, ibin, battrs.size, device_spattrs.size, split_targets);
         }
         else if (nsplit_targets == 1) {
-            accumulate_weight<1>(counts, weight, wsize, ibin, battrs.size, device_spattrs.size, split_targets);
+            accumulate_weight2<1>(counts, weight, wsize, ibin, battrs.size, device_spattrs.size, split_targets);
         }
         else {
-            accumulate_weight<2>(counts, weight, wsize, ibin, battrs.size, device_spattrs.size, split_targets);
+            accumulate_weight2<2>(counts, weight, wsize, ibin, battrs.size, device_spattrs.size, split_targets);
         }
     }
 
@@ -300,13 +300,13 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
             const FLOAT leg = (2 * ell + 1) * legendre_cache[ell];
 
             if (nsplit_targets == 0) {
-                accumulate_weight<0>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg);
+                accumulate_weight2<0>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg);
             }
             else if (nsplit_targets == 1) {
-                accumulate_weight<1>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg);
+                accumulate_weight2<1>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg);
             }
             else {
-                accumulate_weight<2>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg);
+                accumulate_weight2<2>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg);
             }
         }
     }
@@ -333,13 +333,13 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
                 const FLOAT leg_bessel = leg * get_bessel(ell, k * s);
 
                 if (nsplit_targets == 0) {
-                    accumulate_weight<0>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg_bessel);
+                    accumulate_weight2<0>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg_bessel);
                 }
                 else if (nsplit_targets == 1) {
-                    accumulate_weight<1>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg_bessel);
+                    accumulate_weight2<1>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg_bessel);
                 }
                 else {
-                    accumulate_weight<2>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg_bessel);
+                    accumulate_weight2<2>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg_bessel);
                 }
             }
         }

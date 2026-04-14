@@ -396,7 +396,7 @@ __device__ inline int get_interp_bin_index(
 }
 
 
-template <int ND> _device__ inline FLOAT lookup_angular_weight(const FLOAT (&costheta)[ND], const WeightAngular& angular)
+template <int ND> __device__ inline FLOAT lookup_angular_weight(const FLOAT (&costheta)[ND], const AngularWeight& angular)
 {
     if (!angular.weight) return (FLOAT)1.;
 

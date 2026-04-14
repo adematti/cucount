@@ -6,7 +6,7 @@
 #include "common.h"
 #include "utils.h"
 #include "count2.h"
-#include "count3.h"
+#include "count3close.h"
 
 
 // Per-match operations
@@ -371,7 +371,7 @@ __device__ inline void add_weight3(
     }
 
     {
-        WeightAngular angular = wattrs.angular;
+        AngularWeight angular = wattrs.angular;
         if (angular.size) {
             triplet_weight *= lookup_angular_weight<3>(costheta, angular);
         }
@@ -735,7 +735,7 @@ struct Count3ACOp {
         (void) ib;
 
         // AB wins over AC when both are close
-        if (is_selected(sposition_a, sposition_b, position_a, position_b)) return;
+        if (is_selected_pair(sposition_a, sposition_b, position_a, position_b)) return;
 
         add_weight3(
             local_counts,
@@ -925,10 +925,9 @@ void count3_close(FLOAT *counts, ClosePairs close_ab, ClosePairs close_ac, const
     my_device_free(block_counts_ac, buffer);
 
     for (int i = 0; i < 3; i++) {
-        free_bin_attrs_on_device(&device_battrs[i], buffer);
+        free_device_bin_attrs(&device_battrs[i], buffer);
     }
 
-    free_device_bin_attrs(&device_battrs, buffer);
     free_device_weight_attrs(&device_wattrs, buffer);
 
 }
