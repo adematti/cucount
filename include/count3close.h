@@ -36,20 +36,21 @@
 #define SQRT70_16 2.09165006633518886818
 #endif
 
+
 void count3_close(
     FLOAT *counts,
-    Mesh mesh_a,
-    Mesh mesh_b_close,
-    Mesh mesh_c_close,
-    Mesh mesh_b_third,
-    Mesh mesh_c_third,
-    MeshAttrs mattrs_b_close,
-    MeshAttrs mattrs_c_close,
-    MeshAttrs mattrs_b_third,
-    MeshAttrs mattrs_c_third,
-    SelectionAttrs sattrs_ab,
-    SelectionAttrs sattrs_ac,
-    BinAttrs *battrs[3],
+    Mesh mesh1,
+    Mesh mesh2,
+    Mesh mesh3,
+    MeshAttrs mattrs2,
+    MeshAttrs mattrs3,
+    SelectionAttrs sattrs12,
+    SelectionAttrs sattrs13,
+    SelectionAttrs sattrs23,
+    bool veto13,
+    BinAttrs battrs12,
+    BinAttrs battrs23,
+    BinAttrs battrs13,
     WeightAttrs wattrs,
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream);

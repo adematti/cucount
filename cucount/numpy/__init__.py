@@ -825,44 +825,55 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=nthreads)
 
 
+
 def count3close(*particles: Particles,
-                battrs_ab: BinAttrs,
-                battrs_ac: BinAttrs,
-                battrs_bc: BinAttrs = None,
+                battrs12: BinAttrs,
+                battrs23: BinAttrs,
+                battrs13: BinAttrs,
                 wattrs: WeightAttrs = None,
-                sattrs_ab: SelectionAttrs = None,
-                sattrs_ac: SelectionAttrs = None,
-                mattrs: MeshAttrs = None,
+                sattrs12: SelectionAttrs = None,
+                sattrs13: SelectionAttrs = None,
+                sattrs23: SelectionAttrs = None,
+                veto13: bool = False,
+                mattrs2: MeshAttrs = None,
+                mattrs3: MeshAttrs = None,
                 nthreads: int = 1):
     """
     Perform close-triplet counts using the native cucount library.
 
     This is a thin frontend that prepares Python-side Particles and
     Weight/Selection attributes and calls the underlying
-    cucountlib.cucount.count3close implementation (GPU-accelerated C/C++/CUDA).
+    cucountlib.cucount.count3close implementation.
 
     Parameters
     ----------
     *particles : Particles
-        Exactly three Particles instances: primary catalog A, and secondary
-        catalogs B and C.
-    battrs_ab : BinAttrs
-        Binning specification for the AB pair.
-    battrs_ac : BinAttrs
-        Binning specification for the AC pair.
-    battrs_bc : BinAttrs, optional
-        Optional binning specification for the BC pair. If None, BC binning is
-        omitted.
+        Exactly three Particles instances, corresponding to catalogs 1, 2, and 3.
+    battrs12 : BinAttrs
+        Binning specification for pair (1, 2).
+    battrs23 : BinAttrs
+        Binning specification for pair (2, 3).
+    battrs13 : BinAttrs
+        Binning specification for pair (1, 3).
     wattrs : WeightAttrs, optional
         Weight attributes. If None, defaults to WeightAttrs().
-    sattrs_ab : SelectionAttrs, optional
-        Selection attributes used to build the AB close-pair list. If None,
-        defaults to SelectionAttrs().
-    sattrs_ac : SelectionAttrs, optional
-        Selection attributes used to build the AC close-pair list. If None,
-        defaults to SelectionAttrs().
-    mattrs : MeshAttrs, optional
-        Mesh attributes. If None, defaults to MeshAttrs().
+    sattrs12 : SelectionAttrs, optional
+        Selection attributes for pair (1, 2). If None, defaults to
+        SelectionAttrs().
+    sattrs13 : SelectionAttrs, optional
+        Selection attributes for pair (1, 3). If None, defaults to
+        SelectionAttrs().
+    sattrs23 : SelectionAttrs, optional
+        Selection attributes for pair (2, 3). If None, defaults to
+        SelectionAttrs().
+    veto13 : bool, optional
+        Whether to veto the pair (1, 3).
+    mattrs2 : MeshAttrs, optional
+        Mesh attributes used for catalogs 1 and 2. If None, defaults to
+        MeshAttrs(particles[0], particles[1], sattrs=sattrs12, battrs=battrs12).
+    mattrs3 : MeshAttrs, optional
+        Mesh attributes used for catalog 3. If None, defaults to
+        MeshAttrs(particles[0], particles[2], sattrs=sattrs13, battrs=battrs13).
     nthreads : int, optional
         Number of GPUs (within the same node) to run in parallel on.
 
@@ -874,15 +885,47 @@ def count3close(*particles: Particles,
     """
     _setup_cucount_logging()
     assert len(particles) == 3
-    if wattrs is None: wattrs = WeightAttrs()
-    if sattrs_ab is None: sattrs_ab = SelectionAttrs()
-    if sattrs_ac is None: sattrs_ac = SelectionAttrs()
+
+    if wattrs is None:
+        wattrs = WeightAttrs()
+    if sattrs12 is None:
+        sattrs12 = SelectionAttrs()
+    if sattrs13 is None:
+        sattrs13 = SelectionAttrs()
+    if sattrs23 is None:
+        sattrs23 = SelectionAttrs()
+
     wattrs.check(*particles)
-    if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs_ab, battrs=battrs_ab)
-    particles = [cucountlib.cucount.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
-    kwargs = dict(battrs_ab=battrs_ab, battrs_ac=battrs_ac, wattrs=wattrs._to_c(), sattrs_ab=sattrs_ab, sattrs_ac=sattrs_ac, nthreads=nthreads)
-    if battrs_bc is not None: kwargs["battrs_bc"] = battrs_bc
-    return cucountlib.cucount.count3close(*particles, mattrs._to_c(), **kwargs)
+
+    if mattrs2 is None:
+        mattrs2 = MeshAttrs(particles[0], particles[1], sattrs=sattrs12, battrs=battrs12)
+    if mattrs3 is None:
+        mattrs3 = MeshAttrs(particles[0], particles[2], sattrs=sattrs13, battrs=battrs13)
+
+    particles = [
+        cucountlib.cucount.Particles(
+            p.positions,
+            values=_stack_values(p.values, np=np),
+            **p.index_value._to_c(),
+        )
+        for p in particles
+    ]
+
+    return cucountlib.cucount.count3close(
+        *particles,
+        mattrs2._to_c(),
+        mattrs3._to_c(),
+        battrs12=battrs12,
+        battrs23=battrs23,
+        battrs13=battrs13,
+        wattrs=wattrs._to_c(),
+        sattrs12=sattrs12,
+        sattrs13=sattrs13,
+        sattrs23=sattrs23,
+        veto13=veto13,
+        nthreads=nthreads,
+    )
+
 
 
 # Create a lookup table for set bits per byte

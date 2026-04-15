@@ -36,13 +36,15 @@ static IndexValue index_value2[2] = {0};
 // Static state for count3close
 // -----------------------------------------------------------------------------
 
-static MeshAttrs mattrs3;
-static BinAttrs battrs3_ab;
-static BinAttrs battrs3_ac;
-static BinAttrs battrs3_bc;
-static bool has_battrs3_bc = false;
-static SelectionAttrs sattrs3_ab;
-static SelectionAttrs sattrs3_ac;
+static MeshAttrs mattrs3_2;
+static MeshAttrs mattrs3_3;
+static BinAttrs battrs3_12;
+static BinAttrs battrs3_23;
+static BinAttrs battrs3_13;
+static SelectionAttrs sattrs3_12;
+static SelectionAttrs sattrs3_13;
+static SelectionAttrs sattrs3_23;
+static bool veto13_3 = false;
 static WeightAttrs wattrs3;
 static IndexValue index_value3[3] = {0};
 
@@ -142,35 +144,35 @@ void set_count2_attrs_py(
 // -----------------------------------------------------------------------------
 
 void set_count3close_attrs_py(
-    MeshAttrs_py mattrs_py,
-    BinAttrs_py battrs_ab_py,
-    BinAttrs_py battrs_ac_py,
-    py::object battrs_bc_obj = py::none(),
+    MeshAttrs_py mattrs2_py,
+    MeshAttrs_py mattrs3_py,
+    BinAttrs_py battrs12_py,
+    BinAttrs_py battrs23_py,
+    BinAttrs_py battrs13_py,
     WeightAttrs_py wattrs_py = WeightAttrs_py(),
-    const SelectionAttrs_py sattrs_ab_py = SelectionAttrs_py(),
-    const SelectionAttrs_py sattrs_ac_py = SelectionAttrs_py())
+    const SelectionAttrs_py sattrs12_py = SelectionAttrs_py(),
+    const SelectionAttrs_py sattrs13_py = SelectionAttrs_py(),
+    const SelectionAttrs_py sattrs23_py = SelectionAttrs_py(),
+    const bool veto13 = false)
 {
     free_owned_ptrs();
 
-    mattrs3 = mattrs_py.data();
-    battrs3_ab = battrs_ab_py.data();
-    battrs3_ac = battrs_ac_py.data();
+    mattrs3_2 = mattrs2_py.data();
+    mattrs3_3 = mattrs3_py.data();
 
-    const bool has_bc = !battrs_bc_obj.is_none();
-    std::unique_ptr<BinAttrs_py> battrs_bc_py;
-    BinAttrs battrs3_bc{};
-    if (has_bc) {
-        battrs_bc_py = std::make_unique<BinAttrs_py>(py::cast<BinAttrs_py>(battrs_bc_obj));
-        battrs3_bc = battrs_bc_py->data();
-    }
+    battrs3_12 = battrs12_py.data();
+    battrs3_23 = battrs23_py.data();
+    battrs3_13 = battrs13_py.data();
 
     wattrs3 = wattrs_py.data();
-    sattrs3_ab = sattrs_ab_py.data();
-    sattrs3_ac = sattrs_ac_py.data();
+    sattrs3_12 = sattrs12_py.data();
+    sattrs3_13 = sattrs13_py.data();
+    sattrs3_23 = sattrs23_py.data();
+    veto13_3 = veto13;
 
-    own_bin_attrs_arrays(&battrs3_ab);
-    own_bin_attrs_arrays(&battrs3_ac);
-    if (has_battrs3_bc) own_bin_attrs_arrays(&battrs3_bc);
+    own_bin_attrs_arrays(&battrs3_12);
+    own_bin_attrs_arrays(&battrs3_23);
+    own_bin_attrs_arrays(&battrs3_13);
     own_weight_attrs_arrays(&wattrs3);
 }
 
@@ -323,38 +325,42 @@ ffi::Error count3closeImpl(
     set_mem_buffer(&membuffer, buffer);
     membuffer.nblocks = 256;
 
-    set_mesh(list_particles, list_mesh, mattrs3, &membuffer, stream);
+    // Build three single-entry meshes independently because count3_close now
+    // accepts mesh1, mesh2, mesh3 plus separate attrs for mesh2 and mesh3.
+    Mesh mesh1{};
+    Mesh mesh2{};
+    Mesh mesh3{};
 
-    Mesh list_mesh_ab[MAX_NMESH];
-    Mesh list_mesh_ac[MAX_NMESH];
-    for (size_t imesh = 0; imesh < MAX_NMESH; imesh++) {
-        list_mesh_ab[imesh].total_nparticles = 0;
-        list_mesh_ac[imesh].total_nparticles = 0;
-    }
-    list_mesh_ab[0] = list_mesh[0];
-    list_mesh_ab[1] = list_mesh[1];
-    list_mesh_ac[0] = list_mesh[0];
-    list_mesh_ac[1] = list_mesh[2];
-
-    ClosePairs close_ab = {0};
-    ClosePairs close_ac = {0};
-
-    fill_close_pairs(&close_ab, list_mesh_ab, mattrs3, sattrs3_ab, &membuffer, stream);
-    fill_close_pairs(&close_ac, list_mesh_ac, mattrs3, sattrs3_ac, &membuffer, stream);
-
-    BinAttrs *battrs_local[3] = {
-        &battrs3_ab,
-        &battrs3_ac,
-        has_battrs3_bc ? &battrs3_bc : nullptr
-    };
+    Particles plist[2];
+    Mesh mlist[2];
+    plist[1].size = 0;
+    
+    plist[0] = list_particles[0];
+    set_mesh(plist, mlist, mattrs3_2, &membuffer, stream);
+    mesh1 = mlist[0];
+    
+    plist[0] = list_particles[1];
+    set_mesh(plist, mlist, mattrs3_2, &membuffer, stream);
+    mesh2 = mlist[0];
+    
+    plist[0] = list_particles[2];
+    set_mesh(plist, mlist, mattrs3_3, &membuffer, stream);
+    mesh3 = mlist[0];
 
     count3_close(
         counts->typed_data(),
-        close_ab,
-        close_ac,
-        list_mesh,
-        mattrs3,
-        battrs_local,
+        mesh1,
+        mesh2,
+        mesh3,
+        mattrs3_2,
+        mattrs3_3,
+        sattrs3_12,
+        sattrs3_13,
+        sattrs3_23,
+        veto13_3,
+        battrs3_12,
+        battrs3_23,
+        battrs3_13,
         wattrs3,
         &membuffer,
         stream);
@@ -474,13 +480,16 @@ PYBIND11_MODULE(ffi_cucount, m) {
 
     // count3close setup
     m.def("set_count3close_attrs", &set_count3close_attrs_py, "Set count3close attributes",
-        py::arg("mattrs"),
-        py::arg("battrs_ab"),
-        py::arg("battrs_ac"),
-        py::arg("battrs_bc") = py::none(),
+        py::arg("mattrs2"),
+        py::arg("mattrs3"),
+        py::arg("battrs12"),
+        py::arg("battrs23"),
+        py::arg("battrs13"),
         py::arg("wattrs") = WeightAttrs_py(),
-        py::arg("sattrs_ab") = SelectionAttrs_py(),
-        py::arg("sattrs_ac") = SelectionAttrs_py());
+        py::arg("sattrs12") = SelectionAttrs_py(),
+        py::arg("sattrs13") = SelectionAttrs_py(),
+        py::arg("sattrs23") = SelectionAttrs_py(),
+        py::arg("veto13") = false);
 
     m.def("set_count3close_index_value", &set_count3close_index_value_py,
         "Set count3close value indices",

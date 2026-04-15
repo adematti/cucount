@@ -220,37 +220,36 @@ py::object count3close_py(
     Particles_py& particles1,
     Particles_py& particles2,
     Particles_py& particles3,
-    MeshAttrs_py mattrs_b_close_py,
-    MeshAttrs_py mattrs_c_close_py,
-    MeshAttrs_py mattrs_b_third_py,
-    MeshAttrs_py mattrs_c_third_py,
-    BinAttrs_py battrs_ab_py,
-    BinAttrs_py battrs_ac_py,
-    py::object battrs_bc_obj = py::none(),
+    MeshAttrs_py mattrs2_py,
+    MeshAttrs_py mattrs3_py,
+    BinAttrs_py battrs12_py,
+    BinAttrs_py battrs13_py,
+    py::object battrs23_obj = py::none(),
     WeightAttrs_py wattrs_py = WeightAttrs_py(),
-    const SelectionAttrs_py sattrs_ab_py = SelectionAttrs_py(),
-    const SelectionAttrs_py sattrs_ac_py = SelectionAttrs_py(),
+    const SelectionAttrs_py sattrs12_py = SelectionAttrs_py(),
+    const SelectionAttrs_py sattrs13_py = SelectionAttrs_py(),
+    const SelectionAttrs_py sattrs23_py = SelectionAttrs_py(),
+    const bool veto13 = false,
     const int nthreads = 1)
 {
-    MeshAttrs mattrs_b_close = mattrs_b_close_py.data();
-    MeshAttrs mattrs_c_close = mattrs_c_close_py.data();
-    MeshAttrs mattrs_b_third = mattrs_b_third_py.data();
-    MeshAttrs mattrs_c_third = mattrs_c_third_py.data();
+    MeshAttrs mattrs2 = mattrs2_py.data();
+    MeshAttrs mattrs3 = mattrs3_py.data();
 
-    BinAttrs battrs_ab = battrs_ab_py.data();
-    BinAttrs battrs_ac = battrs_ac_py.data();
+    BinAttrs battrs12 = battrs12_py.data();
+    BinAttrs battrs13 = battrs13_py.data();
 
-    const bool has_bc = !battrs_bc_obj.is_none();
-    std::unique_ptr<BinAttrs_py> battrs_bc_py;
-    BinAttrs battrs_bc{};
-    if (has_bc) {
-        battrs_bc_py = std::make_unique<BinAttrs_py>(py::cast<BinAttrs_py>(battrs_bc_obj));
-        battrs_bc = battrs_bc_py->data();
+    const bool has23 = !battrs23_obj.is_none();
+    std::unique_ptr<BinAttrs_py> battrs23_py;
+    BinAttrs battrs23{};
+    if (has23) {
+        battrs23_py = std::make_unique<BinAttrs_py>(py::cast<BinAttrs_py>(battrs23_obj));
+        battrs23 = battrs23_py->data();
     }
 
     WeightAttrs wattrs = wattrs_py.data();
-    SelectionAttrs sattrs_ab = sattrs_ab_py.data();
-    SelectionAttrs sattrs_ac = sattrs_ac_py.data();
+    SelectionAttrs sattrs12 = sattrs12_py.data();
+    SelectionAttrs sattrs13 = sattrs13_py.data();
+    SelectionAttrs sattrs23 = sattrs23_py.data();
 
     Particles p1_host = particles1.data();
     Particles p2_host = particles2.data();
@@ -263,8 +262,8 @@ py::object count3close_py(
     char names[1][SIZE_NAME] = {"weight"};
     const size_t ncounts = 1;
 
-    size_t bsize = battrs_ab.size * battrs_ac.size;
-    if (has_bc) bsize *= battrs_bc.size;
+    size_t bsize = battrs12.size * battrs13.size;
+    if (has23) bsize *= battrs23.size;
     size_t csize = ncounts * bsize;
 
     py::array_t<FLOAT> counts_py(csize);
@@ -291,10 +290,10 @@ py::object count3close_py(
         workers.emplace_back(
             [dev, start, nchunk,
              &p1_host, &p2_host, &p3_host,
-             &mattrs_b_close, &mattrs_c_close, &mattrs_b_third, &mattrs_c_third,
-             &wattrs, &sattrs_ab, &sattrs_ac,
-             &battrs_ab, &battrs_ac, &battrs_bc,
-             has_bc, csize, &dev_results]()
+             &mattrs2, &mattrs3,
+             &wattrs, &sattrs12, &sattrs13, &sattrs23,
+             &battrs12, &battrs13, &battrs23,
+             has23, veto13, csize, &dev_results]()
         {
             CUDA_CHECK(cudaSetDevice(dev));
 
@@ -321,61 +320,45 @@ py::object count3close_py(
             copy_particles_to_device(p2_host,   &list_particles_dev[1], 3);
             copy_particles_to_device(p3_host,   &list_particles_dev[2], 3);
 
-            Mesh mesh_a;
-            Mesh mesh_b_close;
-            Mesh mesh_c_close;
-            Mesh mesh_b_third;
-            Mesh mesh_c_third;
+            Mesh mesh1;
+            Mesh mesh2;
+            Mesh mesh3;
 
             Particles plist[2];
             Mesh mlist[2];
             plist[1].size = 0;
 
             plist[0] = list_particles_dev[0];
-            set_mesh(plist, mlist, mattrs_b_close, membuffer, stream);
-            mesh_a = mlist[0];
+            set_mesh(plist, mlist, mattrs2, membuffer, stream);
+            mesh1 = mlist[0];
 
             plist[0] = list_particles_dev[1];
-            set_mesh(plist, mlist, mattrs_b_close, membuffer, stream);
-            mesh_b_close = mlist[0];
+            set_mesh(plist, mlist, mattrs2, membuffer, stream);
+            mesh2 = mlist[0];
 
             plist[0] = list_particles_dev[2];
-            set_mesh(plist, mlist, mattrs_c_close, membuffer, stream);
-            mesh_c_close = mlist[0];
-
-            plist[0] = list_particles_dev[1];
-            set_mesh(plist, mlist, mattrs_b_third, membuffer, stream);
-            mesh_b_third = mlist[0];
-
-            plist[0] = list_particles_dev[2];
-            set_mesh(plist, mlist, mattrs_c_third, membuffer, stream);
-            mesh_c_third = mlist[0];
+            set_mesh(plist, mlist, mattrs3, membuffer, stream);
+            mesh3 = mlist[0];
 
             for (size_t i = 0; i < 3; ++i) free_device_particles(&(list_particles_dev[i]));
 
             FLOAT *device_counts = (FLOAT*) my_device_malloc(csize * sizeof(FLOAT), membuffer);
             CUDA_CHECK(cudaMemsetAsync(device_counts, 0, csize * sizeof(FLOAT), stream));
 
-            BinAttrs *battrs_local[3] = {
-                &battrs_ab,
-                &battrs_ac,
-                has_bc ? &battrs_bc : nullptr
-            };
-
             count3_close(
                 device_counts,
-                mesh_a,
-                mesh_b_close,
-                mesh_c_close,
-                mesh_b_third,
-                mesh_c_third,
-                mattrs_b_close,
-                mattrs_c_close,
-                mattrs_b_third,
-                mattrs_c_third,
-                sattrs_ab,
-                sattrs_ac,
-                battrs_local,
+                mesh1,
+                mesh2,
+                mesh3,
+                mattrs2,
+                mattrs3,
+                sattrs12,
+                sattrs13,
+                sattrs23,
+                veto13,
+                battrs12,
+                has23 ? battrs23 : BinAttrs{},
+                battrs13,
                 wattrs,
                 membuffer,
                 stream);
@@ -391,11 +374,9 @@ py::object count3close_py(
 
             my_device_free(device_counts, membuffer);
 
-            free_device_mesh(&mesh_a);
-            free_device_mesh(&mesh_b_close);
-            free_device_mesh(&mesh_c_close);
-            free_device_mesh(&mesh_b_third);
-            free_device_mesh(&mesh_c_third);
+            free_device_mesh(&mesh1);
+            free_device_mesh(&mesh2);
+            free_device_mesh(&mesh3);
 
             CUDA_CHECK(cudaStreamDestroy(stream));
         });
@@ -411,14 +392,14 @@ py::object count3close_py(
     py::dict result;
     std::vector<ssize_t> total_shape;
 
-    auto shape_ab = battrs_ab_py.shape();
-    auto shape_ac = battrs_ac_py.shape();
-    total_shape.insert(total_shape.end(), shape_ab.begin(), shape_ab.end());
-    total_shape.insert(total_shape.end(), shape_ac.begin(), shape_ac.end());
+    auto shape12 = battrs12_py.shape();
+    auto shape13 = battrs13_py.shape();
+    total_shape.insert(total_shape.end(), shape12.begin(), shape12.end());
+    total_shape.insert(total_shape.end(), shape13.begin(), shape13.end());
 
-    if (has_bc) {
-        auto shape_bc = battrs_bc_py->shape();
-        total_shape.insert(total_shape.end(), shape_bc.begin(), shape_bc.end());
+    if (has23) {
+        auto shape23 = battrs23_py->shape();
+        total_shape.insert(total_shape.end(), shape23.begin(), shape23.end());
     }
 
     for (size_t icount = 0; icount < ncounts; ++icount) {
@@ -501,15 +482,15 @@ PYBIND11_MODULE(cucount, m) {
         py::arg("particles1"),
         py::arg("particles2"),
         py::arg("particles3"),
-        py::arg("mattrs_b_close"),
-        py::arg("mattrs_c_close"),
-        py::arg("mattrs_b_third"),
-        py::arg("mattrs_c_third"),
-        py::arg("battrs_ab"),
-        py::arg("battrs_ac"),
-        py::arg("battrs_bc") = py::none(),
+        py::arg("mattrs2"),
+        py::arg("mattrs3"),
+        py::arg("battrs12"),
+        py::arg("battrs13"),
+        py::arg("battrs23") = py::none(),
         py::arg("wattrs") = WeightAttrs_py(),
-        py::arg("sattrs_ab") = SelectionAttrs_py(),
-        py::arg("sattrs_ac") = SelectionAttrs_py(),
+        py::arg("sattrs12") = SelectionAttrs_py(),
+        py::arg("sattrs13") = SelectionAttrs_py(),
+        py::arg("sattrs23") = SelectionAttrs_py(),
+        py::arg("veto13") = false,
         py::arg("nthreads") = 1);
 }

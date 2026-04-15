@@ -7,12 +7,7 @@
 // Explicit pair selection
 // ============================================================================
 
-enum Count3CloseMode {
-    COUNT3_MODE_AB = 0,
-    COUNT3_MODE_AC = 1
-};
-
-__device__ inline bool is_selected_pair(
+__device__ inline bool is_selected_pair_with_sattrs(
     FLOAT *sposition1,
     FLOAT *sposition2,
     FLOAT *position1,
@@ -389,18 +384,18 @@ __device__ inline int pair_block_size(int ell1, int ell2)
 __device__ inline void add_weight3(
     FLOAT *counts,
     const FLOAT local_frame[3][NDIM],
-    FLOAT *sposition_a,
-    FLOAT *sposition_b,
-    FLOAT *sposition_c,
-    FLOAT *position_a,
-    FLOAT *position_b,
-    FLOAT *position_c,
-    FLOAT *value_a,
-    FLOAT *value_b,
-    FLOAT *value_c,
-    IndexValue index_value_a,
-    IndexValue index_value_b,
-    IndexValue index_value_c,
+    FLOAT *sposition1,
+    FLOAT *sposition2,
+    FLOAT *sposition3,
+    FLOAT *position1,
+    FLOAT *position2,
+    FLOAT *position3,
+    FLOAT *value1,
+    FLOAT *value2,
+    FLOAT *value3,
+    IndexValue index_value1,
+    IndexValue index_value2,
+    IndexValue index_value3,
     const BinAttrs *battrs,
     WeightAttrs wattrs)
 {
@@ -421,11 +416,11 @@ __device__ inline void add_weight3(
         if (var0 != VAR_S && var0 != VAR_THETA) return;
     }
 
-    const FLOAT *spos1[3] = {sposition_a, sposition_a, sposition_b};
-    const FLOAT *spos2[3] = {sposition_b, sposition_c, sposition_c};
+    const FLOAT *spos1[3] = {sposition1, sposition1, sposition2};
+    const FLOAT *spos2[3] = {sposition2, sposition3, sposition3};
 
-    const FLOAT *pos1[3] = {position_a, position_a, position_b};
-    const FLOAT *pos2[3] = {position_b, position_c, position_c};
+    const FLOAT *pos1[3] = {position1, position1, position2};
+    const FLOAT *pos2[3] = {position2, position3, position3};
 
     FLOAT costheta[3];
     FLOAT diff[3][NDIM];
@@ -471,14 +466,14 @@ __device__ inline void add_weight3(
 
     FLOAT triplet_weight = (FLOAT)1.;
 
-    if (index_value_a.size_individual_weight) {
-        triplet_weight *= value_a[index_value_a.start_individual_weight];
+    if (index_value1.size_individual_weight) {
+        triplet_weight *= value1[index_value1.start_individual_weight];
     }
-    if (index_value_b.size_individual_weight) {
-        triplet_weight *= value_b[index_value_b.start_individual_weight];
+    if (index_value2.size_individual_weight) {
+        triplet_weight *= value2[index_value2.start_individual_weight];
     }
-    if (index_value_c.size_individual_weight) {
-        triplet_weight *= value_c[index_value_c.start_individual_weight];
+    if (index_value3.size_individual_weight) {
+        triplet_weight *= value3[index_value3.start_individual_weight];
     }
 
     {
@@ -578,122 +573,122 @@ __device__ inline void add_weight3(
 // ============================================================================
 
 template <typename Op>
-__device__ inline void for_each_close_candidate_from_a_angular(
-    size_t ia,
-    Mesh mesh_a,
-    Mesh mesh_x,
-    const MeshAttrs &mattrs_x_close,
+__device__ inline void for_each_close_candidate_from_1_angular(
+    size_t i1,
+    Mesh mesh1,
+    Mesh mesh2,
+    const MeshAttrs &mattrs2,
     Op &op)
 {
-    FLOAT *sposition_a = &(mesh_a.spositions[NDIM * ia]);
+    FLOAT *sposition1 = &(mesh1.spositions[NDIM * i1]);
 
     int bounds[2 * NDIM];
-    set_angular_bounds_from_attrs(sposition_a, mattrs_x_close, bounds);
+    set_angular_bounds_from_attrs(sposition1, mattrs2, bounds);
 
     for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
-        int icth_n = icth * (int)mattrs_x_close.meshsize[1];
+        int icth_n = icth * (int)mattrs2.meshsize[1];
 
         for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
-            int iphi_true = wrap_periodic_int(iphi, (int)mattrs_x_close.meshsize[1]);
+            int iphi_true = wrap_periodic_int(iphi, (int)mattrs2.meshsize[1]);
             int icell = iphi_true + icth_n;
 
-            int npx = mesh_x.nparticles[icell];
-            size_t cumx = mesh_x.cumnparticles[icell];
+            int np2 = mesh2.nparticles[icell];
+            size_t cum2 = mesh2.cumnparticles[icell];
 
-            FLOAT *positions_x  = &(mesh_x.positions[NDIM * cumx]);
-            FLOAT *spositions_x = &(mesh_x.spositions[NDIM * cumx]);
-            FLOAT *values_x     = &(mesh_x.values[mesh_x.index_value.size * cumx]);
+            FLOAT *positions2  = &(mesh2.positions[NDIM * cum2]);
+            FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
+            FLOAT *values2     = &(mesh2.values[mesh2.index_value.size * cum2]);
 
-            for (int jx = 0; jx < npx; jx++) {
-                size_t ix = cumx + (size_t)jx;
-                FLOAT *position_x  = &(positions_x[NDIM * jx]);
-                FLOAT *sposition_x = &(spositions_x[NDIM * jx]);
-                FLOAT *value_x     = &(values_x[mesh_x.index_value.size * jx]);
+            for (int j2 = 0; j2 < np2; j2++) {
+                size_t i2 = cum2 + (size_t)j2;
+                FLOAT *position2  = &(positions2[NDIM * j2]);
+                FLOAT *sposition2 = &(spositions2[NDIM * j2]);
+                FLOAT *value2     = &(values2[mesh2.index_value.size * j2]);
 
-                op(ix, position_x, sposition_x, value_x);
+                op(i2, position2, sposition2, value2);
             }
         }
     }
 }
 
 template <typename Op>
-__device__ inline void for_each_third_candidate_from_a_angular(
-    size_t ia,
-    Mesh mesh_a,
-    Mesh mesh_x,
-    const MeshAttrs &mattrs_x_third,
+__device__ inline void for_each_third_candidate_from_1_angular(
+    size_t i1,
+    Mesh mesh1,
+    Mesh mesh3,
+    const MeshAttrs &mattrs3,
     Op &op)
 {
-    FLOAT *sposition_a = &(mesh_a.spositions[NDIM * ia]);
+    FLOAT *sposition1 = &(mesh1.spositions[NDIM * i1]);
 
     int bounds[2 * NDIM];
-    set_angular_bounds_from_attrs(sposition_a, mattrs_x_third, bounds);
+    set_angular_bounds_from_attrs(sposition1, mattrs3, bounds);
 
     for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
-        int icth_n = icth * (int)mattrs_x_third.meshsize[1];
+        int icth_n = icth * (int)mattrs3.meshsize[1];
 
         for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
-            int iphi_true = wrap_periodic_int(iphi, (int)mattrs_x_third.meshsize[1]);
+            int iphi_true = wrap_periodic_int(iphi, (int)mattrs3.meshsize[1]);
             int icell = iphi_true + icth_n;
 
-            int npx = mesh_x.nparticles[icell];
-            size_t cumx = mesh_x.cumnparticles[icell];
+            int np3 = mesh3.nparticles[icell];
+            size_t cum3 = mesh3.cumnparticles[icell];
 
-            FLOAT *positions_x  = &(mesh_x.positions[NDIM * cumx]);
-            FLOAT *spositions_x = &(mesh_x.spositions[NDIM * cumx]);
-            FLOAT *values_x     = &(mesh_x.values[mesh_x.index_value.size * cumx]);
+            FLOAT *positions3  = &(mesh3.positions[NDIM * cum3]);
+            FLOAT *spositions3 = &(mesh3.spositions[NDIM * cum3]);
+            FLOAT *values3     = &(mesh3.values[mesh3.index_value.size * cum3]);
 
-            for (int jx = 0; jx < npx; jx++) {
-                size_t ix = cumx + (size_t)jx;
-                FLOAT *position_x  = &(positions_x[NDIM * jx]);
-                FLOAT *sposition_x = &(spositions_x[NDIM * jx]);
-                FLOAT *value_x     = &(values_x[mesh_x.index_value.size * jx]);
+            for (int j3 = 0; j3 < np3; j3++) {
+                size_t i3 = cum3 + (size_t)j3;
+                FLOAT *position3  = &(positions3[NDIM * j3]);
+                FLOAT *sposition3 = &(spositions3[NDIM * j3]);
+                FLOAT *value3     = &(values3[mesh3.index_value.size * j3]);
 
-                op(ix, position_x, sposition_x, value_x);
+                op(i3, position3, sposition3, value3);
             }
         }
     }
 }
 
 template <typename Op>
-__device__ inline void for_each_third_candidate_from_a_cartesian(
-    size_t ia,
-    Mesh mesh_a,
-    Mesh mesh_x,
-    const MeshAttrs &mattrs_x_third,
+__device__ inline void for_each_third_candidate_from_1_cartesian(
+    size_t i1,
+    Mesh mesh1,
+    Mesh mesh3,
+    const MeshAttrs &mattrs3,
     Op &op)
 {
-    FLOAT *position_a = &(mesh_a.positions[NDIM * ia]);
+    FLOAT *position1 = &(mesh1.positions[NDIM * i1]);
 
     int bounds[2 * NDIM];
-    set_cartesian_bounds_from_attrs(position_a, mattrs_x_third, bounds);
+    set_cartesian_bounds_from_attrs(position1, mattrs3, bounds);
 
     for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
-        int ix_n = wrap_periodic_int(ix, (int)mattrs_x_third.meshsize[0])
-                 * (int)mattrs_x_third.meshsize[2] * (int)mattrs_x_third.meshsize[1];
+        int ix_n = wrap_periodic_int(ix, (int)mattrs3.meshsize[0])
+                 * (int)mattrs3.meshsize[2] * (int)mattrs3.meshsize[1];
 
         for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
-            int iy_n = wrap_periodic_int(iy, (int)mattrs_x_third.meshsize[1])
-                     * (int)mattrs_x_third.meshsize[2];
+            int iy_n = wrap_periodic_int(iy, (int)mattrs3.meshsize[1])
+                     * (int)mattrs3.meshsize[2];
 
             for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
-                int iz_n = wrap_periodic_int(iz, (int)mattrs_x_third.meshsize[2]);
+                int iz_n = wrap_periodic_int(iz, (int)mattrs3.meshsize[2]);
                 int icell = ix_n + iy_n + iz_n;
 
-                int npx = mesh_x.nparticles[icell];
-                size_t cumx = mesh_x.cumnparticles[icell];
+                int np3 = mesh3.nparticles[icell];
+                size_t cum3 = mesh3.cumnparticles[icell];
 
-                FLOAT *positions_x  = &(mesh_x.positions[NDIM * cumx]);
-                FLOAT *spositions_x = &(mesh_x.spositions[NDIM * cumx]);
-                FLOAT *values_x     = &(mesh_x.values[mesh_x.index_value.size * cumx]);
+                FLOAT *positions3  = &(mesh3.positions[NDIM * cum3]);
+                FLOAT *spositions3 = &(mesh3.spositions[NDIM * cum3]);
+                FLOAT *values3     = &(mesh3.values[mesh3.index_value.size * cum3]);
 
-                for (int jx = 0; jx < npx; jx++) {
-                    size_t ixp = cumx + (size_t)jx;
-                    FLOAT *position_x  = &(positions_x[NDIM * jx]);
-                    FLOAT *sposition_x = &(spositions_x[NDIM * jx]);
-                    FLOAT *value_x     = &(values_x[mesh_x.index_value.size * jx]);
+                for (int j3 = 0; j3 < np3; j3++) {
+                    size_t i3 = cum3 + (size_t)j3;
+                    FLOAT *position3  = &(positions3[NDIM * j3]);
+                    FLOAT *sposition3 = &(spositions3[NDIM * j3]);
+                    FLOAT *value3     = &(values3[mesh3.index_value.size * j3]);
 
-                    op(ixp, position_x, sposition_x, value_x);
+                    op(i3, position3, sposition3, value3);
                 }
             }
         }
@@ -705,145 +700,127 @@ __device__ inline void for_each_third_candidate_from_a_cartesian(
 // Generic close-pass implementation
 // ============================================================================
 
-template <Count3CloseMode MODE>
 struct Count3CloseOp {
     FLOAT *local_counts;
 
-    FLOAT *position_a;
-    FLOAT *sposition_a;
-    FLOAT *value_a;
+    FLOAT *position1;
+    FLOAT *sposition1;
+    FLOAT *value1;
 
-    FLOAT *position_x;   // close-leg partner: b in AB mode, c in AC mode
-    FLOAT *sposition_x;
-    FLOAT *value_x;
+    FLOAT *position2;
+    FLOAT *sposition2;
+    FLOAT *value2;
 
     FLOAT local_frame[3][NDIM];
 
-    Mesh mesh_a;
-    Mesh mesh_b;
-    Mesh mesh_c;
+    Mesh mesh1;
+    Mesh mesh2;
+    Mesh mesh3;
 
-    SelectionAttrs sattrs_ab;
-    SelectionAttrs sattrs_ac;
+    SelectionAttrs sattrs12;
+    SelectionAttrs sattrs13;
+    SelectionAttrs sattrs23;
+    bool veto13;
 
     const BinAttrs *battrs;
     WeightAttrs wattrs;
 
     __device__ inline void operator()(
-        size_t iy,
-        FLOAT *position_y,
-        FLOAT *sposition_y,
-        FLOAT *value_y)
+        size_t i3,
+        FLOAT *position3,
+        FLOAT *sposition3,
+        FLOAT *value3)
     {
-        (void)iy;
+        (void)i3;
 
-        if constexpr (MODE == COUNT3_MODE_AB) {
-            // x = b, y = c
-            if (!is_selected_pair(sposition_a, sposition_x, position_a, position_x, sattrs_ab)) return;
+        if (!is_selected_pair_with_sattrs(sposition1, sposition3, position1, position3, sattrs13)) return;
+        if (!is_selected_pair_with_sattrs(sposition2, sposition3, position2, position3, sattrs23)) return;
+        if (veto13 && is_selected_pair_with_sattrs(sposition1, sposition3, position1, position3, sattrs12)) return;
 
-            add_weight3(
-                local_counts,
-                local_frame,
-                sposition_a, sposition_x, sposition_y,
-                position_a, position_x, position_y,
-                value_a, value_x, value_y,
-                mesh_a.index_value, mesh_b.index_value, mesh_c.index_value,
-                battrs, wattrs
-            );
-        }
-        else {
-            // x = c, y = b
-            if (!is_selected_pair(sposition_a, sposition_x, position_a, position_x, sattrs_ac)) return;
-            if (is_selected_pair(sposition_a, sposition_y, position_a, position_y, sattrs_ab)) return;
-
-            add_weight3(
-                local_counts,
-                local_frame,
-                sposition_a, sposition_y, sposition_x,
-                position_a, position_y, position_x,
-                value_a, value_y, value_x,
-                mesh_a.index_value, mesh_b.index_value, mesh_c.index_value,
-                battrs, wattrs
-            );
-        }
+        add_weight3(
+            local_counts,
+            local_frame,
+            sposition1, sposition2, sposition3,
+            position1, position2, position3,
+            value1, value2, value3,
+            mesh1.index_value, mesh2.index_value, mesh3.index_value,
+            battrs, wattrs
+        );
     }
 };
 
 
-template <Count3CloseMode MODE, bool THIRD_IS_ANGULAR>
+template <MESH_TYPE THIRD_MESH_TYPE>
 struct Count3ProcessCloseOp {
     FLOAT *local_counts;
-    size_t ia;
+    size_t i1;
 
-    FLOAT *position_a;
-    FLOAT *sposition_a;
-    FLOAT *value_a;
+    FLOAT *position1;
+    FLOAT *sposition1;
+    FLOAT *value1;
 
     FLOAT local_frame[3][NDIM];
 
-    Mesh mesh_a;
-    Mesh mesh_close;
-    Mesh mesh_third;
-    Mesh mesh_b;
-    Mesh mesh_c;
+    Mesh mesh1;
+    Mesh mesh2;
+    Mesh mesh3;
 
-    MeshAttrs mattrs_third;
-    SelectionAttrs sattrs_ab;
-    SelectionAttrs sattrs_ac;
+    MeshAttrs mattrs3;
+    SelectionAttrs sattrs12;
+    SelectionAttrs sattrs13;
+    SelectionAttrs sattrs23;
+    bool veto13;
 
     const BinAttrs *battrs;
     WeightAttrs wattrs;
 
     __device__ inline void operator()(
-        size_t ix,
-        FLOAT *position_x,
-        FLOAT *sposition_x,
-        FLOAT *value_x)
+        size_t i2,
+        FLOAT *position2,
+        FLOAT *sposition2,
+        FLOAT *value2)
     {
-        if constexpr (MODE == COUNT3_MODE_AB) {
-            if (!is_selected_pair(sposition_a, sposition_x, position_a, position_x, sattrs_ab)) return;
-        }
-        else {
-            if (!is_selected_pair(sposition_a, sposition_x, position_a, position_x, sattrs_ac)) return;
-        }
+        (void)i2;
 
-        Count3CloseOp<MODE> op{
+        if (!is_selected_pair_with_sattrs(sposition1, sposition2, position1, position2, sattrs12)) return;
+
+        Count3CloseOp op{
             local_counts,
-            position_a, sposition_a, value_a,
-            position_x, sposition_x, value_x,
+            position1, sposition1, value1,
+            position2, sposition2, value2,
             {
                 {local_frame[0][0], local_frame[0][1], local_frame[0][2]},
                 {local_frame[1][0], local_frame[1][1], local_frame[1][2]},
                 {local_frame[2][0], local_frame[2][1], local_frame[2][2]}
             },
-            mesh_a, mesh_b, mesh_c,
-            sattrs_ab, sattrs_ac,
+            mesh1, mesh2, mesh3,
+            sattrs12, sattrs13, sattrs23, veto13,
             battrs, wattrs
         };
 
-        if constexpr (THIRD_IS_ANGULAR) {
-            for_each_third_candidate_from_a_angular(ia, mesh_a, mesh_third, mattrs_third, op);
+        if constexpr (THIRD_MESH_TYPE == MESH_ANGULAR) {
+            for_each_third_candidate_from_1_angular(i1, mesh1, mesh3, mattrs3, op);
         }
-        else {
-            for_each_third_candidate_from_a_cartesian(ia, mesh_a, mesh_third, mattrs_third, op);
+        else if constexpr (THIRD_MESH_TYPE == MESH_CARTESIAN) {
+            for_each_third_candidate_from_1_cartesian(i1, mesh1, mesh3, mattrs3, op);
         }
     }
 };
 
 
-template <Count3CloseMode MODE, bool THIRD_IS_ANGULAR>
+template <MESH_TYPE THIRD_MESH_TYPE>
 __global__ void count3_close_kernel(
     FLOAT *block_counts,
     size_t csize,
-    Mesh mesh_a,
-    Mesh mesh_close,
-    Mesh mesh_third,
-    Mesh mesh_b,
-    Mesh mesh_c,
-    MeshAttrs mattrs_close,
-    MeshAttrs mattrs_third,
-    SelectionAttrs sattrs_ab,
-    SelectionAttrs sattrs_ac,
+    Mesh mesh1,
+    Mesh mesh2,
+    Mesh mesh3,
+    MeshAttrs mattrs2,
+    MeshAttrs mattrs3,
+    SelectionAttrs sattrs12,
+    SelectionAttrs sattrs13,
+    SelectionAttrs sattrs23,
+    bool veto13,
     const BinAttrs *battrs,
     WeightAttrs wattrs)
 {
@@ -858,30 +835,30 @@ __global__ void count3_close_kernel(
     size_t gid = blockIdx.x * blockDim.x + tid;
     size_t stride = gridDim.x * blockDim.x;
 
-    for (size_t ia = gid; ia < mesh_a.total_nparticles; ia += stride) {
-        FLOAT *position_a  = &(mesh_a.positions[NDIM * ia]);
-        FLOAT *sposition_a = &(mesh_a.spositions[NDIM * ia]);
-        FLOAT *value_a     = &(mesh_a.values[mesh_a.index_value.size * ia]);
+    for (size_t i1 = gid; i1 < mesh1.total_nparticles; i1 += stride) {
+        FLOAT *position1  = &(mesh1.positions[NDIM * i1]);
+        FLOAT *sposition1 = &(mesh1.spositions[NDIM * i1]);
+        FLOAT *value1     = &(mesh1.values[mesh1.index_value.size * i1]);
 
         FLOAT local_frame[3][NDIM];
-        build_local_frame(sposition_a, local_frame);
+        build_local_frame(sposition1, local_frame);
 
-        Count3ProcessCloseOp<MODE, THIRD_IS_ANGULAR> op{
+        Count3ProcessCloseOp<THIRD_MESH_TYPE> op{
             local_counts,
-            ia,
-            position_a, sposition_a, value_a,
+            i1,
+            position1, sposition1, value1,
             {
                 {local_frame[0][0], local_frame[0][1], local_frame[0][2]},
                 {local_frame[1][0], local_frame[1][1], local_frame[1][2]},
                 {local_frame[2][0], local_frame[2][1], local_frame[2][2]}
             },
-            mesh_a, mesh_close, mesh_third, mesh_b, mesh_c,
-            mattrs_third,
-            sattrs_ab, sattrs_ac,
+            mesh1, mesh2, mesh3,
+            mattrs3,
+            sattrs12, sattrs13, sattrs23, veto13,
             battrs, wattrs
         };
 
-        for_each_close_candidate_from_a_angular(ia, mesh_a, mesh_close, mattrs_close, op);
+        for_each_close_candidate_from_1_angular(i1, mesh1, mesh2, mattrs2, op);
     }
 }
 
@@ -892,134 +869,96 @@ __global__ void count3_close_kernel(
 
 void count3_close(
     FLOAT *counts,
-    Mesh mesh_a,
-    Mesh mesh_b_close,
-    Mesh mesh_c_close,
-    Mesh mesh_b_third,
-    Mesh mesh_c_third,
-    MeshAttrs mattrs_b_close,
-    MeshAttrs mattrs_c_close,
-    MeshAttrs mattrs_b_third,
-    MeshAttrs mattrs_c_third,
-    SelectionAttrs sattrs_ab,
-    SelectionAttrs sattrs_ac,
-    BinAttrs *battrs[3],
+    Mesh mesh1,
+    Mesh mesh2,
+    Mesh mesh3,
+    MeshAttrs mattrs2,
+    MeshAttrs mattrs3,
+    SelectionAttrs sattrs12,
+    SelectionAttrs sattrs13,
+    SelectionAttrs sattrs23,
+    bool veto13,
+    BinAttrs battrs12,
+    BinAttrs battrs23,
+    BinAttrs battrs13,
     WeightAttrs wattrs,
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream)
 {
-    Count3Layout layout = make_count3_layout(battrs);
+    BinAttrs host_battrs[3] = {battrs12, battrs13, battrs23};
+
+    BinAttrs *battrs_ptrs[3] = {
+        &host_battrs[0],
+        &host_battrs[1],
+        &host_battrs[2]
+    };
+
+    Count3Layout layout = make_count3_layout(battrs_ptrs);
     size_t csize = layout.csize;
 
     BinAttrs device_battrs[3];
-
     for (int i = 0; i < 3; i++) {
-        if (battrs[i] != NULL) copy_bin_attrs_to_device(&device_battrs[i], battrs[i], buffer);
-        else memset(&device_battrs[i], 0, sizeof(BinAttrs));
+        copy_bin_attrs_to_device(&device_battrs[i], &host_battrs[i], buffer);
     }
 
     WeightAttrs device_wattrs = wattrs;
     copy_weight_attrs_to_device(&device_wattrs, &wattrs, buffer);
 
     int nblocks, nthreads_per_block;
-    CONFIGURE_KERNEL_LAUNCH((count3_close_kernel<COUNT3_MODE_AB, false>),
+    CONFIGURE_KERNEL_LAUNCH((count3_close_kernel<MESH_CARTESIAN>),
                             nblocks, nthreads_per_block, buffer);
 
-    FLOAT *block_counts_ab = (FLOAT*) my_device_malloc(
-        nblocks * csize * sizeof(FLOAT), buffer);
-    FLOAT *block_counts_ac = (FLOAT*) my_device_malloc(
+    FLOAT *block_counts = (FLOAT *) my_device_malloc(
         nblocks * csize * sizeof(FLOAT), buffer);
 
     CUDA_CHECK(cudaMemsetAsync(counts, 0, csize * sizeof(FLOAT), stream));
     CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(Count3Layout)));
 
-    if (mattrs_c_third.type == MESH_ANGULAR) {
-        count3_close_kernel<COUNT3_MODE_AB, true><<<nblocks, nthreads_per_block, 0, stream>>>(
-            block_counts_ab,
+    if (mattrs3.type == MESH_ANGULAR) {
+        count3_close_kernel<MESH_ANGULAR><<<nblocks, nthreads_per_block, 0, stream>>>(
+            block_counts,
             csize,
-            mesh_a,
-            mesh_b_close,
-            mesh_c_third,
-            mesh_b_close,
-            mesh_c_third,
-            mattrs_b_close,
-            mattrs_c_third,
-            sattrs_ab,
-            sattrs_ac,
+            mesh1,
+            mesh2,
+            mesh3,
+            mattrs2,
+            mattrs3,
+            sattrs12,
+            sattrs13,
+            sattrs23,
+            veto13,
             device_battrs,
             device_wattrs
         );
     }
-    else if (mattrs_c_third.type == MESH_CARTESIAN) {
-        count3_close_kernel<COUNT3_MODE_AB, false><<<nblocks, nthreads_per_block, 0, stream>>>(
-            block_counts_ab,
+    else if (mattrs3.type == MESH_CARTESIAN) {
+        count3_close_kernel<MESH_CARTESIAN><<<nblocks, nthreads_per_block, 0, stream>>>(
+            block_counts,
             csize,
-            mesh_a,
-            mesh_b_close,
-            mesh_c_third,
-            mesh_b_close,
-            mesh_c_third,
-            mattrs_b_close,
-            mattrs_c_third,
-            sattrs_ab,
-            sattrs_ac,
-            device_battrs,
-            device_wattrs
-        );
-    }
-    else {
-        log_message(LOG_LEVEL_ERROR, "count3_close: unsupported mattrs_c_third.type.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    if (mattrs_b_third.type == MESH_ANGULAR) {
-        count3_close_kernel<COUNT3_MODE_AC, true><<<nblocks, nthreads_per_block, 0, stream>>>(
-            block_counts_ac,
-            csize,
-            mesh_a,
-            mesh_c_close,
-            mesh_b_third,
-            mesh_b_third,
-            mesh_c_close,
-            mattrs_c_close,
-            mattrs_b_third,
-            sattrs_ab,
-            sattrs_ac,
-            device_battrs,
-            device_wattrs
-        );
-    }
-    else if (mattrs_b_third.type == MESH_CARTESIAN) {
-        count3_close_kernel<COUNT3_MODE_AC, false><<<nblocks, nthreads_per_block, 0, stream>>>(
-            block_counts_ac,
-            csize,
-            mesh_a,
-            mesh_c_close,
-            mesh_b_third,
-            mesh_b_third,
-            mesh_c_close,
-            mattrs_c_close,
-            mattrs_b_third,
-            sattrs_ab,
-            sattrs_ac,
+            mesh1,
+            mesh2,
+            mesh3,
+            mattrs2,
+            mattrs3,
+            sattrs12,
+            sattrs13,
+            sattrs23,
+            veto13,
             device_battrs,
             device_wattrs
         );
     }
     else {
-        log_message(LOG_LEVEL_ERROR, "count3_close: unsupported mattrs_b_third.type.\n");
+        log_message(LOG_LEVEL_ERROR, "count3_close: unsupported mattrs3.type.\n");
         exit(EXIT_FAILURE);
     }
 
     reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(
-        block_counts_ab, nblocks, counts, csize);
-    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(
-        block_counts_ac, nblocks, counts, csize);
+        block_counts, nblocks, counts, csize);
 
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    my_device_free(block_counts_ab, buffer);
-    my_device_free(block_counts_ac, buffer);
+    my_device_free(block_counts, buffer);
 
     for (int i = 0; i < 3; i++) {
         free_device_bin_attrs(&device_battrs[i], buffer);
