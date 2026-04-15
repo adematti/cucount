@@ -535,6 +535,7 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
         if ((var != VAR_POLE) && (var != VAR_K)) {
             int ibin_loc = get_bin_index(&battrs, i, value);
             if (ibin_loc < 0) return;
+            ibin = ibin * (size_t)battrs.shape[i] + (size_t)ibin_loc;
         }
         else {
             break;

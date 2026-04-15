@@ -5,6 +5,7 @@
 #include "count2.h"
 #include "count3close.h"
 
+
 __device__ inline FLOAT clamp1(FLOAT x)
 {
     return MIN((FLOAT)1., MAX((FLOAT)-1., x));
@@ -297,6 +298,7 @@ void fill_close_pairs(ClosePairs *cpairs, const Mesh *list_mesh, const MeshAttrs
         stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
+    log_message(LOG_LEVEL_INFO, "Found %zu close pairs for %zu primaries.\n", cpairs->npairs, cpairs->nprimaries);
     if (cpairs->npairs > 0) {
         cpairs->secondary = (size_t *)my_device_malloc(cpairs->npairs * sizeof(size_t), buffer);
 
