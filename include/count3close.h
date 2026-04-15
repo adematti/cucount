@@ -36,22 +36,23 @@
 #define SQRT70_16 2.09165006633518886818
 #endif
 
-
-typedef struct {
-    size_t nprimaries;
-    size_t npairs;
-    size_t *offsets;    // device, size nprimaries + 1
-    size_t *secondary;  // device, size npairs
-} ClosePairs;
-
-
-void free_device_close_pairs(ClosePairs *cpairs, DeviceMemoryBuffer *buffer);
-
-void fill_close_pairs(ClosePairs *cpairs, const Mesh *list_mesh, const MeshAttrs mattrs, const SelectionAttrs sattrs, DeviceMemoryBuffer *buffer, cudaStream_t stream);
-
-void count3_close(FLOAT *counts, ClosePairs close_ab, ClosePairs close_ac, const Mesh *list_mesh,
-    MeshAttrs mattrs, BinAttrs *battrs[3], WeightAttrs wattrs, DeviceMemoryBuffer *buffer, cudaStream_t stream);
-
+void count3_close(
+    FLOAT *counts,
+    Mesh mesh_a,
+    Mesh mesh_b_close,
+    Mesh mesh_c_close,
+    Mesh mesh_b_third,
+    Mesh mesh_c_third,
+    MeshAttrs mattrs_b_close,
+    MeshAttrs mattrs_c_close,
+    MeshAttrs mattrs_b_third,
+    MeshAttrs mattrs_c_third,
+    SelectionAttrs sattrs_ab,
+    SelectionAttrs sattrs_ac,
+    BinAttrs *battrs[3],
+    WeightAttrs wattrs,
+    DeviceMemoryBuffer *buffer,
+    cudaStream_t stream);
 
 
 #endif
