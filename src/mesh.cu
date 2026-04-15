@@ -5,7 +5,6 @@
 //#include <thrust/device_ptr.h>
 //#include <thrust/scan.h>
 #include "common.h"
-#include "utils.h"
 
 
 // Function to calculate the Cartesian distance

@@ -197,5 +197,7 @@ void copy_weight_attrs_to_device(WeightAttrs *device_attrs, const WeightAttrs *h
 
 void free_device_weight_attrs(WeightAttrs *device_attrs, DeviceMemoryBuffer *buffer);
 
+void exclusive_scan_size_t_device(const size_t *d_in, size_t *d_out, size_t n, DeviceMemoryBuffer* buffer);
+
 
 #endif //_CUCOUNT_COMMON_

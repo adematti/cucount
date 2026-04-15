@@ -1,10 +1,7 @@
-// close_pairs.cu
-
 #include <thrust/execution_policy.h>
 #include <thrust/scan.h>
 
 #include "common.h"
-#include "utils.h"
 #include "count2.h"
 #include "count3close.h"
 
