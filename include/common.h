@@ -189,5 +189,13 @@ void free_host_particles(Particles *particles);
 
 void free_host_mesh(Mesh *mesh);
 
+void copy_bin_attrs_to_device(BinAttrs *device_battrs, const BinAttrs *host_battrs, DeviceMemoryBuffer *buffer);
+
+void free_device_bin_attrs(BinAttrs *device_battrs, DeviceMemoryBuffer *buffer);
+
+void copy_weight_attrs_to_device(WeightAttrs *device_attrs, const WeightAttrs *host_attrs, DeviceMemoryBuffer *buffer);
+
+void free_device_weight_attrs(WeightAttrs *device_attrs, DeviceMemoryBuffer *buffer);
+
 
 #endif //_CUCOUNT_COMMON_

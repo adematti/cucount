@@ -235,3 +235,155 @@ void free_host_mesh(Mesh *mesh) {
     free(mesh->positions);
     free(mesh->values);
 }
+
+
+void copy_bin_attrs_to_device(BinAttrs *device_battrs, const BinAttrs *host_battrs, DeviceMemoryBuffer *buffer)
+{
+    *device_battrs = *host_battrs;
+
+    for (size_t idim = 0; idim < MAX_NBIN; idim++) {
+        device_battrs->array[idim] = NULL;
+    }
+
+    for (size_t idim = 0; idim < host_battrs->ndim; idim++) {
+        if (host_battrs->asize[idim] > 0) {
+            FLOAT *device_array = (FLOAT*) my_device_malloc(
+                host_battrs->asize[idim] * sizeof(FLOAT), buffer);
+
+            CUDA_CHECK(cudaMemcpy(
+                device_array,
+                host_battrs->array[idim],
+                host_battrs->asize[idim] * sizeof(FLOAT),
+                cudaMemcpyHostToDevice));
+
+            device_battrs->array[idim] = device_array;
+        }
+    }
+}
+
+void free_device_bin_attrs(BinAttrs *device_battrs, DeviceMemoryBuffer *buffer)
+{
+    for (size_t idim = 0; idim < device_battrs->ndim; idim++) {
+        if (device_battrs->array[idim]) {
+            my_device_free(device_battrs->array[idim], buffer);
+            device_battrs->array[idim] = NULL;
+        }
+    }
+}
+
+
+void copy_weight_attrs_to_device(WeightAttrs *device_attrs, const WeightAttrs *host_attrs, DeviceMemoryBuffer *buffer)
+{
+    *device_attrs = *host_attrs;
+
+    // -----------------
+    // BitwiseWeight
+    // -----------------
+    device_attrs->bitwise.p_correction_nbits = NULL;
+
+    if (host_attrs->bitwise.p_nbits > 0) {
+        const size_t size =
+            host_attrs->bitwise.p_nbits * host_attrs->bitwise.p_nbits;
+
+        FLOAT *device_p_correction_nbits = (FLOAT*) my_device_malloc(
+            size * sizeof(FLOAT), buffer);
+
+        CUDA_CHECK(cudaMemcpy(
+            device_p_correction_nbits,
+            host_attrs->bitwise.p_correction_nbits,
+            size * sizeof(FLOAT),
+            cudaMemcpyHostToDevice));
+
+        device_attrs->bitwise.p_correction_nbits = device_p_correction_nbits;
+    }
+
+    // -----------------
+    // AngularWeight
+    // -----------------
+    for (size_t idim = 0; idim < MAX_NBIN; idim++) {
+        device_attrs->angular.sep[idim] = NULL;
+        device_attrs->angular.edges[idim] = NULL;
+    }
+    device_attrs->angular.weight = NULL;
+
+    if (host_attrs->angular.ndim == 0) return;
+
+    for (size_t idim = 0; idim < host_attrs->angular.ndim; idim++) {
+        if (host_attrs->angular.sep[idim] && host_attrs->angular.edges[idim]) {
+            log_message(
+                LOG_LEVEL_ERROR,
+                "AngularWeight axis %zu has both sep and edges.\n",
+                idim);
+            exit(EXIT_FAILURE);
+        }
+
+        if (host_attrs->angular.sep[idim]) {
+            FLOAT *device_sep = (FLOAT*) my_device_malloc(
+                host_attrs->angular.shape[idim] * sizeof(FLOAT), buffer);
+
+            CUDA_CHECK(cudaMemcpy(
+                device_sep,
+                host_attrs->angular.sep[idim],
+                host_attrs->angular.shape[idim] * sizeof(FLOAT),
+                cudaMemcpyHostToDevice));
+
+            device_attrs->angular.sep[idim] = device_sep;
+        }
+        else if (host_attrs->angular.edges[idim]) {
+            FLOAT *device_edges = (FLOAT*) my_device_malloc(
+                (host_attrs->angular.shape[idim] + 1) * sizeof(FLOAT), buffer);
+
+            CUDA_CHECK(cudaMemcpy(
+                device_edges,
+                host_attrs->angular.edges[idim],
+                (host_attrs->angular.shape[idim] + 1) * sizeof(FLOAT),
+                cudaMemcpyHostToDevice));
+
+            device_attrs->angular.edges[idim] = device_edges;
+        }
+    }
+
+    if (host_attrs->angular.size > 0) {
+        FLOAT *device_weight = (FLOAT*) my_device_malloc(
+            host_attrs->angular.size * sizeof(FLOAT), buffer);
+
+        CUDA_CHECK(cudaMemcpy(
+            device_weight,
+            host_attrs->angular.weight,
+            host_attrs->angular.size * sizeof(FLOAT),
+            cudaMemcpyHostToDevice));
+
+        device_attrs->angular.weight = device_weight;
+    }
+}
+
+
+void free_device_weight_attrs(WeightAttrs *device_attrs, DeviceMemoryBuffer *buffer)
+{
+    // -----------------
+    // AngularWeight
+    // -----------------
+    for (size_t idim = 0; idim < device_attrs->angular.ndim; idim++) {
+        if (device_attrs->angular.sep[idim]) {
+            my_device_free(device_attrs->angular.sep[idim], buffer);
+            device_attrs->angular.sep[idim] = NULL;
+        }
+        if (device_attrs->angular.edges[idim]) {
+            my_device_free(device_attrs->angular.edges[idim], buffer);
+            device_attrs->angular.edges[idim] = NULL;
+        }
+    }
+
+    if (device_attrs->angular.weight) {
+        my_device_free(device_attrs->angular.weight, buffer);
+        device_attrs->angular.weight = NULL;
+    }
+
+    // -----------------
+    // BitwiseWeight
+    // -----------------
+    if (device_attrs->bitwise.p_correction_nbits) {
+        my_device_free(device_attrs->bitwise.p_correction_nbits, buffer);
+        device_attrs->bitwise.p_correction_nbits = NULL;
+    }
+}
