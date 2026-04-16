@@ -1,6 +1,6 @@
 import sys
 import time
-import numbers
+import itertools
 import logging
 import functools
 import operator
@@ -825,6 +825,12 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=nthreads)
 
 
+def wigner_3j(*ells):
+    from sympy.physics.wigner import wigner_3j
+    ells = map(int, ells)
+    return float(wigner_3j(*ells))
+
+
 def _triposh_transform_matrix_sub(ell1, ell2, ell3s=None, tol=1e-12):
     """
     Return matrix M such that, for fixed (ell1, ell2),
@@ -859,7 +865,7 @@ def _triposh_transform_matrix_sub(ell1, ell2, ell3s=None, tol=1e-12):
         """Amplitude multiplying P_ell^m e^{i m phi} in your get_Ylm."""
         m = abs(m)
         return np.sqrt(special.factorial(ell - m, exact=False) / special.factorial(ell + m, exact=False))
-    
+
     mmax = min(ell1, ell2)
 
     if ell3s is None:
@@ -903,6 +909,15 @@ def _triposh_transform_matrix_sub(ell1, ell2, ell3s=None, tol=1e-12):
                 M[irow, 0] = 0.0
 
     return ell3s, M, labels
+
+
+def triposh_to_poles(ells):
+    """Return ells1, ells2 sufficient to cover input ells."""
+    ells1, ells2 = [], []
+    for ell1, ell2, ell3 in ells:
+        ells1.append(ell1)
+        ells2.append(ell2)
+    return ells1, ells2
 
 
 def triposh_transform_matrix(battrs12, battrs13, ells=None):
@@ -958,7 +973,7 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
     The projection layout is assumed to match the native kernel packing
     order:
 
-    ``for ell1 in battrs12.coords('pole'):``  
+    ``for ell1 in battrs12.coords('pole'):``
     ``    for ell2 in battrs13.coords('pole'):``
 
     with each pair block occupying
@@ -968,7 +983,7 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
         """
         Pad a local (ell1, ell2) tripoSH transform block into the full CUDA
         projection layout.
-    
+
         Parameters
         ----------
         M : ndarray, shape (nrow, 2*min(ell1, ell2)+1)
@@ -977,7 +992,7 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
             The multipole pair corresponding to M.
         bells1, bells2 : sequence[int]
             Full ordered multipole lists used in CUDA packing.
-    
+
         Returns
         -------
         Mpad : ndarray, shape (nrow, nproj_total)
@@ -985,10 +1000,10 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
         """
         def block_size(l1, l2):
             return 2 * min(l1, l2) + 1
-    
+
         # Total number of CUDA projections
         total = sum(block_size(l1, l2) for l1 in bells1 for l2 in bells2)
-    
+
         # Find start offset of this block in CUDA ordering
         offset = 0
         found = False
@@ -1000,15 +1015,15 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
                 offset += block_size(l1, l2)
             if found:
                 break
-    
+
         if not found:
             raise ValueError(f"(ell1, ell2)=({ell1}, {ell2}) not found in provided pole coordinates")
-    
+
         out = np.zeros((M.shape[0], total), dtype=M.dtype)
         out[:, offset:offset + M.shape[1]] = M
         return out
-    
-    bells1, bells2 = list(battrs12.coords('pole')), list(battrs23.coords('pole'))
+
+    bells1, bells2 = list(battrs12.coords('pole')), list(battrs13.coords('pole'))
     if ells is None:
         ells = list(itertools.product(bells1, bells2))
         ells = [tuple(ell) + (None,) for ell in ells]
