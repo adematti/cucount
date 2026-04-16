@@ -1093,9 +1093,9 @@ def count3close(*particles: Particles,
     wattrs.check(*particles)
 
     if mattrs2 is None:
-        mattrs2 = MeshAttrs(particles[0], particles[1], sattrs=sattrs12, battrs=battrs12)
+        mattrs2 = MeshAttrs(particles[1], sattrs=sattrs12, battrs=battrs12)
     if mattrs3 is None:
-        mattrs3 = MeshAttrs(particles[0], particles[2], sattrs=sattrs13, battrs=battrs13)
+        mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13)
 
     particles = [
         cucountlib.cucount.Particles(

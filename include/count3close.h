@@ -48,7 +48,7 @@ typedef struct DeviceCount3Layout {
 } DeviceCount3Layout;
 
 
-DeviceCount3Layout make_device_count3_layout(BinAttrs battrs[3]);
+DeviceCount3Layout make_device_count3_layout(const BinAttrs battrs[3]);
 
 
 void count3_close(

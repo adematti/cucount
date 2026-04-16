@@ -320,10 +320,12 @@ py::object count3close_py(
             Mesh mesh2;
             Mesh mesh3;
 
-            Particles plist[2];
-            Mesh mlist[2];
-            plist[1].size = 0;
-            mlist[1].total_nparticles = 0;
+            Particles plist[MAX_NMESH];
+            Mesh mlist[MAX_NMESH];
+            for (size_t i = 0; i < MAX_NMESH; ++i) {
+                plist[i].size = 0;
+                mlist[i].total_nparticles = 0;
+            }
 
             plist[0] = list_particles_dev[0];
             set_mesh(plist, mlist, mattrs2, membuffer, stream);

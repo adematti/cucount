@@ -22,7 +22,7 @@ def test_cucount():
     count2(data, data, battrs=battrs, sattrs=sattrs)
     print(f'count2 {time.time() - t0:.2f}')
     t0 = time.time()
-    counts = count3close(data, data, data, battrs_12=battrs, battrs_13=battrs, sattrs_12=sattrs, sattrs_13=sattrs)['weight']
+    counts = count3close(data, data, data, battrs12=battrs, battrs13=battrs, sattrs12=sattrs, sattrs13=sattrs)['weight']
     print(counts)
     print(f'count3 {time.time() - t0:.2f}')
 

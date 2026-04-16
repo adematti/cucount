@@ -351,9 +351,12 @@ ffi::Error count3closeImpl(
     Mesh mesh2{};
     Mesh mesh3{};
 
-    Particles plist[2];
-    Mesh mlist[2];
-    plist[1].size = 0;
+    Particles plist[MAX_NMESH];
+    Mesh mlist[MAX_NMESH];
+    for (size_t i = 0; i < MAX_NMESH; ++i) {
+        plist[i].size = 0;
+        mlist[i].total_nparticles = 0;
+    }
 
     plist[0] = list_particles[0];
     set_mesh(plist, mlist, mattrs3_2, &membuffer, stream);
