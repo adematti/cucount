@@ -13,7 +13,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
 from cucountlib import ffi_cucount
-from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weights, _format_positions, _format_values, _stack_values, count2_analytic, setup_logging, _setup_cucount_logging
+from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weights, _format_positions, _format_values, _stack_values, count2_analytic, setup_logging, _setup_cucount_logging, triposh_transform_matrix
 from cucount import numpy
 
 
@@ -142,58 +142,79 @@ class Particles(numpy.Particles):
         new.positions = jnp.concatenate([other.positions for other in others], axis=0)
         return new
 
-
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 
-def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs, wattrs: WeightAttrs=None,
-                     sattrs: SelectionAttrs=None, spattrs: SplitAttrs=None):
+def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs, wattrs: WeightAttrs = None,
+                     sattrs: SelectionAttrs = None, spattrs: SplitAttrs = None):
     mattrs._to_c()
-    ffi_cucount.set_count2_attrs(mattrs._to_c(), battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs)
-    for i, p in enumerate(particles): ffi_cucount.set_index_value(i, **p.index_value._to_c())
+    ffi_cucount.set_count2_attrs(
+        mattrs._to_c(), battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs
+    )
+    for i, p in enumerate(particles):
+        ffi_cucount.set_index_value(i, **p.index_value._to_c())
+
     dtype = jnp.float64
-    bsize, bshape = battrs.size, tuple(battrs.shape)
-    names = ffi_cucount.get_count2_names()
-    res_type = jax.ShapeDtypeStruct((len(names) * spattrs.size * bsize,), dtype)
+    names, shape = ffi_cucount.get_count2_layout()
+    shape = tuple(shape)
+    size = int(np.prod(shape, dtype=int))
+
+    res_type = jax.ShapeDtypeStruct((len(names) * size,), dtype)
+
     # Max values
     nblocks = 256
+
     # Two meshes
     meshsize = mattrs.meshsize.prod()
     meshsize2 = 2 * meshsize
+
     # Estimate buffer size
-    size = 0
+    bufsize = 0
+
     # Buffer for mesh
     # nparticles, cumnparticles
-    size += 2 * meshsize2
+    bufsize += 2 * meshsize2
+
     # index, positions, spositions, values
-    size += sum(particle.positions.shape[0] for particle in particles)
-    size += 2 * sum(particle.positions.size for particle in particles)
-    size += sum(particle.index_value.size * particle.positions.shape[0] for particle in particles)
+    bufsize += sum(particle.positions.shape[0] for particle in particles)
+    bufsize += 2 * sum(particle.positions.size for particle in particles)
+    bufsize += sum(particle.index_value.size * particle.positions.shape[0] for particle in particles)
+
     # Buffer for recursive scan
-    size += 2 * 2 * (meshsize + 1024 - 1) // 1024
+    bufsize += 2 * 2 * (meshsize + 1024 - 1) // 1024
+
     # Buffer for angular upweights
     if wattrs.angular is not None:
-        size += 2 * wattrs.angular.weight.size
+        bufsize += 2 * wattrs.angular.weight.size + 1
+
     # Buffer for bitwise correction
     if wattrs.bitwise is not None and wattrs.bitwise.p_correction_nbits is not None:
-        size += wattrs.bitwise.p_correction_nbits.size
-    # Buffer for count2: edges
-    size += sum(s + 1 for s in bshape)
-    # Buffer for count2: nblocks * counts
-    size += nblocks * len(names) * spattrs.size * bsize  # up to factor 3 (shear-shear)
-    buffer_type = jax.ShapeDtypeStruct((size,), dtype)
-    call = jax.ffi.ffi_call('count2', (res_type, buffer_type))
+        bufsize += wattrs.bitwise.p_correction_nbits.size
 
-    args = sum(([particle.positions, _stack_values(particle.values, np=jnp)] for particle in particles), start=[])
+    # Buffer for count2: edges
+    bufsize += sum(s + 1 for s in shape[-battrs.ndim:])
+
+    # Buffer for count2: nblocks * counts
+    bufsize += nblocks * len(names) * size
+
+    buffer_type = jax.ShapeDtypeStruct((bufsize,), dtype)
+    call = jax.ffi.ffi_call("count2", (res_type, buffer_type))
+
+    args = sum(
+        ([particle.positions, _stack_values(particle.values, np=jnp)] for particle in particles),
+        start=[],
+    )
     counts = call(*args)[0]
-    shape = tuple(bshape)
-    if spattrs.nsplits: shape = (spattrs.size,) + shape
-    return {name: counts[icount * spattrs.size * bsize:(icount + 1) * spattrs.size * bsize].reshape(shape) for icount, name in enumerate(names)}
+
+    return {
+        name: counts[iweight * size:(iweight + 1) * size].reshape(shape)
+        for iweight, name in enumerate(names)
+    }
 
 
 @default_sharding_mesh
-def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None,
-           spattrs: SplitAttrs=None, mattrs: MeshAttrs=None, sharding_mesh=None):
+def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs = None, sattrs: SelectionAttrs = None,
+           spattrs: SplitAttrs = None, mattrs: MeshAttrs = None, sharding_mesh=None):
     """
     Perform two-point pair counts using the native cucount library.
 
@@ -230,24 +251,33 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         counts = count2(...)
     ```
     """
-    assert jax.config.read('jax_enable_x64'), 'for cucount you have to enable float64'
+    assert jax.config.read("jax_enable_x64"), "for cucount you have to enable float64"
     assert len(particles) == 2
     _setup_cucount_logging()
-    if wattrs is None: wattrs = WeightAttrs()
-    if sattrs is None: sattrs = SelectionAttrs()
-    if spattrs is None: spattrs = SplitAttrs()
-    if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
+    if wattrs is None:
+        wattrs = WeightAttrs()
+    if sattrs is None:
+        sattrs = SelectionAttrs()
+    if spattrs is None:
+        spattrs = SplitAttrs()
+    if mattrs is None:
+        mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
     wattrs.check(*particles)
     spattrs.check(*particles)
-    count2 = _count2 = partial(_count2_no_shard, mattrs=mattrs, battrs=battrs, wattrs=wattrs, sattrs=sattrs, spattrs=spattrs)
+    count2 = _count2 = partial(
+        _count2_no_shard, mattrs=mattrs, battrs=battrs, wattrs=wattrs, sattrs=sattrs, spattrs=spattrs
+    )
     if sharding_mesh.axis_names:
-        #assert all(particle.exchanged for particle in particles), 'All input particles should be exchanged'
-        count2 = shard_map(lambda *particles: jax.lax.psum(_count2(*particles), sharding_mesh.axis_names), mesh=sharding_mesh, in_specs=(P(sharding_mesh.axis_names), P(None)), out_specs=P(None))
+        count2 = shard_map(
+            lambda *particles: jax.lax.psum(_count2(*particles), sharding_mesh.axis_names),
+            mesh=sharding_mesh,
+            in_specs=(P(sharding_mesh.axis_names), P(None)),
+            out_specs=P(None),
+        )
     return count2(*particles)
 
 
-
--jax.ffi.register_ffi_target("count3close", ffi_cucount.count3close(), platform="CUDA")
+jax.ffi.register_ffi_target("count3close", ffi_cucount.count3close(), platform="CUDA")
 
 
 def _count3close_no_shard(
@@ -255,8 +285,8 @@ def _count3close_no_shard(
     mattrs2: MeshAttrs,
     mattrs3: MeshAttrs,
     battrs12: BinAttrs,
-    battrs23: BinAttrs,
     battrs13: BinAttrs,
+    battrs23: BinAttrs = None,
     wattrs: WeightAttrs = None,
     sattrs12: SelectionAttrs = None,
     sattrs13: SelectionAttrs = None,
@@ -269,8 +299,8 @@ def _count3close_no_shard(
         mattrs2._to_c(),
         mattrs3._to_c(),
         battrs12,
-        battrs23,
         battrs13,
+        battrs23,
         wattrs=wattrs._to_c(),
         sattrs12=sattrs12,
         sattrs13=sattrs13,
@@ -283,59 +313,52 @@ def _count3close_no_shard(
 
     dtype = jnp.float64
 
-    size12, shape12 = battrs12.size, tuple(battrs12.shape)
-    size23, shape23 = battrs23.size, tuple(battrs23.shape)
-    size13, shape13 = battrs13.size, tuple(battrs13.shape)
+    names, shape = ffi_cucount.get_count3close_layout()
+    shape = tuple(shape)
+    size = int(np.prod(shape, dtype=int))
 
-    bsize = size12 * size23 * size13
-    out_shape = shape12 + shape23 + shape13
-
-    names = ffi_cucount.get_count3close_names()
-    res_type = jax.ShapeDtypeStruct((len(names) * bsize,), dtype)
+    res_type = jax.ShapeDtypeStruct((len(names) * size,), dtype)
 
     nblocks = 256
 
     # Three meshes are now built independently in the native layer.
-    meshsize2 = int(np.prod(mattrs2.meshsize))
+    meshsize1 = meshsize2 = int(np.prod(mattrs2.meshsize))
     meshsize3 = int(np.prod(mattrs3.meshsize))
-    meshsize_total = 2 * meshsize2 + meshsize3
 
-    size = 0
+    bufsize = 0
 
     # Buffer for mesh construction
     # nparticles, cumnparticles
-    size += 2 * meshsize_total
+    bufsize += 2 * (meshsize1 + meshsize2 + meshsize3)
 
     # index, positions, spositions, values
-    size += sum(particle.positions.shape[0] for particle in particles)
-    size += 2 * sum(particle.positions.size for particle in particles)
-    size += sum(
-        particle.index_value.size * particle.positions.shape[0]
-        for particle in particles
-    )
+    bufsize += sum(particle.positions.shape[0] for particle in particles)
+    bufsize += 2 * sum(particle.positions.size for particle in particles)
+    bufsize += sum(particle.index_value.size * particle.positions.shape[0] for particle in particles)
 
     # Buffer for recursive scan
-    size += 2 * ((meshsize2 + 1024 - 1) // 1024)  # mesh1
-    size += 2 * ((meshsize2 + 1024 - 1) // 1024)  # mesh2
-    size += 2 * ((meshsize3 + 1024 - 1) // 1024)  # mesh3
+    bufsize += 2 * ((meshsize1 + 1024 - 1) // 1024)
+    bufsize += 2 * ((meshsize2 + 1024 - 1) // 1024)
+    bufsize += 2 * ((meshsize3 + 1024 - 1) // 1024)
 
     # Buffer for angular upweights
     if wattrs.angular is not None:
-        size += 2 * wattrs.angular.weight.size
+        bufsize += 2 * wattrs.angular.weight.size + 1
 
     # Buffer for bitwise correction
     if wattrs.bitwise is not None and wattrs.bitwise.p_correction_nbits is not None:
-        size += wattrs.bitwise.p_correction_nbits.size
+        bufsize += wattrs.bitwise.p_correction_nbits.size
 
     # Buffer for count3_close: edges
-    size += sum(s + 1 for s in shape12)
-    size += sum(s + 1 for s in shape23)
-    size += sum(s + 1 for s in shape13)
+    bufsize += sum(s + 1 for s in battrs12.shape)
+    bufsize += sum(s + 1 for s in battrs13.shape)
+    if battrs23 is not None:
+        bufsize += sum(s + 1 for s in battrs23.shape)
 
     # Buffer for count3_close: nblocks * counts
-    size += nblocks * len(names) * bsize
+    bufsize += nblocks * len(names) * size
 
-    buffer_type = jax.ShapeDtypeStruct((size,), dtype)
+    buffer_type = jax.ShapeDtypeStruct((bufsize,), dtype)
     call = jax.ffi.ffi_call("count3close", (res_type, buffer_type))
 
     args = sum(
@@ -345,8 +368,8 @@ def _count3close_no_shard(
     counts = call(*args)[0]
 
     return {
-        name: counts[icount * bsize:(icount + 1) * bsize].reshape(out_shape)
-        for icount, name in enumerate(names)
+        name: counts[iweight * size:(iweight + 1) * size].reshape(shape)
+        for iweight, name in enumerate(names)
     }
 
 
@@ -354,8 +377,8 @@ def _count3close_no_shard(
 def count3close(
     *particles: Particles,
     battrs12: BinAttrs,
-    battrs23: BinAttrs,
     battrs13: BinAttrs,
+    battrs23: BinAttrs = None,
     wattrs: WeightAttrs = None,
     sattrs12: SelectionAttrs = None,
     sattrs13: SelectionAttrs = None,
@@ -374,10 +397,10 @@ def count3close(
         Exactly three Particles instances, corresponding to catalogs 1, 2, and 3.
     battrs12 : BinAttrs
         Binning specification for pair (1, 2).
-    battrs23 : BinAttrs
-        Binning specification for pair (2, 3).
     battrs13 : BinAttrs
         Binning specification for pair (1, 3).
+    battrs23 : BinAttrs, optional
+        Binning specification for pair (2, 3).
     wattrs : WeightAttrs, optional
         Weight attributes. If None, defaults to WeightAttrs().
     sattrs12 : SelectionAttrs, optional
@@ -416,9 +439,6 @@ def count3close(
     if sattrs23 is None:
         sattrs23 = SelectionAttrs()
 
-    # Assumption matching the C signature:
-    # - mattrs2 is used for catalogs 1 and 2
-    # - mattrs3 is used for catalog 3
     if mattrs2 is None:
         mattrs2 = MeshAttrs(particles[0], particles[1], sattrs=sattrs12, battrs=battrs12)
     if mattrs3 is None:

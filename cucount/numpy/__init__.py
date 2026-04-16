@@ -825,11 +825,206 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=nthreads)
 
 
+def _triposh_transform_matrix_sub(ell1, ell2, ell3s=None, tol=1e-12):
+    """
+    Return matrix M such that, for fixed (ell1, ell2),
+
+        c_triposh = M @ c_ylm
+
+    where c_ylm contains the stored coefficients in the order
+
+        [cos(m=0), cos(1), ..., cos(mmax), sin(1), ..., sin(mmax)].
+
+    Parameters
+    ----------
+    ell1, ell2 : int
+        Multipoles of the two explicit legs.
+    ell3s : sequence of int, optional
+        Which ell3 values to include as rows. If None, uses all valid triangle values.
+    tol : float
+        Threshold for treating Wigner-3j values as zero.
+
+    Returns
+    -------
+    ell3s_out : ndarray, shape (nrow,)
+        The ell3 values corresponding to matrix rows.
+    M : ndarray, shape (nrow, 2*mmax+1)
+        Change-of-basis matrix.
+    labels : list[tuple]
+        Column labels [('c', 0),...,('c', mmax), ('s', 1),...,('s', mmax)].
+    """
+    from scipy import special
+
+    def _ylm_amp(ell, m):
+        """Amplitude multiplying P_ell^m e^{i m phi} in your get_Ylm."""
+        m = abs(m)
+        return np.sqrt(special.factorial(ell - m, exact=False) / special.factorial(ell + m, exact=False))
+    
+    mmax = min(ell1, ell2)
+
+    if ell3s is None:
+        ell3s = np.arange(abs(ell1 - ell2), ell1 + ell2 + 1, dtype=int)
+    else:
+        ell3s = np.asarray(ell3s, dtype=int)
+
+    labels = [('c', 0)]
+    labels += [('c', m) for m in range(1, mmax + 1)]
+    labels += [('s', m) for m in range(1, mmax + 1)]
+
+    M = np.zeros((len(ell3s), 2 * mmax + 1), dtype=float)
+
+    for irow, ell3 in enumerate(ell3s):
+        H = float(wigner_3j(ell1, ell2, ell3, 0, 0, 0))
+        if abs(H) < tol:
+            continue
+
+        even = ((ell1 + ell2 + ell3) % 2 == 0)
+
+        # m = 0 contributes only to the cosine sector
+        gaunt0 = float(wigner_3j(ell1, ell2, ell3, 0, 0, 0) / H)
+        # this is always 1 when H != 0, but keeping it explicit is clearer
+        M[irow, 0] = gaunt0 * _ylm_amp(ell1, 0) * _ylm_amp(ell2, 0)
+
+        for m in range(1, mmax + 1):
+            gaunt = float(wigner_3j(ell1, ell2, ell3, m, -m, 0) / H)
+            if abs(gaunt) < tol:
+                continue
+
+            coeff = 2.0 * gaunt * _ylm_amp(ell1, m) * _ylm_amp(ell2, m)
+
+            if even:
+                # even parity => real part => cosine block
+                M[irow, m] = coeff
+            else:
+                # odd parity => imaginary part => sine block
+                M[irow, mmax + m] = coeff
+
+                # odd parity has no m=0 contribution
+                M[irow, 0] = 0.0
+
+    return ell3s, M, labels
+
+
+def triposh_transform_matrix(battrs12, battrs13, ells=None):
+    """
+    Build the linear transform from the CUDA Ylm-product basis to the
+    tripoSH basis.
+
+    This constructs a matrix ``M`` such that
+
+    ``c_triposh = M @ counts``
+
+    where ``c_cuda`` contains the coefficients produced by the GPU
+    ``count3close`` kernel in its native packed basis, i.e. concatenated
+    blocks of
+
+    ``[cos(m=0), cos(1), ..., cos(mmax), sin(1), ..., sin(mmax)]``
+
+    for each ``(ell1, ell2)`` pair in the CUDA projection layout.
+
+    In the triplet counts, the line-of-sight direction was fixed to the z-axis.
+
+    Parameters
+    ----------
+    battrs12 : BinAttrs
+        Bin attributes for the first leg.
+        The ``'pole'`` coordinate determines the ordered list of ``ell1`` values.
+    battrs13 : BinAttrs
+        Bin attributes for the second leg.
+        The ``'pole'`` coordinate determines the ordered list of ``ell2`` values.
+    ells : list[tuple], optional
+        Explicit list of requested ``(ell1, ell2, ell3)`` modes.
+
+        Each entry should be a tuple ``(ell1, ell2, ell3)``.
+        If ``ell3`` is ``None``, all valid triangle-compatible values are
+        included for that ``(ell1, ell2)`` pair.
+
+        If None, all ``(ell1, ell2)`` pairs from
+        ``itertools.product(battrs12.coords('pole'), battrs23.coords('pole'))``
+        are included with all allowed ``ell3``.
+
+    Returns
+    -------
+    out_ells : list[tuple]
+        Flattened list of output ``(ell1, ell2, ell3)`` modes, one per row
+        of the returned matrix.
+    matrix : ndarray
+        Dense transformation matrix of shape
+        ``(n_triposh_modes, len(counts))``.
+        Left-multiplying this matrix by the obtained counts yields the corresponding tripoSH coefficients.
+
+    Notes
+    -----
+    The projection layout is assumed to match the native kernel packing
+    order:
+
+    ``for ell1 in battrs12.coords('pole'):``  
+    ``    for ell2 in battrs13.coords('pole'):``
+
+    with each pair block occupying
+    ``2 * min(ell1, ell2) + 1`` consecutive coefficients.
+    """
+    def pad(M, ell1, ell2, bells1, bells2):
+        """
+        Pad a local (ell1, ell2) tripoSH transform block into the full CUDA
+        projection layout.
+    
+        Parameters
+        ----------
+        M : ndarray, shape (nrow, 2*min(ell1, ell2)+1)
+            Local transform matrix for one (ell1, ell2) block.
+        ell1, ell2 : int
+            The multipole pair corresponding to M.
+        bells1, bells2 : sequence[int]
+            Full ordered multipole lists used in CUDA packing.
+    
+        Returns
+        -------
+        Mpad : ndarray, shape (nrow, nproj_total)
+            Matrix padded into the full concatenated CUDA basis.
+        """
+        def block_size(l1, l2):
+            return 2 * min(l1, l2) + 1
+    
+        # Total number of CUDA projections
+        total = sum(block_size(l1, l2) for l1 in bells1 for l2 in bells2)
+    
+        # Find start offset of this block in CUDA ordering
+        offset = 0
+        found = False
+        for l1 in bells1:
+            for l2 in bells2:
+                if l1 == ell1 and l2 == ell2:
+                    found = True
+                    break
+                offset += block_size(l1, l2)
+            if found:
+                break
+    
+        if not found:
+            raise ValueError(f"(ell1, ell2)=({ell1}, {ell2}) not found in provided pole coordinates")
+    
+        out = np.zeros((M.shape[0], total), dtype=M.dtype)
+        out[:, offset:offset + M.shape[1]] = M
+        return out
+    
+    bells1, bells2 = list(battrs12.coords('pole')), list(battrs23.coords('pole'))
+    if ells is None:
+        ells = list(itertools.product(bells1, bells2))
+        ells = [tuple(ell) + (None,) for ell in ells]
+    matrix = []
+    out_ells = []
+    for ell1, ell2, ell3 in ells:
+        ell3s, M = _triposh_transform_matrix_sub(ell1, ell2, ell3s=ell3)[:2]
+        matrix.append(pad(M, ell1, ell2, bells1, bells2))
+        out_ells.extend((ell1, ell2, int(ell3)) for ell3 in ell3s)
+    return out_ells, np.concatenate(matrix, axis=0)
+
 
 def count3close(*particles: Particles,
                 battrs12: BinAttrs,
-                battrs23: BinAttrs,
                 battrs13: BinAttrs,
+                battrs23: BinAttrs = None,
                 wattrs: WeightAttrs = None,
                 sattrs12: SelectionAttrs = None,
                 sattrs13: SelectionAttrs = None,
@@ -851,9 +1046,9 @@ def count3close(*particles: Particles,
         Exactly three Particles instances, corresponding to catalogs 1, 2, and 3.
     battrs12 : BinAttrs
         Binning specification for pair (1, 2).
-    battrs23 : BinAttrs
-        Binning specification for pair (2, 3).
     battrs13 : BinAttrs
+        Binning specification for pair (2, 3).
+    battrs23 : BinAttrs, optional
         Binning specification for pair (1, 3).
     wattrs : WeightAttrs, optional
         Weight attributes. If None, defaults to WeightAttrs().
@@ -911,13 +1106,13 @@ def count3close(*particles: Particles,
         for p in particles
     ]
 
-    return cucountlib.cucount.count3close(
+    results = cucountlib.cucount.count3close(
         *particles,
         mattrs2._to_c(),
         mattrs3._to_c(),
         battrs12=battrs12,
-        battrs23=battrs23,
         battrs13=battrs13,
+        battrs23=battrs23,
         wattrs=wattrs._to_c(),
         sattrs12=sattrs12,
         sattrs13=sattrs13,
@@ -925,6 +1120,7 @@ def count3close(*particles: Particles,
         veto13=veto13,
         nthreads=nthreads,
     )
+    return results
 
 
 

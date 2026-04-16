@@ -82,17 +82,16 @@ struct Particles_py {
 
 
 py::object count2_py(Particles_py& particles1, Particles_py& particles2,
-                    MeshAttrs_py mattrs_py, BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(),
-                    const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
-                    const SplitAttrs_py spattrs_py = SplitAttrs_py(),
-                    const int nthreads = 1) {
+                     MeshAttrs_py mattrs_py, BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(),
+                     const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
+                     const SplitAttrs_py spattrs_py = SplitAttrs_py(),
+                     const int nthreads = 1) {
 
     BinAttrs battrs = battrs_py.data();
     WeightAttrs wattrs = wattrs_py.data();
     SelectionAttrs sattrs = sattrs_py.data();
     MeshAttrs mattrs = mattrs_py.data();
     SplitAttrs spattrs = spattrs_py.data();
-    //for (size_t axis = 0; axis < NDIM; axis++) printf("boxsize %.4f %.4f\n", mattrs.boxsize[axis], mattrs.boxcenter[axis]);
 
     // prepare host-side particle descriptors (point into numpy buffers)
     Particles p1_host = particles1.data();
@@ -103,15 +102,13 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     CUDA_CHECK(cudaGetDeviceCount(&ngpus));
     ngpus = MIN(nthreads, ngpus);
 
-    // number of counts and total size per-count
-    char names[MAX_NWEIGHT][SIZE_NAME];
-    size_t ncounts = get_count2_size(p1_host.index_value, p2_host.index_value, names);
-    size_t csize = ncounts * battrs.size * spattrs.size;
+    // output layout
+    Count2Layout layout = get_count2_layout(p1_host.index_value, p2_host.index_value, battrs, spattrs);
+    size_t csize = layout.nweights * layout.size;
 
     // Host output (accumulated across GPUs)
     py::array_t<FLOAT> counts_py(csize);
     auto counts_ptr = counts_py.mutable_data();
-    // initialize to zero
     std::fill_n(counts_ptr, csize, static_cast<FLOAT>(0.0));
 
     // Partition particles1 across GPUs (split by particle index)
@@ -133,26 +130,22 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
         const size_t start = starts[dev];
         const size_t end = ends[dev];
         const size_t nchunk = (end > start) ? (end - start) : 0;
-        // if no particles in this chunk, skip launching heavy work (leave zero contribution)
         if (nchunk == 0) continue;
 
-        workers.emplace_back([dev, start, nchunk, &p1_host, &p2_host, &battrs, &mattrs, &sattrs, &wattrs, &spattrs, ncounts, csize, &dev_results]() {
-            // set device for this thread
+        workers.emplace_back([dev, start, nchunk, &p1_host, &p2_host, &battrs, &mattrs, &sattrs, &wattrs, &spattrs, csize, &dev_results]() {
             CUDA_CHECK(cudaSetDevice(dev));
-            // create CUDA stream
+
             cudaStream_t stream;
             CUDA_CHECK(cudaStreamCreate(&stream));
 
-            // prepare per-thread DeviceMemoryBuffer (nullptr means use internal allocator)
+            // nullptr means use internal allocator
             DeviceMemoryBuffer *membuffer = NULL;
 
-            // create host-side Particles describing the chunk (point into original host arrays)
+            // create host-side Particles describing the chunk
             Particles chunk_p1 = p1_host;
             chunk_p1.size = nchunk;
-            // positions are stored as contiguous rows of NDIM floats
             chunk_p1.positions = p1_host.positions + (start * NDIM);
             if (p1_host.values != nullptr) {
-                // values are row-major with width = index_value.size
                 size_t width = p1_host.index_value.size;
                 chunk_p1.values = p1_host.values + (start * width);
             }
@@ -163,28 +156,28 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
             copy_particles_to_device(chunk_p1, &list_particles_dev[0], 2);
             copy_particles_to_device(p2_host, &list_particles_dev[1], 2);
 
-            // build meshes on this device for the two catalogs
+            // build meshes
             Mesh list_mesh_dev[MAX_NMESH];
             for (size_t i = 0; i < MAX_NMESH; ++i) list_mesh_dev[i].total_nparticles = 0;
             set_mesh(list_particles_dev, list_mesh_dev, mattrs, membuffer, stream);
-            // free host->device particle structures (device-side meshes remain)
+
+            // free device particle buffers
             for (size_t i = 0; i < 2; ++i) free_device_particles(&(list_particles_dev[i]));
 
-            // allocate device histogram for this GPU
+            // allocate device histogram
             FLOAT *device_counts = (FLOAT*) my_device_malloc(csize * sizeof(FLOAT), membuffer);
             CUDA_CHECK(cudaMemsetAsync(device_counts, 0, csize * sizeof(FLOAT), stream));
 
-            // run count2 on this device (asynchronous on stream)
+            // run count2
             count2(device_counts, list_mesh_dev, mattrs, sattrs, battrs, wattrs, spattrs, membuffer, stream);
 
-            // synchronize device stream to ensure kernel completion before copyback
             CUDA_CHECK(cudaStreamSynchronize(stream));
 
-            // copy device counts back to host
+            // copy back
             dev_results[dev].assign(csize, static_cast<FLOAT>(0.0));
             CUDA_CHECK(cudaMemcpy(dev_results[dev].data(), device_counts, csize * sizeof(FLOAT), cudaMemcpyDeviceToHost));
 
-            // free device memory and device meshes
+            // cleanup
             my_device_free(device_counts, membuffer);
             for (size_t i = 0; i < 2; ++i) free_device_mesh(&(list_mesh_dev[i]));
 
@@ -192,26 +185,28 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
         });
     }
 
-    // wait for all workers to finish
+    // wait for all workers
     for (auto &t : workers) t.join();
 
-    // accumulate per-GPU results into final counts_py
-    for (int dev=0; dev<ngpus; ++dev) {
+    // accumulate per-GPU results
+    for (int dev = 0; dev < ngpus; ++dev) {
         if (dev_results[dev].empty()) continue;
-        for (size_t i=0; i<csize; ++i) counts_ptr[i] += dev_results[dev][i];
+        for (size_t i = 0; i < csize; ++i) counts_ptr[i] += dev_results[dev][i];
     }
 
-    // Return named arrays reshaped to bin shape
+    // Return named arrays reshaped to output shape
     py::dict result;
-    std::vector<ssize_t> total_shape;
-    if (spattrs.nsplits) total_shape.push_back(static_cast<ssize_t>(spattrs.size));
-    auto bshape = battrs_py.shape();
-    total_shape.insert(total_shape.end(), bshape.begin(), bshape.end());
-    // Return appropriate result based on spin parameters
-    for (size_t icount=0; icount<ncounts; icount++) {
-        py::array_t<FLOAT> array_py({(ssize_t)battrs.size * spattrs.size}, {(ssize_t)sizeof(FLOAT)}, counts_ptr + icount * battrs.size * spattrs.size, counts_py);
-        result[names[icount]] = array_py.attr("reshape")(total_shape).cast<py::array_t<FLOAT>>();
+    for (size_t iweight = 0; iweight < layout.nweights; ++iweight) {
+        py::array_t<FLOAT> array_py(
+            {(ssize_t) layout.size},
+            {(ssize_t) sizeof(FLOAT)},
+            counts_ptr + iweight * layout.size,
+            counts_py
+        );
+        result[layout.names[iweight].c_str()] =
+            array_py.attr("reshape")(layout.shape).cast<py::array_t<FLOAT>>();
     }
+
     return result;
 }
 
@@ -259,12 +254,13 @@ py::object count3close_py(
     CUDA_CHECK(cudaGetDeviceCount(&ngpus));
     ngpus = MIN(nthreads, ngpus);
 
-    char names[1][SIZE_NAME] = {"weight"};
-    const size_t ncounts = 1;
+    // output layout
+    Count3CloseLayout layout = get_count3close_layout(
+        battrs12,
+        battrs13,
+        battrs23);
 
-    size_t bsize = battrs12.size * battrs13.size;
-    if (has23) bsize *= battrs23.size;
-    size_t csize = ncounts * bsize;
+    size_t csize = layout.nweights * layout.size;
 
     py::array_t<FLOAT> counts_py(csize);
     auto counts_ptr = counts_py.mutable_data();
@@ -327,6 +323,7 @@ py::object count3close_py(
             Particles plist[2];
             Mesh mlist[2];
             plist[1].size = 0;
+            mlist[1].total_nparticles = 0;
 
             plist[0] = list_particles_dev[0];
             set_mesh(plist, mlist, mattrs2, membuffer, stream);
@@ -357,8 +354,8 @@ py::object count3close_py(
                 sattrs23,
                 veto13,
                 battrs12,
-                has23 ? battrs23 : BinAttrs{},
                 battrs13,
+                has23 ? battrs23 : BinAttrs{},
                 wattrs,
                 membuffer,
                 stream);
@@ -390,26 +387,14 @@ py::object count3close_py(
     }
 
     py::dict result;
-    std::vector<ssize_t> total_shape;
-
-    auto shape12 = battrs12_py.shape();
-    auto shape13 = battrs13_py.shape();
-    total_shape.insert(total_shape.end(), shape12.begin(), shape12.end());
-    total_shape.insert(total_shape.end(), shape13.begin(), shape13.end());
-
-    if (has23) {
-        auto shape23 = battrs23_py->shape();
-        total_shape.insert(total_shape.end(), shape23.begin(), shape23.end());
-    }
-
-    for (size_t icount = 0; icount < ncounts; ++icount) {
+    for (size_t iweight = 0; iweight < layout.nweights; ++iweight) {
         py::array_t<FLOAT> array_py(
-            {(ssize_t)bsize},
-            {(ssize_t)sizeof(FLOAT)},
-            counts_ptr + icount * bsize,
+            {(ssize_t) layout.size},
+            {(ssize_t) sizeof(FLOAT)},
+            counts_ptr + iweight * layout.size,
             counts_py);
-        result[names[icount]] =
-            array_py.attr("reshape")(total_shape).cast<py::array_t<FLOAT>>();
+        result[layout.names[iweight].c_str()] =
+            array_py.attr("reshape")(layout.shape).cast<py::array_t<FLOAT>>();
     }
 
     return result;

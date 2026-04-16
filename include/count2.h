@@ -9,10 +9,6 @@
 
 // count2.h helpers
 
-extern __device__ __constant__ MeshAttrs device_mattrs;
-extern __device__ __constant__ SelectionAttrs device_sattrs;
-
-
 __device__ void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2);
 
 __global__ void reduce_add_kernel(const FLOAT *in, size_t size, FLOAT *out, size_t stride);
@@ -40,7 +36,21 @@ __device__ int get_bin_index(const BinAttrs *battrs, int index, FLOAT value);
 
 __device__ int get_interp_bin_index(FLOAT x, const FLOAT *sep, int nsep, FLOAT *frac);
 
-size_t get_count2_size(IndexValue index_value1, IndexValue index_value2, char names[][SIZE_NAME]);
+
+typedef struct DeviceCount2Layout {
+    size_t nbins;
+    size_t csize;
+    size_t nells;
+    size_t ells[10];
+    bool ells_even;
+} DeviceCount2Layout;
+
+
+size_t fill_ells(const BinAttrs *battrs, int index, size_t *ells);
+
+size_t get_count2_weight_names(IndexValue index_value1, IndexValue index_value2,
+                        char names[][SIZE_NAME]);
+
 
 template <int ND> __device__ FLOAT lookup_angular_weight(const FLOAT (&costheta)[ND], const AngularWeight& angular)
 {

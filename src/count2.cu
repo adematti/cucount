@@ -308,7 +308,7 @@ __device__ int get_interp_bin_index(
 }
 
 
-size_t get_count2_size(IndexValue index_value1, IndexValue index_value2,
+size_t get_count2_weight_names(IndexValue index_value1, IndexValue index_value2,
                         char names[][SIZE_NAME])
 {
     // To check/modify when adding new weighting scheme
@@ -339,6 +339,62 @@ size_t get_count2_size(IndexValue index_value1, IndexValue index_value2,
     return n;
 }
 
+
+size_t fill_ells(const BinAttrs *battrs, int index, size_t *ells)
+{
+    size_t ellmin = (size_t)battrs->min[index];
+    size_t ellmax = (size_t)battrs->max[index];
+    size_t ellstep = (battrs->asize[index] == 0) ? (size_t)battrs->step[index] : (size_t)1;
+
+    if (ellstep == 0) return 0;
+
+    size_t nells = 0;
+    for (size_t ell = ellmin; ell <= ellmax; ell += ellstep) {
+        ells[nells++] = ell;
+    }
+    return nells;
+}
+
+
+static __device__ __constant__ DeviceCount2Layout device_layout;
+
+
+static inline DeviceCount2Layout make_device_count2_layout(
+    const IndexValue index_value1,
+    const IndexValue index_value2,
+    const BinAttrs& battrs,
+    const SplitAttrs& spattrs)
+{
+    DeviceCount2Layout layout;
+    memset(&layout, 0, sizeof(DeviceCount2Layout));
+
+    layout.nbins = battrs.size;
+
+    const size_t nweights = get_count2_weight_names(
+        index_value1,
+        index_value2,
+        NULL);
+
+    layout.csize = nweights * spattrs.size * battrs.size;
+
+    if (battrs.ndim > 0 && battrs.var[battrs.ndim - 1] == VAR_POLE) {
+        const int ipole = (int)battrs.ndim - 1;
+        layout.nells = fill_ells(&battrs, ipole, layout.ells);
+
+        if (layout.nells > 0) {
+            if (layout.nells == 1) {
+                layout.ells_even = (layout.ells[0] % 2 == 0);
+            } else {
+                size_t ellstep;
+                if (battrs.asize[ipole] == 0) ellstep = (size_t) battrs.step[ipole];
+                else ellstep = 1;
+                layout.ells_even = ((layout.ells[0] % 2 == 0) && (ellstep % 2 == 0));
+            }
+        }
+    }
+
+    return layout;
+}
 
 
 __device__ inline void compute_spin_projection_cartesian(
@@ -391,28 +447,25 @@ __device__ inline void accumulate_weight2(
     const FLOAT *weight,
     size_t wsize,
     size_t bin_loc,
-    size_t bsize,
-    size_t split_size,
     const size_t *split_targets,
     FLOAT factor = 1.)
 {
     if constexpr (NSPLIT_TARGETS == 0) {
-        // Fast path: identical layout to the old no-split case
         for (size_t iweight = 0; iweight < wsize; iweight++) {
-            atomicAdd(&(counts[bin_loc + iweight * bsize]), weight[iweight] * factor);
+            atomicAdd(&(counts[bin_loc + iweight * device_layout.nbins]), weight[iweight] * factor);
         }
     }
     else if constexpr (NSPLIT_TARGETS == 1) {
-        const size_t weight_stride = split_size * bsize;
-        const size_t offset0 = split_targets[0] * bsize + bin_loc;
+        const size_t weight_stride = device_spattrs.size * device_layout.nbins;
+        const size_t offset0 = split_targets[0] * device_layout.nbins + bin_loc;
         for (size_t iweight = 0; iweight < wsize; iweight++) {
             atomicAdd(&(counts[offset0 + iweight * weight_stride]), weight[iweight] * factor);
         }
     }
     else if constexpr (NSPLIT_TARGETS == 2) {
-        const size_t weight_stride = split_size * bsize;
-        const size_t offset0 = split_targets[0] * bsize + bin_loc;
-        const size_t offset1 = split_targets[1] * bsize + bin_loc;
+        const size_t weight_stride = device_spattrs.size * device_layout.nbins;
+        const size_t offset0 = split_targets[0] * device_layout.nbins + bin_loc;
+        const size_t offset1 = split_targets[1] * device_layout.nbins + bin_loc;
         for (size_t iweight = 0; iweight < wsize; iweight++) {
             const FLOAT w = weight[iweight] * factor;
             atomicAdd(&(counts[offset0 + iweight * weight_stride]), w);
@@ -425,10 +478,6 @@ __device__ inline void accumulate_weight2(
 __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *sposition2, FLOAT *position1, FLOAT *position2,
                                   FLOAT *value1, FLOAT *value2, IndexValue index_value1, IndexValue index_value2,
                                   BinAttrs battrs, WeightAttrs wattrs) {
-    // Split targets:
-    // 0 targets -> no split path
-    // 1 target  -> same-split or single split slot
-    // 2 targets -> cross-split, save in both locations
     int nsplit_targets = 0;
     size_t split_targets[2] = {0, 0};
 
@@ -457,7 +506,6 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
     FLOAT mu2 = DEFAULT_VALUE;
     LOS_TYPE los = LOS_NONE;
     VAR_TYPE var = VAR_NONE;
-    size_t ellmin, ellmax, ellstep;
 
     bool REQUIRED_S = 0, REQUIRED_MU = 0, REQUIRED_MU2 = 0;
     size_t i = 0;
@@ -479,11 +527,7 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
         if (var == VAR_POLE) {
             los = battrs.los[i];
             REQUIRED_MU2 = 1;
-            ellmin = (size_t) battrs.min[i];
-            ellmax = (size_t) battrs.max[i];
-            if (battrs.asize[i] == 0) ellstep = (size_t) battrs.step[i];
-            else ellstep = 1;
-            if (!((ellmin % 2 == 0) && (ellstep % 2 == 0))) REQUIRED_MU = 1;
+            if (!device_layout.ells_even) REQUIRED_MU = 1;
         }
     }
     REQUIRED_S |= REQUIRED_MU;
@@ -611,51 +655,49 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
 
     if (i == battrs.ndim) {
         if (nsplit_targets == 0) {
-            accumulate_weight2<0>(counts, weight, wsize, ibin, battrs.size, device_spattrs.size, split_targets);
+            accumulate_weight2<0>(counts, weight, wsize, ibin, split_targets);
         }
         else if (nsplit_targets == 1) {
-            accumulate_weight2<1>(counts, weight, wsize, ibin, battrs.size, device_spattrs.size, split_targets);
+            accumulate_weight2<1>(counts, weight, wsize, ibin, split_targets);
         }
         else {
-            accumulate_weight2<2>(counts, weight, wsize, ibin, battrs.size, device_spattrs.size, split_targets);
+            accumulate_weight2<2>(counts, weight, wsize, ibin, split_targets);
         }
     }
 
     else if ((i == battrs.ndim - 1) && (var == VAR_POLE)) {
         FLOAT legendre_cache[MAX_POLE + 1];
-        set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
-        for (int ill = 0; ill < battrs.shape[i]; ill++) {
-            size_t ell;
-            if (battrs.asize[i] > 0) ell = (size_t) battrs.array[i][ill];
-            else ell = ill * ellstep + ellmin;
-            const size_t bin_loc = ibin * battrs.shape[i] + ill;
+        set_legendre(legendre_cache, device_layout.ells[0], device_layout.ells[device_layout.nells - 1], 1, mu, mu2);
+
+        for (size_t ill = 0; ill < device_layout.nells; ++ill) {
+            const size_t ell = device_layout.ells[ill];
+            const size_t bin_loc = ibin * device_layout.nells + ill;
             const FLOAT leg = (2 * ell + 1) * legendre_cache[ell];
 
             if (nsplit_targets == 0) {
-                accumulate_weight2<0>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg);
+                accumulate_weight2<0>(counts, weight, wsize, bin_loc, split_targets, leg);
             }
             else if (nsplit_targets == 1) {
-                accumulate_weight2<1>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg);
+                accumulate_weight2<1>(counts, weight, wsize, bin_loc, split_targets, leg);
             }
             else {
-                accumulate_weight2<2>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg);
+                accumulate_weight2<2>(counts, weight, wsize, bin_loc, split_targets, leg);
             }
         }
     }
 
     else if ((i == battrs.ndim - 2) && (battrs.var[i] == VAR_K) && (battrs.var[i + 1] == VAR_POLE)) {
         size_t ik_dim = i;
-        size_t ip_dim = i + 1;
         FLOAT legendre_cache[MAX_POLE + 1];
-        set_legendre(legendre_cache, ellmin, ellmax, ellstep, mu, mu2);
-        size_t nk = battrs.shape[ik_dim];
-        size_t npole = battrs.shape[ip_dim];
-        for (size_t ill = 0; ill < npole; ill++) {
-            int ell;
-            if (battrs.asize[ip_dim] > 0) ell = (int) battrs.array[ip_dim][ill];
-            else ell = ill * ((int) ellstep) + ((int) ellmin);
+        set_legendre(legendre_cache, device_layout.ells[0], device_layout.ells[device_layout.nells - 1], 1, mu, mu2);
 
+        size_t nk = battrs.shape[ik_dim];
+        size_t npole = device_layout.nells;
+
+        for (size_t ill = 0; ill < npole; ++ill) {
+            const int ell = (int) device_layout.ells[ill];
             FLOAT leg = (((ell / 2) & 1) ? -1.0 : 1.0) * (2 * ell + 1) * legendre_cache[ell];
+
             for (size_t ik = 0; ik < nk; ik++) {
                 FLOAT k = 0.;
                 if (battrs.asize[ik_dim] > 0) k = battrs.array[ik_dim][ik];
@@ -665,19 +707,18 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
                 const FLOAT leg_bessel = leg * get_bessel(ell, k * s);
 
                 if (nsplit_targets == 0) {
-                    accumulate_weight2<0>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg_bessel);
+                    accumulate_weight2<0>(counts, weight, wsize, bin_loc, split_targets, leg_bessel);
                 }
                 else if (nsplit_targets == 1) {
-                    accumulate_weight2<1>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg_bessel);
+                    accumulate_weight2<1>(counts, weight, wsize, bin_loc, split_targets, leg_bessel);
                 }
                 else {
-                    accumulate_weight2<2>(counts, weight, wsize, bin_loc, battrs.size, device_spattrs.size, split_targets, leg_bessel);
+                    accumulate_weight2<2>(counts, weight, wsize, bin_loc, split_targets, leg_bessel);
                 }
             }
         }
     }
 }
-
 
 
 struct Count2Op {
@@ -866,12 +907,17 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
     int nblocks, nthreads_per_block;
     CONFIGURE_KERNEL_LAUNCH(count2_cartesian_kernel, nblocks, nthreads_per_block, buffer);
 
-    // CUDA timing eventsis
+    // CUDA timing events
     cudaEvent_t start, stop;
     float elapsed_time;
 
-    // Determine output array size based on spin parameters
-    size_t csize = get_count2_size(list_mesh[0].index_value, list_mesh[1].index_value, NULL) * battrs.size * spattrs.size;
+    // Determine output layout
+    DeviceCount2Layout layout = make_device_count2_layout(
+        list_mesh[0].index_value,
+        list_mesh[1].index_value,
+        battrs,
+        spattrs);
+    const size_t csize = layout.csize;
 
     // Initialize histograms
     CUDA_CHECK(cudaMemset(counts, 0, csize * sizeof(FLOAT)));
@@ -880,17 +926,16 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
     CUDA_CHECK(cudaMemcpyToSymbol(device_mattrs, &mattrs, sizeof(MeshAttrs)));
     CUDA_CHECK(cudaMemcpyToSymbol(device_sattrs, &sattrs, sizeof(SelectionAttrs)));
     CUDA_CHECK(cudaMemcpyToSymbol(device_spattrs, &spattrs, sizeof(SplitAttrs)));
-    //CUDA_CHECK(cudaMemcpyToSymbol(device_battrs, &battrs, sizeof(BinAttrs)));
+    CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(DeviceCount2Layout)));
+
     BinAttrs device_battrs;
     copy_bin_attrs_to_device(&device_battrs, &battrs, buffer);
 
     WeightAttrs device_wattrs = wattrs;
     copy_weight_attrs_to_device(&device_wattrs, &wattrs, buffer);
 
-    // allocate histogram arrays
-    // printf("ALLOCATING histogram\n");
+    // Allocate histogram arrays
     FLOAT *block_counts = (FLOAT*) my_device_malloc(nblocks * csize * sizeof(FLOAT), buffer);
-    //CUDA_CHECK(cudaMemset(block_counts, 0, nblocks * battrs.size * sizeof(FLOAT)));  // set to 0 in the kernel
 
     // Create CUDA events for timing
     CUDA_CHECK(cudaEventCreate(&start));
@@ -898,11 +943,18 @@ void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
     CUDA_CHECK(cudaEventRecord(start, stream));
 
     CUDA_CHECK(cudaDeviceSynchronize());
-    if (mattrs.type == MESH_ANGULAR) count2_angular_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, csize, list_mesh[0], list_mesh[1], device_battrs, device_wattrs);
-    else count2_cartesian_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, csize, list_mesh[0], list_mesh[1], device_battrs, device_wattrs);
+    if (mattrs.type == MESH_ANGULAR) {
+        count2_angular_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(
+            block_counts, csize, list_mesh[0], list_mesh[1], device_battrs, device_wattrs);
+    }
+    else {
+        count2_cartesian_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(
+            block_counts, csize, list_mesh[0], list_mesh[1], device_battrs, device_wattrs);
+    }
 
     CUDA_CHECK(cudaDeviceSynchronize());
-    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, csize);
+    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(
+        block_counts, nblocks, counts, csize);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     CUDA_CHECK(cudaEventRecord(stop, stream));

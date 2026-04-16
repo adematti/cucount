@@ -39,8 +39,8 @@ static IndexValue index_value2[2] = {0};
 static MeshAttrs mattrs3_2;
 static MeshAttrs mattrs3_3;
 static BinAttrs battrs3_12;
-static BinAttrs battrs3_23;
 static BinAttrs battrs3_13;
+static BinAttrs battrs3_23;
 static SelectionAttrs sattrs3_12;
 static SelectionAttrs sattrs3_13;
 static SelectionAttrs sattrs3_23;
@@ -147,8 +147,8 @@ void set_count3close_attrs_py(
     MeshAttrs_py mattrs2_py,
     MeshAttrs_py mattrs3_py,
     BinAttrs_py battrs12_py,
-    BinAttrs_py battrs23_py,
     BinAttrs_py battrs13_py,
+    py::object battrs23_obj = py::none(),
     WeightAttrs_py wattrs_py = WeightAttrs_py(),
     const SelectionAttrs_py sattrs12_py = SelectionAttrs_py(),
     const SelectionAttrs_py sattrs13_py = SelectionAttrs_py(),
@@ -161,8 +161,14 @@ void set_count3close_attrs_py(
     mattrs3_3 = mattrs3_py.data();
 
     battrs3_12 = battrs12_py.data();
-    battrs3_23 = battrs23_py.data();
     battrs3_13 = battrs13_py.data();
+
+    if (battrs23_obj.is_none()) {
+        std::memset(&battrs3_23, 0, sizeof(BinAttrs));
+    } else {
+        battrs3_23 = py::cast<BinAttrs_py>(battrs23_obj).data();
+        own_bin_attrs_arrays(&battrs3_23);
+    }
 
     wattrs3 = wattrs_py.data();
     sattrs3_12 = sattrs12_py.data();
@@ -171,7 +177,6 @@ void set_count3close_attrs_py(
     veto13_3 = veto13;
 
     own_bin_attrs_arrays(&battrs3_12);
-    own_bin_attrs_arrays(&battrs3_23);
     own_bin_attrs_arrays(&battrs3_13);
     own_weight_attrs_arrays(&wattrs3);
 }
@@ -205,19 +210,38 @@ void set_count3close_index_value_py(
 }
 
 // -----------------------------------------------------------------------------
-// Name helpers
+// Layout helpers
 // -----------------------------------------------------------------------------
 
-std::vector<std::string> get_count2_names_py() {
-    char names[MAX_NWEIGHT][SIZE_NAME];
-    size_t ncounts = get_count2_size(index_value2[0], index_value2[1], names);
-    std::vector<std::string> toret;
-    for (size_t icount = 0; icount < ncounts; icount++) toret.push_back(names[icount]);
-    return toret;
+py::tuple get_count2_layout_py()
+{
+    Count2Layout layout = get_count2_layout(
+        index_value2[0],
+        index_value2[1],
+        battrs2,
+        spattrs2);
+
+    py::tuple shape(layout.shape.size());
+    for (size_t i = 0; i < layout.shape.size(); ++i) {
+        shape[i] = py::int_(layout.shape[i]);
+    }
+
+    return py::make_tuple(layout.names, shape);
 }
 
-std::vector<std::string> get_count3close_names_py() {
-    return {"weight"};
+py::tuple get_count3close_layout_py()
+{
+    Count3CloseLayout layout = get_count3close_layout(
+        battrs3_12,
+        battrs3_13,
+        battrs3_23);
+
+    py::tuple shape(layout.shape.size());
+    for (size_t i = 0; i < layout.shape.size(); ++i) {
+        shape[i] = py::int_(layout.shape[i]);
+    }
+
+    return py::make_tuple(layout.names, shape);
 }
 
 // -----------------------------------------------------------------------------
@@ -310,11 +334,9 @@ ffi::Error count3closeImpl(
     ffi::ResultBuffer<ffi::F64> buffer)
 {
     Particles list_particles[MAX_NMESH];
-    Mesh list_mesh[MAX_NMESH];
 
     for (size_t imesh = 0; imesh < MAX_NMESH; imesh++) {
         list_particles[imesh].size = 0;
-        list_mesh[imesh].total_nparticles = 0;
     }
 
     list_particles[0] = get_ffi_particles(positions1, values1, index_value3[0]);
@@ -325,8 +347,6 @@ ffi::Error count3closeImpl(
     set_mem_buffer(&membuffer, buffer);
     membuffer.nblocks = 256;
 
-    // Build three single-entry meshes independently because count3_close now
-    // accepts mesh1, mesh2, mesh3 plus separate attrs for mesh2 and mesh3.
     Mesh mesh1{};
     Mesh mesh2{};
     Mesh mesh3{};
@@ -334,15 +354,15 @@ ffi::Error count3closeImpl(
     Particles plist[2];
     Mesh mlist[2];
     plist[1].size = 0;
-    
+
     plist[0] = list_particles[0];
     set_mesh(plist, mlist, mattrs3_2, &membuffer, stream);
     mesh1 = mlist[0];
-    
+
     plist[0] = list_particles[1];
     set_mesh(plist, mlist, mattrs3_2, &membuffer, stream);
     mesh2 = mlist[0];
-    
+
     plist[0] = list_particles[2];
     set_mesh(plist, mlist, mattrs3_3, &membuffer, stream);
     mesh3 = mlist[0];
@@ -359,8 +379,8 @@ ffi::Error count3closeImpl(
         sattrs3_23,
         veto13_3,
         battrs3_12,
-        battrs3_23,
         battrs3_13,
+        battrs3_23,
         wattrs3,
         &membuffer,
         stream);
@@ -457,9 +477,6 @@ PYBIND11_MODULE(ffi_cucount, m) {
         py::arg("size_bitwise_weight") = 0,
         py::arg("size_negative_weight") = 0);
 
-    m.def("get_count2_names", &get_count2_names_py,
-        "Return list of output names for count2.");
-
     m.def("count2", []() { return EncapsulateFfiCall(count2ffi); });
 
     // backward-compatible aliases
@@ -478,13 +495,19 @@ PYBIND11_MODULE(ffi_cucount, m) {
         py::arg("size_bitwise_weight") = 0,
         py::arg("size_negative_weight") = 0);
 
+    m.def(
+        "get_count2_layout",
+        &get_count2_layout_py,
+        "Return (names, shape) for count2 outputs."
+    );
+
     // count3close setup
-    m.def("set_count3close_attrs", &set_count3close_attrs_py, "Set count3close attributes",
+    m.def("set_count3close_attrs", &set_count3close_attrs_py,
         py::arg("mattrs2"),
         py::arg("mattrs3"),
         py::arg("battrs12"),
-        py::arg("battrs23"),
         py::arg("battrs13"),
+        py::arg("battrs23") = py::none(),
         py::arg("wattrs") = WeightAttrs_py(),
         py::arg("sattrs12") = SelectionAttrs_py(),
         py::arg("sattrs13") = SelectionAttrs_py(),
@@ -500,8 +523,11 @@ PYBIND11_MODULE(ffi_cucount, m) {
         py::arg("size_bitwise_weight") = 0,
         py::arg("size_negative_weight") = 0);
 
-    m.def("get_count3close_names", &get_count3close_names_py,
-        "Return list of output names for count3close.");
+    m.def(
+        "get_count3close_layout",
+        &get_count3close_layout_py,
+        "Return (names, shape) for count3close outputs."
+    );
 
     m.def("count3close", []() { return EncapsulateFfiCall(count3closeffi); });
 }

@@ -37,6 +37,20 @@
 #endif
 
 
+typedef struct DeviceCount3Layout {
+    size_t nbins;
+    size_t nprojs;
+    size_t csize;
+    size_t nells1;
+    size_t nells2;
+    size_t ells1[4];
+    size_t ells2[4];
+} DeviceCount3Layout;
+
+
+DeviceCount3Layout make_device_count3_layout(BinAttrs battrs[3]);
+
+
 void count3_close(
     FLOAT *counts,
     Mesh mesh1,
@@ -49,8 +63,8 @@ void count3_close(
     SelectionAttrs sattrs23,
     bool veto13,
     BinAttrs battrs12,
-    BinAttrs battrs23,
     BinAttrs battrs13,
+    BinAttrs battrs23,
     WeightAttrs wattrs,
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream);

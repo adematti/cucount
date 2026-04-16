@@ -215,107 +215,17 @@ __device__ inline void build_local_frame(const FLOAT *ez_in, FLOAT local_frame[3
 }
 
 
-__device__ inline void compute_pbar_lmax4(FLOAT mu, FLOAT P[5][5])
-{
-    FLOAT x  = clamp1(mu);
-    FLOAT x2 = x * x;
-    FLOAT x3 = x2 * x;
-    FLOAT x4 = x2 * x2;
-
-    FLOAT s2 = MAX((FLOAT)0., (FLOAT)1. - x2);
-    FLOAT s  = sqrt(s2);
-    FLOAT s3 = s2 * s;
-    FLOAT s4 = s2 * s2;
-
-    #pragma unroll
-    for (int l = 0; l <= 4; l++) {
-        #pragma unroll
-        for (int m = 0; m <= 4; m++) {
-            P[l][m] = (FLOAT)0.;
-        }
-    }
-
-    P[0][0] = (FLOAT)1.;
-
-    P[1][0] = x;
-    P[1][1] = -(FLOAT)0.70710678118654752440 * s;
-
-    P[2][0] = ((FLOAT)0.5) * (((FLOAT)3.) * x2 - (FLOAT)1.);
-    P[2][1] = -(FLOAT)1.22474487139158904910 * x * s;
-    P[2][2] =  (FLOAT)0.61237243569579452455 * s2;
-
-    P[3][0] = ((FLOAT)0.5) * (((FLOAT)5.) * x3 - ((FLOAT)3.) * x);
-    P[3][1] = -(FLOAT)0.43301270189221932338 * ((((FLOAT)5.) * x2) - (FLOAT)1.) * s;
-    P[3][2] =  (FLOAT)1.36930639376291527536 * x * s2;
-    P[3][3] = -(FLOAT)0.55901699437494742410 * s3;
-
-    P[4][0] = ((FLOAT)0.125) * (((FLOAT)35.) * x4 - ((FLOAT)30.) * x2 + (FLOAT)3.);
-    P[4][1] = -(FLOAT)0.55901699437494742410 * x * ((((FLOAT)7.) * x2) - (FLOAT)3.) * s;
-    P[4][2] =  (FLOAT)0.39528470752104741743 * ((((FLOAT)7.) * x2) - (FLOAT)1.) * s2;
-    P[4][3] = -(FLOAT)0.93541434669348534640 * x * s3;
-    P[4][4] =  (FLOAT)0.52291251658379721705 * s4;
-}
-
-__device__ inline void compute_trig_mmax4(FLOAT c1, FLOAT s1, FLOAT cm[5], FLOAT sm[5])
-{
-    FLOAT c2 = c1 * c1;
-    FLOAT s2 = s1 * s1;
-
-    cm[0] = (FLOAT)1.;
-    sm[0] = (FLOAT)0.;
-
-    cm[1] = c1;
-    sm[1] = s1;
-
-    cm[2] = ((FLOAT)2.) * c2 - (FLOAT)1.;
-    sm[2] = ((FLOAT)2.) * c1 * s1;
-
-    cm[3] = c1 * ((((FLOAT)4.) * c2) - (FLOAT)3.);
-    sm[3] = s1 * (((FLOAT)3.) - ((FLOAT)4.) * s2);
-
-    cm[4] = ((FLOAT)8.) * c2 * c2 - ((FLOAT)8.) * c2 + (FLOAT)1.;
-    sm[4] = ((FLOAT)4.) * c1 * s1 * ((((FLOAT)2.) * c2) - (FLOAT)1.);
-}
-
-
 // ============================================================================
 // Count3 layout + constant device state
 // ============================================================================
 
-typedef struct Count3Layout {
-    size_t nbins;
-    size_t nprojs;
-    size_t csize;
-    size_t nells1;
-    size_t nells2;
-    size_t ells1[4];
-    size_t ells2[4];
-} Count3Layout;
-
-__device__ __constant__ Count3Layout device_layout;
+static __device__ __constant__ DeviceCount3Layout device_layout;
 
 
 // ============================================================================
 // Host helpers
 // ============================================================================
 
-static inline size_t fill_ells_host(const BinAttrs *battrs, int index, size_t *ells)
-{
-    size_t ellmin = (size_t)battrs->min[index];
-    size_t ellmax = (size_t)battrs->max[index];
-    size_t ellstep = (battrs->asize[index] == 0) ? (size_t)battrs->step[index] : (size_t)1;
-
-    if (ellstep == 0) return 0;
-
-    size_t nells = 0;
-    for (size_t ell = ellmin; ell <= ellmax; ell += ellstep) {
-        if (ell <= 4 && nells < 4) {
-            ells[nells++] = ell;
-        }
-        if (ell + ellstep < ell) break;
-    }
-    return nells;
-}
 
 static inline size_t count3_nprojs_from_ells(
     size_t nells1, const size_t *ells1,
@@ -330,29 +240,29 @@ static inline size_t count3_nprojs_from_ells(
     return nprojs;
 }
 
-static inline Count3Layout make_count3_layout(BinAttrs *battrs[3])
+DeviceCount3Layout make_device_count3_layout(const BinAttrs battrs[3])
 {
-    Count3Layout layout;
-    memset(&layout, 0, sizeof(Count3Layout));
+    DeviceCount3Layout layout;
+    memset(&layout, 0, sizeof(DeviceCount3Layout));
 
-    if (battrs[0] == NULL || battrs[1] == NULL) {
+    if (battrs[0].ndim == 0 || battrs[1].ndim == 0) {
         return layout;
     }
 
     layout.nbins =
-        (size_t)battrs[0]->shape[0] *
-        (size_t)battrs[1]->shape[0];
+        (size_t)battrs[0].shape[0] *
+        (size_t)battrs[1].shape[0];
 
-    if (battrs[2] != NULL) {
-        layout.nbins *= (size_t)battrs[2]->shape[0];
+    if (battrs[2].ndim > 0) {
+        layout.nbins *= (size_t)battrs[2].shape[0];
         layout.nprojs = 1;
         layout.csize = layout.nbins;
         return layout;
     }
 
-    if (battrs[0]->var[0] == VAR_POLE && battrs[1]->var[0] == VAR_POLE) {
-        layout.nells1 = fill_ells_host(battrs[0], 1, layout.ells1);
-        layout.nells2 = fill_ells_host(battrs[1], 1, layout.ells2);
+    if (battrs[0].var[0] == VAR_POLE && battrs[1].var[0] == VAR_POLE) {
+        layout.nells1 = fill_ells(&battrs[0], 1, layout.ells1);
+        layout.nells2 = fill_ells(&battrs[1], 1, layout.ells2);
         layout.nprojs = count3_nprojs_from_ells(
             layout.nells1, layout.ells1,
             layout.nells2, layout.ells2
@@ -368,18 +278,92 @@ static inline Count3Layout make_count3_layout(BinAttrs *battrs[3])
 
 
 // ============================================================================
-// Device helpers
+// add_weight3
 // ============================================================================
 
-__device__ inline int pair_block_size(int ell1, int ell2)
+__device__ inline void compute_trig_up_to_m(
+    int mmax, FLOAT c1, FLOAT s1, FLOAT cm[5], FLOAT sm[5])
 {
-    return 2 * MIN(ell1, ell2) + 1;
+    #pragma unroll
+    for (int m = 0; m < 5; m++) {
+        cm[m] = (FLOAT)0.;
+        sm[m] = (FLOAT)0.;
+    }
+
+    cm[0] = (FLOAT)1.;
+    sm[0] = (FLOAT)0.;
+    if (mmax <= 0) return;
+
+    cm[1] = c1;
+    sm[1] = s1;
+    if (mmax <= 1) return;
+
+    #pragma unroll
+    for (int m = 2; m <= 4; m++) {
+        if (m > mmax) break;
+        cm[m] = c1 * cm[m - 1] - s1 * sm[m - 1];
+        sm[m] = s1 * cm[m - 1] + c1 * sm[m - 1];
+    }
 }
 
 
-// ============================================================================
-// add_weight3
-// ============================================================================
+__device__ inline void compute_pbar_row_lmax4(
+    int ell, int mmax, FLOAT mu, FLOAT Prow[5])
+{
+    FLOAT x  = clamp1(mu);
+    FLOAT x2 = x * x;
+    FLOAT x3 = x2 * x;
+    FLOAT x4 = x2 * x2;
+
+    FLOAT s2 = MAX((FLOAT)0., (FLOAT)1. - x2);
+    FLOAT s  = sqrt(s2);
+    FLOAT s3 = s2 * s;
+    FLOAT s4 = s2 * s2;
+
+    #pragma unroll
+    for (int m = 0; m < 5; m++) {
+        Prow[m] = (FLOAT)0.;
+    }
+
+    if (mmax > ell) mmax = ell;
+    if (mmax < 0) return;
+
+    switch (ell) {
+        case 0:
+            Prow[0] = (FLOAT)1.;
+            break;
+
+        case 1:
+            if (mmax >= 0) Prow[0] = x;
+            if (mmax >= 1) Prow[1] = -(FLOAT)0.70710678118654752440 * s;
+            break;
+
+        case 2:
+            if (mmax >= 0) Prow[0] = ((FLOAT)0.5) * (((FLOAT)3.) * x2 - (FLOAT)1.);
+            if (mmax >= 1) Prow[1] = -(FLOAT)1.22474487139158904910 * x * s;
+            if (mmax >= 2) Prow[2] =  (FLOAT)0.61237243569579452455 * s2;
+            break;
+
+        case 3:
+            if (mmax >= 0) Prow[0] = ((FLOAT)0.5) * (((FLOAT)5.) * x3 - ((FLOAT)3.) * x);
+            if (mmax >= 1) Prow[1] = -(FLOAT)0.43301270189221932338 * ((((FLOAT)5.) * x2) - (FLOAT)1.) * s;
+            if (mmax >= 2) Prow[2] =  (FLOAT)1.36930639376291527536 * x * s2;
+            if (mmax >= 3) Prow[3] = -(FLOAT)0.55901699437494742410 * s3;
+            break;
+
+        case 4:
+            if (mmax >= 0) Prow[0] = ((FLOAT)0.125) * (((FLOAT)35.) * x4 - ((FLOAT)30.) * x2 + (FLOAT)3.);
+            if (mmax >= 1) Prow[1] = -(FLOAT)0.55901699437494742410 * x * ((((FLOAT)7.) * x2) - (FLOAT)3.) * s;
+            if (mmax >= 2) Prow[2] =  (FLOAT)0.39528470752104741743 * ((((FLOAT)7.) * x2) - (FLOAT)1.) * s2;
+            if (mmax >= 3) Prow[3] = -(FLOAT)0.93541434669348534640 * x * s3;
+            if (mmax >= 4) Prow[4] =  (FLOAT)0.52291251658379721705 * s4;
+            break;
+
+        default:
+            break;
+    }
+}
+
 
 __device__ inline void add_weight3(
     FLOAT *counts,
@@ -501,7 +485,7 @@ __device__ inline void add_weight3(
     const FLOAT *ex = local_frame[1];
     const FLOAT *ey = local_frame[2];
 
-    FLOAT mu[2] = {0., 0.};
+    FLOAT mu[2] = {(FLOAT)0., (FLOAT)0.};
     #pragma unroll
     for (int ivec = 0; ivec < 2; ivec++) {
         #pragma unroll
@@ -511,7 +495,11 @@ __device__ inline void add_weight3(
         mu[ivec] = clamp1(mu[ivec]);
     }
 
-    FLOAT xy[2][2] = {{0., 0.}, {0., 0.}};
+    FLOAT xy[2][2] = {
+        {(FLOAT)0., (FLOAT)0.},
+        {(FLOAT)0., (FLOAT)0.}
+    };
+
     #pragma unroll
     for (int ivec = 0; ivec < 2; ivec++) {
         #pragma unroll
@@ -536,10 +524,44 @@ __device__ inline void add_weight3(
             (xy[0][0] * xy[1][1] - xy[0][1] * xy[1][0]) * inv));
     }
 
-    FLOAT P[2][5][5], cm[5], sm[5];
-    compute_pbar_lmax4(mu[0], P[0]);
-    compute_pbar_lmax4(mu[1], P[1]);
-    compute_trig_mmax4(cdphi, sdphi, cm, sm);
+    int global_mmax = 0;
+    int row_mmax1[4] = {0, 0, 0, 0};
+    int row_mmax2[4] = {0, 0, 0, 0};
+
+    for (size_t i1 = 0; i1 < device_layout.nells1; i1++) {
+        int ell1 = (int)device_layout.ells1[i1];
+        for (size_t i2 = 0; i2 < device_layout.nells2; i2++) {
+            int ell2 = (int)device_layout.ells2[i2];
+            int mmax = MIN(ell1, ell2);
+            global_mmax = MAX(global_mmax, mmax);
+            row_mmax1[i1] = MAX(row_mmax1[i1], mmax);
+            row_mmax2[i2] = MAX(row_mmax2[i2], mmax);
+        }
+    }
+
+    FLOAT cm[5], sm[5];
+    compute_trig_up_to_m(global_mmax, cdphi, sdphi, cm, sm);
+
+    FLOAT P1[4][5];
+    FLOAT P2[4][5];
+
+    for (size_t i1 = 0; i1 < device_layout.nells1; i1++) {
+        compute_pbar_row_lmax4(
+            (int)device_layout.ells1[i1],
+            row_mmax1[i1],
+            mu[0],
+            P1[i1]
+        );
+    }
+
+    for (size_t i2 = 0; i2 < device_layout.nells2; i2++) {
+        compute_pbar_row_lmax4(
+            (int)device_layout.ells2[i2],
+            row_mmax2[i2],
+            mu[1],
+            P2[i2]
+        );
+    }
 
     FLOAT *counts_bin = counts + ibin * device_layout.nprojs;
 
@@ -550,19 +572,15 @@ __device__ inline void add_weight3(
             int ell2 = (int)device_layout.ells2[i2];
             int mmax = MIN(ell1, ell2);
 
-            for (int m = 0; m <= 4; m++) {
-                if (m > mmax) continue;
-                FLOAT amp = triplet_weight * P[0][ell1][m] * P[1][ell2][m];
+            for (int m = 0; m <= mmax; m++) {
+                FLOAT amp = triplet_weight * P1[i1][m] * P2[i2][m];
                 atomicAdd(&counts_bin[iproj + (size_t)m], amp * cm[m]);
+                if (m > 0) {
+                    atomicAdd(&counts_bin[iproj + (size_t)(mmax + m)], amp * sm[m]);
+                }
             }
 
-            for (int m = 1; m <= 4; m++) {
-                if (m > mmax) continue;
-                FLOAT amp = triplet_weight * P[0][ell1][m] * P[1][ell2][m];
-                atomicAdd(&counts_bin[iproj + (size_t)(mmax + m)], amp * sm[m]);
-            }
-
-            iproj += (size_t)pair_block_size(ell1, ell2);
+            iproj += (size_t)(2 * mmax + 1);
         }
     }
 }
@@ -879,21 +897,14 @@ void count3_close(
     SelectionAttrs sattrs23,
     bool veto13,
     BinAttrs battrs12,
-    BinAttrs battrs23,
     BinAttrs battrs13,
+    BinAttrs battrs23,
     WeightAttrs wattrs,
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream)
 {
     BinAttrs host_battrs[3] = {battrs12, battrs13, battrs23};
-
-    BinAttrs *battrs_ptrs[3] = {
-        &host_battrs[0],
-        &host_battrs[1],
-        &host_battrs[2]
-    };
-
-    Count3Layout layout = make_count3_layout(battrs_ptrs);
+    DeviceCount3Layout layout = make_device_count3_layout(host_battrs);
     size_t csize = layout.csize;
 
     BinAttrs device_battrs[3];
@@ -912,7 +923,7 @@ void count3_close(
         nblocks * csize * sizeof(FLOAT), buffer);
 
     CUDA_CHECK(cudaMemsetAsync(counts, 0, csize * sizeof(FLOAT), stream));
-    CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(Count3Layout)));
+    CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(DeviceCount3Layout)));
 
     if (mattrs3.type == MESH_ANGULAR) {
         count3_close_kernel<MESH_ANGULAR><<<nblocks, nthreads_per_block, 0, stream>>>(
