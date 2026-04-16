@@ -226,7 +226,6 @@ static __device__ __constant__ DeviceCount3Layout device_layout;
 // Host helpers
 // ============================================================================
 
-
 static inline size_t count3_nprojs_from_ells(
     size_t nells1, const size_t *ells1,
     size_t nells2, const size_t *ells2)
@@ -240,29 +239,32 @@ static inline size_t count3_nprojs_from_ells(
     return nprojs;
 }
 
-DeviceCount3Layout make_device_count3_layout(const BinAttrs battrs[3])
+DeviceCount3Layout make_device_count3_layout(
+    const BinAttrs battrs12,
+    const BinAttrs battrs13,
+    const BinAttrs battrs23)
 {
     DeviceCount3Layout layout;
     memset(&layout, 0, sizeof(DeviceCount3Layout));
 
-    if (battrs[0].ndim == 0 || battrs[1].ndim == 0) {
+    if (battrs12.ndim == 0 || battrs13.ndim == 0) {
         return layout;
     }
 
     layout.nbins =
-        (size_t)battrs[0].shape[0] *
-        (size_t)battrs[1].shape[0];
+        (size_t)battrs12.shape[0] *
+        (size_t)battrs13.shape[0];
 
-    if (battrs[2].ndim > 0) {
-        layout.nbins *= (size_t)battrs[2].shape[0];
+    if (battrs23.ndim > 0) {
+        layout.nbins *= (size_t)battrs23.shape[0];
         layout.nprojs = 1;
         layout.csize = layout.nbins;
         return layout;
     }
 
-    if (battrs[0].var[0] == VAR_POLE && battrs[1].var[0] == VAR_POLE) {
-        layout.nells1 = fill_ells(&battrs[0], 1, layout.ells1);
-        layout.nells2 = fill_ells(&battrs[1], 1, layout.ells2);
+    if (battrs12.var[1] == VAR_POLE && battrs13.var[1] == VAR_POLE) {
+        layout.nells1 = fill_ells(&battrs12, 1, layout.ells1);
+        layout.nells2 = fill_ells(&battrs13, 1, layout.ells2);
         layout.nprojs = count3_nprojs_from_ells(
             layout.nells1, layout.ells1,
             layout.nells2, layout.ells2
@@ -380,31 +382,24 @@ __device__ inline void add_weight3(
     IndexValue index_value1,
     IndexValue index_value2,
     IndexValue index_value3,
-    const BinAttrs *battrs,
+    BinAttrs battrs12,
+    BinAttrs battrs13,
+    BinAttrs battrs23,
     WeightAttrs wattrs)
 {
-    if (battrs[0].ndim == 0 || battrs[1].ndim == 0) return;
-
-    const bool has_third = (battrs[2].ndim > 0);
+    if (battrs12.ndim == 0 || battrs13.ndim == 0) return;
+    const bool has_third = (bool)(battrs23.ndim > 0);
     const int ncoords = has_third ? 3 : 2;
 
-    const VAR_TYPE var0 = battrs[0].var[0];
-    const VAR_TYPE var1 = battrs[1].var[0];
-    const bool need_pole = (var0 == VAR_POLE);
-
-    if (need_pole != (var1 == VAR_POLE)) return;
-
-    if (has_third) {
-        const VAR_TYPE var2 = battrs[2].var[0];
-        if (var0 != var1 || var0 != var2) return;
-        if (var0 != VAR_S && var0 != VAR_THETA) return;
-    }
+    const bool need_pole = (battrs12.var[1] == VAR_POLE);
 
     const FLOAT *spos1[3] = {sposition1, sposition1, sposition2};
     const FLOAT *spos2[3] = {sposition2, sposition3, sposition3};
 
     const FLOAT *pos1[3] = {position1, position1, position2};
     const FLOAT *pos2[3] = {position2, position3, position3};
+
+    BinAttrs battrs[3] = {battrs12, battrs13, battrs23};
 
     FLOAT costheta[3];
     FLOAT diff[3][NDIM];
@@ -677,7 +672,6 @@ __device__ inline void for_each_third_candidate_from_1_cartesian(
     Op &op)
 {
     FLOAT *position1 = &(mesh1.positions[NDIM * i1]);
-
     int bounds[2 * NDIM];
     set_cartesian_bounds_from_attrs(position1, mattrs3, bounds);
 
@@ -740,7 +734,9 @@ struct Count3CloseOp {
     SelectionAttrs sattrs23;
     bool veto13;
 
-    const BinAttrs *battrs;
+    BinAttrs battrs12;
+    BinAttrs battrs13;
+    BinAttrs battrs23;
     WeightAttrs wattrs;
 
     __device__ inline void operator()(
@@ -762,7 +758,8 @@ struct Count3CloseOp {
             position1, position2, position3,
             value1, value2, value3,
             mesh1.index_value, mesh2.index_value, mesh3.index_value,
-            battrs, wattrs
+            battrs12, battrs13, battrs23,
+            wattrs
         );
     }
 };
@@ -789,7 +786,9 @@ struct Count3ProcessCloseOp {
     SelectionAttrs sattrs23;
     bool veto13;
 
-    const BinAttrs *battrs;
+    BinAttrs battrs12;
+    BinAttrs battrs13;
+    BinAttrs battrs23;
     WeightAttrs wattrs;
 
     __device__ inline void operator()(
@@ -813,7 +812,7 @@ struct Count3ProcessCloseOp {
             },
             mesh1, mesh2, mesh3,
             sattrs12, sattrs13, sattrs23, veto13,
-            battrs, wattrs
+            battrs12, battrs13, battrs23, wattrs
         };
 
         if constexpr (THIRD_MESH_TYPE == MESH_ANGULAR) {
@@ -839,7 +838,9 @@ __global__ void count3_close_kernel(
     SelectionAttrs sattrs13,
     SelectionAttrs sattrs23,
     bool veto13,
-    const BinAttrs *battrs,
+    BinAttrs battrs12,
+    BinAttrs battrs13,
+    BinAttrs battrs23,
     WeightAttrs wattrs)
 {
     size_t tid = threadIdx.x;
@@ -873,7 +874,7 @@ __global__ void count3_close_kernel(
             mesh1, mesh2, mesh3,
             mattrs3,
             sattrs12, sattrs13, sattrs23, veto13,
-            battrs, wattrs
+            battrs12, battrs13, battrs23, wattrs
         };
 
         for_each_close_candidate_from_1_angular(i1, mesh1, mesh2, mattrs2, op);
@@ -903,14 +904,17 @@ void count3_close(
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream)
 {
-    BinAttrs host_battrs[3] = {battrs12, battrs13, battrs23};
-    DeviceCount3Layout layout = make_device_count3_layout(host_battrs);
+    DeviceCount3Layout layout = make_device_count3_layout(
+        battrs12, battrs13, battrs23);
     size_t csize = layout.csize;
 
-    BinAttrs device_battrs[3];
-    for (int i = 0; i < 3; i++) {
-        copy_bin_attrs_to_device(&device_battrs[i], &host_battrs[i], buffer);
-    }
+    BinAttrs device_battrs12 = battrs12;
+    BinAttrs device_battrs13 = battrs13;
+    BinAttrs device_battrs23 = battrs23;
+
+    copy_bin_attrs_to_device(&device_battrs12, &battrs12, buffer);
+    copy_bin_attrs_to_device(&device_battrs13, &battrs13, buffer);
+    copy_bin_attrs_to_device(&device_battrs23, &battrs23, buffer);
 
     WeightAttrs device_wattrs = wattrs;
     copy_weight_attrs_to_device(&device_wattrs, &wattrs, buffer);
@@ -938,7 +942,9 @@ void count3_close(
             sattrs13,
             sattrs23,
             veto13,
-            device_battrs,
+            device_battrs12,
+            device_battrs13,
+            device_battrs23,
             device_wattrs
         );
     }
@@ -955,7 +961,9 @@ void count3_close(
             sattrs13,
             sattrs23,
             veto13,
-            device_battrs,
+            device_battrs12,
+            device_battrs13,
+            device_battrs23,
             device_wattrs
         );
     }
@@ -964,16 +972,19 @@ void count3_close(
         exit(EXIT_FAILURE);
     }
 
+    CUDA_CHECK(cudaGetLastError());
+
     reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(
         block_counts, nblocks, counts, csize);
 
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
     my_device_free(block_counts, buffer);
 
-    for (int i = 0; i < 3; i++) {
-        free_device_bin_attrs(&device_battrs[i], buffer);
-    }
+    free_device_bin_attrs(&device_battrs12, buffer);
+    free_device_bin_attrs(&device_battrs13, buffer);
+    free_device_bin_attrs(&device_battrs23, buffer);
 
     free_device_weight_attrs(&device_wattrs, buffer);
 }

@@ -362,8 +362,8 @@ static __device__ __constant__ DeviceCount2Layout device_layout;
 static inline DeviceCount2Layout make_device_count2_layout(
     const IndexValue index_value1,
     const IndexValue index_value2,
-    const BinAttrs& battrs,
-    const SplitAttrs& spattrs)
+    const BinAttrs battrs,
+    const SplitAttrs spattrs)
 {
     DeviceCount2Layout layout;
     memset(&layout, 0, sizeof(DeviceCount2Layout));

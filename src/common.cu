@@ -452,6 +452,7 @@ __global__ void add_block_sums_kernel(size_t *out, const size_t *block_sums, siz
     if (i2 < n) out[i2] += offset;
 }
 
+
 void exclusive_scan_size_t_device(const size_t *d_in, size_t *d_out, size_t n, DeviceMemoryBuffer* buffer) {
     if (n == 0) return;
 

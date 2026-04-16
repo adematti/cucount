@@ -766,8 +766,7 @@ static Count3CloseLayout get_count3close_layout(
     size_t size = 1;
 
     const bool has23 = (battrs23.ndim != 0);
-    BinAttrs battrs_arr[3] = {battrs12, battrs13, battrs23};
-    DeviceCount3Layout layout3 = make_device_count3_layout(battrs_arr);
+    DeviceCount3Layout layout3 = make_device_count3_layout(battrs12, battrs13, battrs23);
 
     // Axes from 1-2
     for (size_t idim = 0; idim < battrs12.ndim; ++idim) {
