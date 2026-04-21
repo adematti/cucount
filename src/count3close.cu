@@ -445,21 +445,20 @@ __device__ inline void add_weight3(
 
     FLOAT triplet_weight = (FLOAT)1.;
 
-    if (index_value1.size_individual_weight) {
-        triplet_weight *= value1[index_value1.start_individual_weight];
-    }
-    if (index_value2.size_individual_weight) {
-        triplet_weight *= value2[index_value2.start_individual_weight];
-    }
-    if (index_value3.size_individual_weight) {
-        triplet_weight *= value3[index_value3.start_individual_weight];
-    }
+    if (index_value1.size_individual_weight) triplet_weight *= value1[index_value1.start_individual_weight];
+    if (index_value2.size_individual_weight) triplet_weight *= value2[index_value2.start_individual_weight];
+    if (index_value3.size_individual_weight) triplet_weight *= value3[index_value3.start_individual_weight];
 
     {
         AngularWeight angular = wattrs.angular;
         if (angular.size) {
             triplet_weight *= lookup_angular_weight<3>(costheta, angular);
         }
+    }
+
+    if (index_value1.size_negative_weight && index_value2.size_negative_weight && index_value3.size_negative_weight) {
+        FLOAT triplet_nweight = value1[index_value1.start_negative_weight] * value2[index_value2.start_negative_weight] * value3[index_value2.start_negative_weight];
+        triplet_weight -= triplet_nweight;
     }
 
     if (has_third || !need_pole) {
