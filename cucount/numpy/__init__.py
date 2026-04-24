@@ -1044,63 +1044,86 @@ def count3close(*particles: Particles,
                 sattrs12: SelectionAttrs = None,
                 sattrs13: SelectionAttrs = None,
                 sattrs23: SelectionAttrs = None,
-                veto13: bool = False,
-                veto23: bool = False,
+                veto12: SelectionAttrs = None,
+                veto13: SelectionAttrs = None,
+                veto23: SelectionAttrs = None,
+                mattrs1: MeshAttrs = None,
                 mattrs2: MeshAttrs = None,
                 mattrs3: MeshAttrs = None,
+                close_pair: tuple = (1, 2),
                 nthreads: int = 1):
     """
     Perform close-triplet counts using the native cucount library.
 
-    This is a thin frontend that prepares Python-side Particles and
-    Weight/Selection attributes and calls the underlying
-    cucountlib.cucount.count3close implementation.
+    This is a thin frontend that prepares Python-side ``Particles`` and
+    weight/selection attributes and calls the underlying
+    ``cucountlib.cucount.count3close`` implementation.
 
     Parameters
     ----------
     *particles : Particles
-        Exactly three Particles instances, corresponding to catalogs 1, 2, and 3.
+        Exactly three ``Particles`` instances corresponding to catalogs
+        1, 2, and 3.
     battrs12 : BinAttrs
         Binning specification for pair (1, 2).
     battrs13 : BinAttrs
-        Binning specification for pair (2, 3).
-    battrs23 : BinAttrs, optional
         Binning specification for pair (1, 3).
+    battrs23 : BinAttrs, optional
+        Binning specification for pair (2, 3).
     wattrs : WeightAttrs, optional
-        Weight attributes. If None, defaults to WeightAttrs().
+        Weight attributes. If ``None``, defaults to ``WeightAttrs()``.
     sattrs12 : SelectionAttrs, optional
-        Selection attributes for pair (1, 2). If None, defaults to
-        SelectionAttrs().
+        Selection attributes for pair (1, 2).
+        If ``None``, defaults to ``SelectionAttrs()``.
     sattrs13 : SelectionAttrs, optional
-        Selection attributes for pair (1, 3). If None, defaults to
-        SelectionAttrs().
+        Selection attributes for pair (1, 3).
+        If ``None``, defaults to ``SelectionAttrs()``.
     sattrs23 : SelectionAttrs, optional
-        Selection attributes for pair (2, 3). If None, defaults to
-        SelectionAttrs().
-    veto13 : bool, optional
-        Whether to veto the pair (1, 3).
-    veto23 : bool, optional
-        Whether to veto the pair (2, 3).
+        Selection attributes for pair (2, 3).
+        If ``None``, defaults to ``SelectionAttrs()``.
+    veto12 : SelectionAttrs, optional
+        Veto selection for pair (1, 2).
+        If this selection is satisfied, the pair (1, 2) is ignored.
+    veto13 : SelectionAttrs, optional
+        Veto selection for pair (1, 3).
+        If this selection is satisfied, the pair (1, 3) is ignored.
+    veto23 : SelectionAttrs, optional
+        Veto selection for pair (2, 3).
+        If this selection is satisfied, the pair (2, 3) is ignored.
+    mattrs1 : MeshAttrs, optional
+        Mesh attributes used for catalog 1.
+        If ``None``, defaults to a mesh built from the selection and
+        binning associated with the relevant close-pair search.
     mattrs2 : MeshAttrs, optional
-        Mesh attributes used for catalogs 1 and 2. If None, defaults to
-        MeshAttrs(particles[0], particles[1], sattrs=sattrs12, battrs=battrs12).
+        Mesh attributes used for catalog 2.
+        If ``None``, defaults to a mesh built from the selection and
+        binning associated with the relevant close-pair search.
     mattrs3 : MeshAttrs, optional
-        Mesh attributes used for catalog 3. If None, defaults to
-        MeshAttrs(particles[0], particles[2], sattrs=sattrs13, battrs=battrs13).
+        Mesh attributes used for catalog 3.
+        If ``None``, defaults to a mesh built from the selection and
+        binning associated with the relevant close-pair search.
+    close_pair : tuple, optional
+        Close pair specification: ``(1, 2)``, ``(1, 3)``, or ``(2, 3)``.
+        This only affects performance, not the final result.
+        It is generally best to choose the pair with the tightest
+        angular selection.
     nthreads : int, optional
         Number of GPUs (within the same node) to run in parallel on.
 
     Returns
     -------
-    result : dict
-        Output of the native count3close call. Typically a dict with a single
-        entry {'weight': array}.
+    dict
+        Output of the native ``count3close`` call.
+        Typically a dictionary such as::
+
+            {"weight": array}
     """
     _setup_cucount_logging()
     assert len(particles) == 3
 
     if wattrs is None:
         wattrs = WeightAttrs()
+
     if sattrs12 is None:
         sattrs12 = SelectionAttrs()
     if sattrs13 is None:
@@ -1108,12 +1131,37 @@ def count3close(*particles: Particles,
     if sattrs23 is None:
         sattrs23 = SelectionAttrs()
 
+    if veto12 is None:
+        veto12 = SelectionAttrs()
+    if veto13 is None:
+        veto13 = SelectionAttrs()
+    if veto23 is None:
+        veto23 = SelectionAttrs()
+
     wattrs.check(*particles)
 
+    assert close_pair in [(1, 2), (1, 3), (2, 3)]
+
+    if mattrs1 is None:
+        mattrs1 = MeshAttrs(
+            particles[0],
+            sattrs=sattrs13 if close_pair == (1, 3) else sattrs12,
+            battrs=battrs13 if close_pair == (1, 3) else battrs12,
+        )
+
     if mattrs2 is None:
-        mattrs2 = MeshAttrs(particles[1], sattrs=sattrs12, battrs=battrs12)
+        mattrs2 = MeshAttrs(
+            particles[1],
+            sattrs=sattrs23 if close_pair == (2, 3) else sattrs12,
+            battrs=battrs23 if close_pair == (2, 3) else battrs12,
+        )
+
     if mattrs3 is None:
-        mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13)
+        mattrs3 = MeshAttrs(
+            particles[2],
+            sattrs=sattrs23 if close_pair == (2, 3) else sattrs13,
+            battrs=battrs23 if close_pair == (2, 3) else battrs13,
+        )
 
     particles = [
         cucountlib.cucount.Particles(
@@ -1124,8 +1172,9 @@ def count3close(*particles: Particles,
         for p in particles
     ]
 
-    results = cucountlib.cucount.count3close(
+    return cucountlib.cucount.count3close(
         *particles,
+        mattrs1._to_c(),
         mattrs2._to_c(),
         mattrs3._to_c(),
         battrs12=battrs12,
@@ -1135,12 +1184,12 @@ def count3close(*particles: Particles,
         sattrs12=sattrs12,
         sattrs13=sattrs13,
         sattrs23=sattrs23,
+        veto12=veto12,
         veto13=veto13,
         veto23=veto23,
+        close_pair=close_pair,
         nthreads=nthreads,
     )
-    return results
-
 
 
 # Create a lookup table for set bits per byte

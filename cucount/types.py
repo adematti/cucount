@@ -168,12 +168,6 @@ def count3close(*particles: Particles,
         Binning specification for pair (2, 3).
     wattrs : WeightAttrs, optional
         Weight attributes. If None, a default WeightAttrs() is used.
-    sattrs12, sattrs13, sattrs23 : SelectionAttrs, optional
-        Selection attributes for the three pairs.
-    veto13 : bool, optional
-        Whether to veto pair (1, 3).
-    mattrs2, mattrs3 : MeshAttrs, optional
-        Mesh attributes for catalogs (1, 2) and 3.
     **kwargs
         Optional arguments forwarded to count3close.
 

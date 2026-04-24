@@ -36,6 +36,7 @@ static IndexValue index_value2[2] = {0};
 // Static state for count3close
 // -----------------------------------------------------------------------------
 
+static MeshAttrs mattrs3_1;
 static MeshAttrs mattrs3_2;
 static MeshAttrs mattrs3_3;
 static BinAttrs battrs3_12;
@@ -44,9 +45,11 @@ static BinAttrs battrs3_23;
 static SelectionAttrs sattrs3_12;
 static SelectionAttrs sattrs3_13;
 static SelectionAttrs sattrs3_23;
-static bool veto13_3 = false;
-static bool veto23_3 = false;
+static SelectionAttrs veto3_12;
+static SelectionAttrs veto3_13;
+static SelectionAttrs veto3_23;
 static WeightAttrs wattrs3;
+static CLOSE_PAIR close_pair_3 = CLOSE_PAIR_12;
 static IndexValue index_value3[3] = {0};
 
 // keep ownership of host-side copies created here so pointers stay valid
@@ -145,6 +148,7 @@ void set_count2_attrs_py(
 // -----------------------------------------------------------------------------
 
 void set_count3close_attrs_py(
+    MeshAttrs_py mattrs1_py,
     MeshAttrs_py mattrs2_py,
     MeshAttrs_py mattrs3_py,
     BinAttrs_py battrs12_py,
@@ -154,10 +158,14 @@ void set_count3close_attrs_py(
     const SelectionAttrs_py sattrs12_py = SelectionAttrs_py(),
     const SelectionAttrs_py sattrs13_py = SelectionAttrs_py(),
     const SelectionAttrs_py sattrs23_py = SelectionAttrs_py(),
-    const bool veto13 = false, const bool veto23 = false)
+    const SelectionAttrs_py veto12_py = SelectionAttrs_py(),
+    const SelectionAttrs_py veto13_py = SelectionAttrs_py(),
+    const SelectionAttrs_py veto23_py = SelectionAttrs_py(),
+    py::tuple close_pair = py::make_tuple(1, 2))
 {
     free_owned_ptrs();
 
+    mattrs3_1 = mattrs1_py.data();
     mattrs3_2 = mattrs2_py.data();
     mattrs3_3 = mattrs3_py.data();
 
@@ -166,17 +174,23 @@ void set_count3close_attrs_py(
 
     if (battrs23_obj.is_none()) {
         std::memset(&battrs3_23, 0, sizeof(BinAttrs));
-    } else {
+    }
+    else {
         battrs3_23 = py::cast<BinAttrs_py>(battrs23_obj).data();
         own_bin_attrs_arrays(&battrs3_23);
     }
 
     wattrs3 = wattrs_py.data();
+
     sattrs3_12 = sattrs12_py.data();
     sattrs3_13 = sattrs13_py.data();
     sattrs3_23 = sattrs23_py.data();
-    veto13_3 = veto13;
-    veto23_3 = veto23;
+
+    veto3_12 = veto12_py.data();
+    veto3_13 = veto13_py.data();
+    veto3_23 = veto23_py.data();
+
+    close_pair_3 = parse_close_pair(close_pair);
 
     own_bin_attrs_arrays(&battrs3_12);
     own_bin_attrs_arrays(&battrs3_13);
@@ -355,13 +369,14 @@ ffi::Error count3closeImpl(
 
     Particles plist[MAX_NMESH];
     Mesh mlist[MAX_NMESH];
+
     for (size_t i = 0; i < MAX_NMESH; ++i) {
         plist[i].size = 0;
         mlist[i].total_nparticles = 0;
     }
 
     plist[0] = list_particles[0];
-    set_mesh(plist, mlist, mattrs3_2, &membuffer, stream);
+    set_mesh(plist, mlist, mattrs3_1, &membuffer, stream);
     mesh1 = mlist[0];
 
     plist[0] = list_particles[1];
@@ -377,17 +392,20 @@ ffi::Error count3closeImpl(
         mesh1,
         mesh2,
         mesh3,
+        mattrs3_1,
         mattrs3_2,
         mattrs3_3,
         sattrs3_12,
         sattrs3_13,
         sattrs3_23,
-        veto13_3,
-        veto23_3,
+        veto3_12,
+        veto3_13,
+        veto3_23,
         battrs3_12,
         battrs3_13,
         battrs3_23,
         wattrs3,
+        close_pair_3,
         &membuffer,
         stream);
 
@@ -396,6 +414,7 @@ ffi::Error count3closeImpl(
         return ffi::Error::Internal(
             std::string("CUDA error: ") + cudaGetErrorString(last_error));
     }
+
     return ffi::Error::Success();
 }
 
@@ -509,6 +528,7 @@ PYBIND11_MODULE(ffi_cucount, m) {
 
     // count3close setup
     m.def("set_count3close_attrs", &set_count3close_attrs_py,
+        py::arg("mattrs1"),
         py::arg("mattrs2"),
         py::arg("mattrs3"),
         py::arg("battrs12"),
@@ -518,8 +538,10 @@ PYBIND11_MODULE(ffi_cucount, m) {
         py::arg("sattrs12") = SelectionAttrs_py(),
         py::arg("sattrs13") = SelectionAttrs_py(),
         py::arg("sattrs23") = SelectionAttrs_py(),
-        py::arg("veto13") = false,
-        py::arg("veto23") = false);
+        py::arg("veto12") = SelectionAttrs_py(),
+        py::arg("veto13") = SelectionAttrs_py(),
+        py::arg("veto23") = SelectionAttrs_py(),
+        py::arg("close_pair") = py::make_tuple(1, 2));
 
     m.def("set_count3close_index_value", &set_count3close_index_value_py,
         "Set count3close value indices",

@@ -215,6 +215,7 @@ py::object count3close_py(
     Particles_py& particles1,
     Particles_py& particles2,
     Particles_py& particles3,
+    MeshAttrs_py mattrs1_py,
     MeshAttrs_py mattrs2_py,
     MeshAttrs_py mattrs3_py,
     BinAttrs_py battrs12_py,
@@ -224,9 +225,15 @@ py::object count3close_py(
     const SelectionAttrs_py sattrs12_py = SelectionAttrs_py(),
     const SelectionAttrs_py sattrs13_py = SelectionAttrs_py(),
     const SelectionAttrs_py sattrs23_py = SelectionAttrs_py(),
-    const bool veto13 = false, const bool veto23 = false,
+    const SelectionAttrs_py veto12_py = SelectionAttrs_py(),
+    const SelectionAttrs_py veto13_py = SelectionAttrs_py(),
+    const SelectionAttrs_py veto23_py = SelectionAttrs_py(),
+    py::tuple close_pair = py::make_tuple(1, 2),
     const int nthreads = 1)
 {
+    const CLOSE_PAIR close_pair_value = parse_close_pair(close_pair);
+
+    MeshAttrs mattrs1 = mattrs1_py.data();
     MeshAttrs mattrs2 = mattrs2_py.data();
     MeshAttrs mattrs3 = mattrs3_py.data();
 
@@ -237,7 +244,8 @@ py::object count3close_py(
     std::unique_ptr<BinAttrs_py> battrs23_py;
     BinAttrs battrs23{};
     if (has23) {
-        battrs23_py = std::make_unique<BinAttrs_py>(py::cast<BinAttrs_py>(battrs23_obj));
+        battrs23_py = std::make_unique<BinAttrs_py>(
+            py::cast<BinAttrs_py>(battrs23_obj));
         battrs23 = battrs23_py->data();
     }
 
@@ -245,6 +253,10 @@ py::object count3close_py(
     SelectionAttrs sattrs12 = sattrs12_py.data();
     SelectionAttrs sattrs13 = sattrs13_py.data();
     SelectionAttrs sattrs23 = sattrs23_py.data();
+
+    SelectionAttrs veto12 = veto12_py.data();
+    SelectionAttrs veto13 = veto13_py.data();
+    SelectionAttrs veto23 = veto23_py.data();
 
     Particles p1_host = particles1.data();
     Particles p2_host = particles2.data();
@@ -254,7 +266,6 @@ py::object count3close_py(
     CUDA_CHECK(cudaGetDeviceCount(&ngpus));
     ngpus = MIN(nthreads, ngpus);
 
-    // output layout
     Count3CloseLayout layout = get_count3close_layout(
         battrs12,
         battrs13,
@@ -286,10 +297,12 @@ py::object count3close_py(
         workers.emplace_back(
             [dev, start, nchunk,
              &p1_host, &p2_host, &p3_host,
-             &mattrs2, &mattrs3,
+             &mattrs1, &mattrs2, &mattrs3,
              &wattrs, &sattrs12, &sattrs13, &sattrs23,
+             &veto12, &veto13, &veto23,
              &battrs12, &battrs13, &battrs23,
-             has23, veto13, veto23, csize, &dev_results]()
+             has23, close_pair_value,
+             csize, &dev_results]()
         {
             CUDA_CHECK(cudaSetDevice(dev));
 
@@ -301,16 +314,20 @@ py::object count3close_py(
             Particles chunk_p1 = p1_host;
             chunk_p1.size = nchunk;
             chunk_p1.positions = p1_host.positions + (start * NDIM);
+
             if (p1_host.spositions != nullptr) {
                 chunk_p1.spositions = p1_host.spositions + (start * NDIM);
             }
+
             if (p1_host.values != nullptr) {
                 size_t width = p1_host.index_value.size;
                 chunk_p1.values = p1_host.values + (start * width);
             }
 
             Particles list_particles_dev[MAX_NMESH];
-            for (size_t i = 0; i < MAX_NMESH; ++i) list_particles_dev[i].size = 0;
+            for (size_t i = 0; i < MAX_NMESH; ++i) {
+                list_particles_dev[i].size = 0;
+            }
 
             copy_particles_to_device(chunk_p1, &list_particles_dev[0], 3);
             copy_particles_to_device(p2_host,   &list_particles_dev[1], 3);
@@ -322,13 +339,14 @@ py::object count3close_py(
 
             Particles plist[MAX_NMESH];
             Mesh mlist[MAX_NMESH];
+
             for (size_t i = 0; i < MAX_NMESH; ++i) {
                 plist[i].size = 0;
                 mlist[i].total_nparticles = 0;
             }
 
             plist[0] = list_particles_dev[0];
-            set_mesh(plist, mlist, mattrs2, membuffer, stream);
+            set_mesh(plist, mlist, mattrs1, membuffer, stream);
             mesh1 = mlist[0];
 
             plist[0] = list_particles_dev[1];
@@ -339,33 +357,46 @@ py::object count3close_py(
             set_mesh(plist, mlist, mattrs3, membuffer, stream);
             mesh3 = mlist[0];
 
-            for (size_t i = 0; i < 3; ++i) free_device_particles(&(list_particles_dev[i]));
+            for (size_t i = 0; i < 3; ++i) {
+                free_device_particles(&(list_particles_dev[i]));
+            }
 
-            FLOAT *device_counts = (FLOAT*) my_device_malloc(csize * sizeof(FLOAT), membuffer);
-            CUDA_CHECK(cudaMemsetAsync(device_counts, 0, csize * sizeof(FLOAT), stream));
+            FLOAT *device_counts = (FLOAT*) my_device_malloc(
+                csize * sizeof(FLOAT),
+                membuffer);
+
+            CUDA_CHECK(cudaMemsetAsync(
+                device_counts,
+                0,
+                csize * sizeof(FLOAT),
+                stream));
 
             count3_close(
                 device_counts,
                 mesh1,
                 mesh2,
                 mesh3,
+                mattrs1,
                 mattrs2,
                 mattrs3,
                 sattrs12,
                 sattrs13,
                 sattrs23,
+                veto12,
                 veto13,
                 veto23,
                 battrs12,
                 battrs13,
                 has23 ? battrs23 : BinAttrs{},
                 wattrs,
+                close_pair_value,
                 membuffer,
                 stream);
 
             CUDA_CHECK(cudaStreamSynchronize(stream));
 
             dev_results[dev].assign(csize, static_cast<FLOAT>(0.0));
+
             CUDA_CHECK(cudaMemcpy(
                 dev_results[dev].data(),
                 device_counts,
@@ -382,11 +413,15 @@ py::object count3close_py(
         });
     }
 
-    for (auto &t : workers) t.join();
+    for (auto &t : workers) {
+        t.join();
+    }
 
     for (int dev = 0; dev < ngpus; ++dev) {
         if (dev_results[dev].empty()) continue;
-        for (size_t i = 0; i < csize; ++i) counts_ptr[i] += dev_results[dev][i];
+        for (size_t i = 0; i < csize; ++i) {
+            counts_ptr[i] += dev_results[dev][i];
+        }
     }
 
     py::dict result;
@@ -396,6 +431,7 @@ py::object count3close_py(
             {(ssize_t) sizeof(FLOAT)},
             counts_ptr + iweight * layout.size,
             counts_py);
+
         result[layout.names[iweight].c_str()] =
             array_py.attr("reshape")(layout.shape).cast<py::array_t<FLOAT>>();
     }
@@ -470,6 +506,7 @@ PYBIND11_MODULE(cucount, m) {
         py::arg("particles1"),
         py::arg("particles2"),
         py::arg("particles3"),
+        py::arg("mattrs1"),
         py::arg("mattrs2"),
         py::arg("mattrs3"),
         py::arg("battrs12"),
@@ -479,7 +516,9 @@ PYBIND11_MODULE(cucount, m) {
         py::arg("sattrs12") = SelectionAttrs_py(),
         py::arg("sattrs13") = SelectionAttrs_py(),
         py::arg("sattrs23") = SelectionAttrs_py(),
-        py::arg("veto13") = false,
-        py::arg("veto23") = false,
+        py::arg("veto12") = SelectionAttrs_py(),
+        py::arg("veto13") = SelectionAttrs_py(),
+        py::arg("veto23") = SelectionAttrs_py(),
+        py::arg("close_pair") = py::make_tuple(1, 2),
         py::arg("nthreads") = 1);
 }

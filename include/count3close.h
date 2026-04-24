@@ -37,6 +37,13 @@
 #endif
 
 
+typedef enum {
+    CLOSE_PAIR_12,
+    CLOSE_PAIR_13,
+    CLOSE_PAIR_23
+} CLOSE_PAIR;
+
+
 typedef struct DeviceCount3Layout {
     size_t nbins;
     size_t nprojs;
@@ -56,17 +63,20 @@ void count3_close(
     Mesh mesh1,
     Mesh mesh2,
     Mesh mesh3,
+    MeshAttrs mattrs1,
     MeshAttrs mattrs2,
     MeshAttrs mattrs3,
     SelectionAttrs sattrs12,
     SelectionAttrs sattrs13,
     SelectionAttrs sattrs23,
-    bool veto13,
-    bool veto23,
+    SelectionAttrs veto12,
+    SelectionAttrs veto13,
+    SelectionAttrs veto23,
     BinAttrs battrs12,
     BinAttrs battrs13,
     BinAttrs battrs23,
     WeightAttrs wattrs,
+    CLOSE_PAIR close_pair,
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream);
 

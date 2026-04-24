@@ -282,6 +282,7 @@ jax.ffi.register_ffi_target("count3close", ffi_cucount.count3close(), platform="
 
 def _count3close_no_shard(
     *particles: Particles,
+    mattrs1: MeshAttrs,
     mattrs2: MeshAttrs,
     mattrs3: MeshAttrs,
     battrs12: BinAttrs,
@@ -291,12 +292,15 @@ def _count3close_no_shard(
     sattrs12: SelectionAttrs = None,
     sattrs13: SelectionAttrs = None,
     sattrs23: SelectionAttrs = None,
-    veto13: bool = False,
-    veto23: bool = False,
+    veto12: SelectionAttrs = None,
+    veto13: SelectionAttrs = None,
+    veto23: SelectionAttrs = None,
+    close_pair: tuple[int, int] = (1, 2),
 ):
     assert len(particles) == 3
 
     ffi_cucount.set_count3close_attrs(
+        mattrs1._to_c(),
         mattrs2._to_c(),
         mattrs3._to_c(),
         battrs12,
@@ -306,8 +310,10 @@ def _count3close_no_shard(
         sattrs12=sattrs12,
         sattrs13=sattrs13,
         sattrs23=sattrs23,
+        veto12=veto12,
         veto13=veto13,
         veto23=veto23,
+        close_pair=close_pair,
     )
 
     for i, p in enumerate(particles):
@@ -323,41 +329,32 @@ def _count3close_no_shard(
 
     nblocks = 256
 
-    # Three meshes are now built independently in the native layer.
-    meshsize1 = meshsize2 = int(np.prod(mattrs2.meshsize))
+    meshsize1 = int(np.prod(mattrs1.meshsize))
+    meshsize2 = int(np.prod(mattrs2.meshsize))
     meshsize3 = int(np.prod(mattrs3.meshsize))
 
     bufsize = 0
-
-    # Buffer for mesh construction
-    # nparticles, cumnparticles
     bufsize += 2 * (meshsize1 + meshsize2 + meshsize3)
 
-    # index, positions, spositions, values
     bufsize += sum(particle.positions.shape[0] for particle in particles)
     bufsize += 2 * sum(particle.positions.size for particle in particles)
     bufsize += sum(particle.index_value.size * particle.positions.shape[0] for particle in particles)
 
-    # Buffer for recursive scan
     bufsize += 2 * ((meshsize1 + 1024 - 1) // 1024)
     bufsize += 2 * ((meshsize2 + 1024 - 1) // 1024)
     bufsize += 2 * ((meshsize3 + 1024 - 1) // 1024)
 
-    # Buffer for angular upweights
     if wattrs.angular is not None:
         bufsize += 2 * wattrs.angular.weight.size + 1
 
-    # Buffer for bitwise correction
     if wattrs.bitwise is not None and wattrs.bitwise.p_correction_nbits is not None:
         bufsize += wattrs.bitwise.p_correction_nbits.size
 
-    # Buffer for count3_close: edges
     bufsize += sum(s + 1 for s in battrs12.shape)
     bufsize += sum(s + 1 for s in battrs13.shape)
     if battrs23 is not None:
         bufsize += sum(s + 1 for s in battrs23.shape)
 
-    # Buffer for count3_close: nblocks * counts
     bufsize += nblocks * len(names) * size
 
     buffer_type = jax.ShapeDtypeStruct((bufsize,), dtype)
@@ -385,51 +382,15 @@ def count3close(
     sattrs12: SelectionAttrs = None,
     sattrs13: SelectionAttrs = None,
     sattrs23: SelectionAttrs = None,
-    veto13: bool = False,
-    veto23: bool = False,
+    veto12: SelectionAttrs = None,
+    veto13: SelectionAttrs = None,
+    veto23: SelectionAttrs = None,
+    close_pair: tuple[int, int] = (1, 2),
+    mattrs1: MeshAttrs = None,
     mattrs2: MeshAttrs = None,
     mattrs3: MeshAttrs = None,
     sharding_mesh=None,
 ):
-    """
-    Perform close-triplet counts using the native cucount library.
-
-    Parameters
-    ----------
-    *particles : Particles
-        Exactly three Particles instances, corresponding to catalogs 1, 2, and 3.
-    battrs12 : BinAttrs
-        Binning specification for pair (1, 2).
-    battrs13 : BinAttrs
-        Binning specification for pair (1, 3).
-    battrs23 : BinAttrs, optional
-        Binning specification for pair (2, 3).
-    wattrs : WeightAttrs, optional
-        Weight attributes. If None, defaults to WeightAttrs().
-    sattrs12 : SelectionAttrs, optional
-        Selection attributes for pair (1, 2).
-    sattrs13 : SelectionAttrs, optional
-        Selection attributes for pair (1, 3).
-    sattrs23 : SelectionAttrs, optional
-        Selection attributes for pair (2, 3).
-    veto13 : bool, optional
-        Whether to veto the (1, 3) pair in the native implementation.
-    veto23 : bool, optional
-        Whether to veto the (2, 3) pair in the native implementation.
-    mattrs2 : MeshAttrs, optional
-        Mesh attributes used for catalogs 1 and 2 in the native implementation.
-    mattrs3 : MeshAttrs, optional
-        Mesh attributes used for catalog 3 in the native implementation.
-
-    Returns
-    -------
-    result : dict
-        Dict of named arrays. Currently typically {'weight': array}.
-
-    Note
-    ----
-    Computation is distributed if in the context of a sharding mesh.
-    """
     assert jax.config.read("jax_enable_x64"), "for cucount you have to enable float64"
     assert len(particles) == 3
 
@@ -437,6 +398,7 @@ def count3close(
 
     if wattrs is None:
         wattrs = WeightAttrs()
+
     if sattrs12 is None:
         sattrs12 = SelectionAttrs()
     if sattrs13 is None:
@@ -444,15 +406,41 @@ def count3close(
     if sattrs23 is None:
         sattrs23 = SelectionAttrs()
 
+    if veto12 is None:
+        veto12 = SelectionAttrs()
+    if veto13 is None:
+        veto13 = SelectionAttrs()
+    if veto23 is None:
+        veto23 = SelectionAttrs()
+
+    assert close_pair in [(1, 2), (1, 3), (2, 3)]
+
+    if mattrs1 is None:
+        mattrs1 = MeshAttrs(
+            particles[0],
+            sattrs=sattrs13 if close_pair == (1, 3) else sattrs12,
+            battrs=battrs13 if close_pair == (1, 3) else battrs12,
+        )
+
     if mattrs2 is None:
-        mattrs2 = MeshAttrs(particles[0], particles[1], sattrs=sattrs12, battrs=battrs12)
+        mattrs2 = MeshAttrs(
+            particles[1],
+            sattrs=sattrs23 if close_pair == (2, 3) else sattrs12,
+            battrs=battrs23 if close_pair == (2, 3) else battrs12,
+        )
+
     if mattrs3 is None:
-        mattrs3 = MeshAttrs(particles[0], particles[2], sattrs=sattrs13, battrs=battrs13)
+        mattrs3 = MeshAttrs(
+            particles[2],
+            sattrs=sattrs23 if close_pair == (2, 3) else sattrs13,
+            battrs=battrs23 if close_pair == (2, 3) else battrs13,
+        )
 
     wattrs.check(*particles)
 
-    count3close = _count3close = partial(
+    _count3close = partial(
         _count3close_no_shard,
+        mattrs1=mattrs1,
         mattrs2=mattrs2,
         mattrs3=mattrs3,
         battrs12=battrs12,
@@ -462,12 +450,16 @@ def count3close(
         sattrs12=sattrs12,
         sattrs13=sattrs13,
         sattrs23=sattrs23,
+        veto12=veto12,
         veto13=veto13,
         veto23=veto23,
+        close_pair=close_pair,
     )
 
+    count3close_fn = _count3close
+
     if sharding_mesh.axis_names:
-        count3close = shard_map(
+        count3close_fn = shard_map(
             lambda *particles: jax.lax.psum(
                 _count3close(*particles),
                 sharding_mesh.axis_names,
@@ -477,4 +469,4 @@ def count3close(
             out_specs=P(None),
         )
 
-    return count3close(*particles)
+    return count3close_fn(*particles)

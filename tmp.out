@@ -1,0 +1,36 @@
+Obtaining file:///global/u2/a/adematti/cosmodesi/cucount
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: numpy in /global/common/software/desi/users/adematti/perlmutter/cosmodesiconda/20260321-1.0.0/conda/lib/python3.12/site-packages (from cucount==0.2.7) (2.4.3)
+Building wheels for collected packages: cucount
+  Building editable for cucount (pyproject.toml): started
+  Building editable for cucount (pyproject.toml): finished with status 'error'
+Failed to build cucount
+Obtaining file:///global/u2/a/adematti/cosmodesi/cucount
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: numpy in /global/common/software/desi/users/adematti/perlmutter/cosmodesiconda/20260321-1.0.0/conda/lib/python3.12/site-packages (from cucount==0.2.7) (2.4.3)
+Building wheels for collected packages: cucount
+  Building editable for cucount (pyproject.toml): started
+  Building editable for cucount (pyproject.toml): finished with status 'done'
+  Created wheel for cucount: filename=cucount-0.2.7-cp312-cp312-linux_x86_64.whl size=6174194 sha256=6c5b206deafb322f9c1a06ebabefff1b0b8b8c77a60c3542d49a190f36e0745c
+  Stored in directory: /tmp/pip-ephem-wheel-cache-by1x_d61/wheels/8b/24/3b/6fd0afabae43028d9ce5a5ce027b9ac8c8fd3c058ff927dc9a
+Successfully built cucount
+Installing collected packages: cucount
+  Attempting uninstall: cucount
+    Found existing installation: cucount 0.2.7
+    Uninstalling cucount-0.2.7:
+      Successfully uninstalled cucount-0.2.7
+Successfully installed cucount-0.2.7
