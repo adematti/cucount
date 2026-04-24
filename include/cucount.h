@@ -302,8 +302,10 @@ struct SelectionAttrs_py {
         }
         // Selection support is currently limited: require VAR_THETA only.
         for (size_t i = 0; i < var.size(); ++i) {
-            if (var[i] != VAR_THETA) {
-                throw std::invalid_argument("SelectionAttrs currently only implemented for 'theta'");
+            if (var[i] != VAR_THETA && var[i] != VAR_S) {
+                throw std::invalid_argument(
+                    "SelectionAttrs currently only implemented for 'theta' or 's'"
+                );
             }
         }
     }

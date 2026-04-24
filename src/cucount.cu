@@ -224,7 +224,7 @@ py::object count3close_py(
     const SelectionAttrs_py sattrs12_py = SelectionAttrs_py(),
     const SelectionAttrs_py sattrs13_py = SelectionAttrs_py(),
     const SelectionAttrs_py sattrs23_py = SelectionAttrs_py(),
-    const bool veto13 = false,
+    const bool veto13 = false, const bool veto23 = false,
     const int nthreads = 1)
 {
     MeshAttrs mattrs2 = mattrs2_py.data();
@@ -289,7 +289,7 @@ py::object count3close_py(
              &mattrs2, &mattrs3,
              &wattrs, &sattrs12, &sattrs13, &sattrs23,
              &battrs12, &battrs13, &battrs23,
-             has23, veto13, csize, &dev_results]()
+             has23, veto13, veto23, csize, &dev_results]()
         {
             CUDA_CHECK(cudaSetDevice(dev));
 
@@ -355,6 +355,7 @@ py::object count3close_py(
                 sattrs13,
                 sattrs23,
                 veto13,
+                veto23,
                 battrs12,
                 battrs13,
                 has23 ? battrs23 : BinAttrs{},
@@ -479,5 +480,6 @@ PYBIND11_MODULE(cucount, m) {
         py::arg("sattrs13") = SelectionAttrs_py(),
         py::arg("sattrs23") = SelectionAttrs_py(),
         py::arg("veto13") = false,
+        py::arg("veto23") = false,
         py::arg("nthreads") = 1);
 }

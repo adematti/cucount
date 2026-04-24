@@ -62,6 +62,7 @@ void count3_close(
     SelectionAttrs sattrs13,
     SelectionAttrs sattrs23,
     bool veto13,
+    bool veto23,
     BinAttrs battrs12,
     BinAttrs battrs13,
     BinAttrs battrs23,

@@ -45,6 +45,7 @@ static SelectionAttrs sattrs3_12;
 static SelectionAttrs sattrs3_13;
 static SelectionAttrs sattrs3_23;
 static bool veto13_3 = false;
+static bool veto23_3 = false;
 static WeightAttrs wattrs3;
 static IndexValue index_value3[3] = {0};
 
@@ -153,7 +154,7 @@ void set_count3close_attrs_py(
     const SelectionAttrs_py sattrs12_py = SelectionAttrs_py(),
     const SelectionAttrs_py sattrs13_py = SelectionAttrs_py(),
     const SelectionAttrs_py sattrs23_py = SelectionAttrs_py(),
-    const bool veto13 = false)
+    const bool veto13 = false, const bool veto23 = false)
 {
     free_owned_ptrs();
 
@@ -175,6 +176,7 @@ void set_count3close_attrs_py(
     sattrs3_13 = sattrs13_py.data();
     sattrs3_23 = sattrs23_py.data();
     veto13_3 = veto13;
+    veto23_3 = veto23;
 
     own_bin_attrs_arrays(&battrs3_12);
     own_bin_attrs_arrays(&battrs3_13);
@@ -381,6 +383,7 @@ ffi::Error count3closeImpl(
         sattrs3_13,
         sattrs3_23,
         veto13_3,
+        veto23_3,
         battrs3_12,
         battrs3_13,
         battrs3_23,
@@ -515,7 +518,8 @@ PYBIND11_MODULE(ffi_cucount, m) {
         py::arg("sattrs12") = SelectionAttrs_py(),
         py::arg("sattrs13") = SelectionAttrs_py(),
         py::arg("sattrs23") = SelectionAttrs_py(),
-        py::arg("veto13") = false);
+        py::arg("veto13") = false,
+        py::arg("veto23") = false);
 
     m.def("set_count3close_index_value", &set_count3close_index_value_py,
         "Set count3close value indices",

@@ -173,7 +173,7 @@ def count3close(*particles: Particles,
     veto13 : bool, optional
         Whether to veto pair (1, 3).
     mattrs2, mattrs3 : MeshAttrs, optional
-        Mesh attributes for catalogs (1,2) and 3.
+        Mesh attributes for catalogs (1, 2) and 3.
     **kwargs
         Optional arguments forwarded to count3close.
 
@@ -228,7 +228,7 @@ def count3close(*particles: Particles,
     sum_weights2 = [w.sum() for w in weights2]
     
     if len(particles) == 1:
-        weights3 = wattrs(particles[:1] * 3)
+        weights3 = wattrs(*(particles[:1] * 3))
         sum_weights3 = weights3.sum()
         norm = sum_weights1[0]**3 - 3 * sum_weights1[0] * sum_weights2[0] + 2 * sum_weights3
     

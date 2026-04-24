@@ -1045,6 +1045,7 @@ def count3close(*particles: Particles,
                 sattrs13: SelectionAttrs = None,
                 sattrs23: SelectionAttrs = None,
                 veto13: bool = False,
+                veto23: bool = False,
                 mattrs2: MeshAttrs = None,
                 mattrs3: MeshAttrs = None,
                 nthreads: int = 1):
@@ -1078,6 +1079,8 @@ def count3close(*particles: Particles,
         SelectionAttrs().
     veto13 : bool, optional
         Whether to veto the pair (1, 3).
+    veto23 : bool, optional
+        Whether to veto the pair (2, 3).
     mattrs2 : MeshAttrs, optional
         Mesh attributes used for catalogs 1 and 2. If None, defaults to
         MeshAttrs(particles[0], particles[1], sattrs=sattrs12, battrs=battrs12).
@@ -1133,6 +1136,7 @@ def count3close(*particles: Particles,
         sattrs13=sattrs13,
         sattrs23=sattrs23,
         veto13=veto13,
+        veto23=veto23,
         nthreads=nthreads,
     )
     return results

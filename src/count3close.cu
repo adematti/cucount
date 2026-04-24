@@ -732,6 +732,7 @@ struct Count3CloseOp {
     SelectionAttrs sattrs13;
     SelectionAttrs sattrs23;
     bool veto13;
+    bool veto23;
 
     BinAttrs battrs12;
     BinAttrs battrs13;
@@ -749,6 +750,7 @@ struct Count3CloseOp {
         if (!is_selected_pair_with_sattrs(sposition1, sposition3, position1, position3, sattrs13)) return;
         if (!is_selected_pair_with_sattrs(sposition2, sposition3, position2, position3, sattrs23)) return;
         if (veto13 && is_selected_pair_with_sattrs(sposition1, sposition3, position1, position3, sattrs12)) return;
+        if (veto23 && is_selected_pair_with_sattrs(sposition2, sposition3, position2, position3, sattrs12)) return;
 
         add_weight3(
             local_counts,
@@ -784,6 +786,7 @@ struct Count3ProcessCloseOp {
     SelectionAttrs sattrs13;
     SelectionAttrs sattrs23;
     bool veto13;
+    bool veto23;
 
     BinAttrs battrs12;
     BinAttrs battrs13;
@@ -810,7 +813,7 @@ struct Count3ProcessCloseOp {
                 {local_frame[2][0], local_frame[2][1], local_frame[2][2]}
             },
             mesh1, mesh2, mesh3,
-            sattrs12, sattrs13, sattrs23, veto13,
+            sattrs12, sattrs13, sattrs23, veto13, veto23,
             battrs12, battrs13, battrs23, wattrs
         };
 
@@ -837,6 +840,7 @@ __global__ void count3_close_kernel(
     SelectionAttrs sattrs13,
     SelectionAttrs sattrs23,
     bool veto13,
+    bool veto23,
     BinAttrs battrs12,
     BinAttrs battrs13,
     BinAttrs battrs23,
@@ -872,7 +876,7 @@ __global__ void count3_close_kernel(
             },
             mesh1, mesh2, mesh3,
             mattrs3,
-            sattrs12, sattrs13, sattrs23, veto13,
+            sattrs12, sattrs13, sattrs23, veto13, veto23,
             battrs12, battrs13, battrs23, wattrs
         };
 
@@ -896,6 +900,7 @@ void count3_close(
     SelectionAttrs sattrs13,
     SelectionAttrs sattrs23,
     bool veto13,
+    bool veto23,
     BinAttrs battrs12,
     BinAttrs battrs13,
     BinAttrs battrs23,
@@ -941,6 +946,7 @@ void count3_close(
             sattrs13,
             sattrs23,
             veto13,
+            veto23,
             device_battrs12,
             device_battrs13,
             device_battrs23,
@@ -960,6 +966,7 @@ void count3_close(
             sattrs13,
             sattrs23,
             veto13,
+            veto23,
             device_battrs12,
             device_battrs13,
             device_battrs23,

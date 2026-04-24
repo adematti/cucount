@@ -292,6 +292,7 @@ def _count3close_no_shard(
     sattrs13: SelectionAttrs = None,
     sattrs23: SelectionAttrs = None,
     veto13: bool = False,
+    veto23: bool = False,
 ):
     assert len(particles) == 3
 
@@ -306,6 +307,7 @@ def _count3close_no_shard(
         sattrs13=sattrs13,
         sattrs23=sattrs23,
         veto13=veto13,
+        veto23=veto23,
     )
 
     for i, p in enumerate(particles):
@@ -384,6 +386,7 @@ def count3close(
     sattrs13: SelectionAttrs = None,
     sattrs23: SelectionAttrs = None,
     veto13: bool = False,
+    veto23: bool = False,
     mattrs2: MeshAttrs = None,
     mattrs3: MeshAttrs = None,
     sharding_mesh=None,
@@ -411,6 +414,8 @@ def count3close(
         Selection attributes for pair (2, 3).
     veto13 : bool, optional
         Whether to veto the (1, 3) pair in the native implementation.
+    veto23 : bool, optional
+        Whether to veto the (2, 3) pair in the native implementation.
     mattrs2 : MeshAttrs, optional
         Mesh attributes used for catalogs 1 and 2 in the native implementation.
     mattrs3 : MeshAttrs, optional
@@ -458,6 +463,7 @@ def count3close(
         sattrs13=sattrs13,
         sattrs23=sattrs23,
         veto13=veto13,
+        veto23=veto23,
     )
 
     if sharding_mesh.axis_names:
