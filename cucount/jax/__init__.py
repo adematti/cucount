@@ -390,9 +390,11 @@ def count3close(
     mattrs2: MeshAttrs = None,
     mattrs3: MeshAttrs = None,
     sharding_mesh=None,
+    shard_particle: int = 1,
 ):
     assert jax.config.read("jax_enable_x64"), "for cucount you have to enable float64"
     assert len(particles) == 3
+    assert shard_particle in (1, 2, 3)
 
     _setup_cucount_logging()
 
@@ -459,13 +461,16 @@ def count3close(
     count3close_fn = _count3close
 
     if sharding_mesh.axis_names:
+        in_specs = [P(None), P(None), P(None)]
+        in_specs[shard_particle - 1] = P(sharding_mesh.axis_names)
+
         count3close_fn = shard_map(
             lambda *particles: jax.lax.psum(
                 _count3close(*particles),
                 sharding_mesh.axis_names,
             ),
             mesh=sharding_mesh,
-            in_specs=(P(sharding_mesh.axis_names), P(None), P(None)),
+            in_specs=tuple(in_specs),
             out_specs=P(None),
         )
 

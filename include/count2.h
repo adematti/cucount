@@ -121,6 +121,7 @@ template <int ND> __device__ FLOAT lookup_angular_weight(const FLOAT (&costheta)
     return angular.weight[idx];
 }
 
+
 void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
     const SelectionAttrs sattrs, BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs,
     DeviceMemoryBuffer *buffer, cudaStream_t stream);

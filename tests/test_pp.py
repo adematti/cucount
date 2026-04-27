@@ -369,7 +369,7 @@ def test_corrfunc_cutsky(mode='smu'):
     import time
     print(f'Test in mode {mode}')
 
-    size = int(1e7)
+    size = int(1e6)
     boxsize = (3000,) * 3
     sep = np.linspace(0., 0.1, 100)
     twopoint_weights = (sep, 1. + np.linspace(0., 1., sep.size))
@@ -490,7 +490,7 @@ def test_corrfunc_cubic(mode='smu'):
     assert np.allclose(test_jax, ref, **tol)
 
 
-def test_spectrum(backend='numpy'):
+def test_spectrum_thetacut(backend='numpy'):
     if backend == 'jax':
         import jax
         from jax import config
@@ -1016,9 +1016,9 @@ if __name__ == '__main__':
         test_corrfunc_cubic(mode)
     test_jackknife()
     test_lsstypes()
-    test_box_subsampler()
-    test_kmeans_subsampler()
-    #test_spectrum()
+    #test_box_subsampler()
+    #test_kmeans_subsampler()
+    #test_spectrum_thetacut()
     #test_jax(distributed=True)
     #test_readme()
     #test_readme2()

@@ -791,7 +791,7 @@ static Count3CloseLayout get_count3close_layout(
     }
 
     // Extra flattened projection axis
-    if (layout3.nprojs > 1) {
+    if (layout3.nprojs >= 1) {
         shape.push_back(static_cast<ssize_t>(layout3.nprojs));
     }
 

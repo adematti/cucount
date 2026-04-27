@@ -175,7 +175,7 @@ __device__ void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int 
                 FLOAT mu6 = mu4 * mu2;
                 legendre_cache[ell] = (231.0 * mu6 - 315.0 * mu4 + 105.0 * mu2 - 5.0) / 16.0;
             }
-            else if (ell == 6) {
+            else if (ell == 8) {
                 FLOAT mu4 = mu2 * mu2;
                 FLOAT mu6 = mu4 * mu2;
                 FLOAT mu8 = mu4 * mu4;
@@ -653,6 +653,8 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
         weight[0] = pair_weight;
     }
 
+    const int ellstep_legendre = device_layout.ells_even ? 2 : 1;
+
     if (i == battrs.ndim) {
         if (nsplit_targets == 0) {
             accumulate_weight2<0>(counts, weight, wsize, ibin, split_targets);
@@ -667,7 +669,7 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
 
     else if ((i == battrs.ndim - 1) && (var == VAR_POLE)) {
         FLOAT legendre_cache[MAX_POLE + 1];
-        set_legendre(legendre_cache, device_layout.ells[0], device_layout.ells[device_layout.nells - 1], 1, mu, mu2);
+        set_legendre(legendre_cache, device_layout.ells[0], device_layout.ells[device_layout.nells - 1], ellstep_legendre, mu, mu2);
 
         for (size_t ill = 0; ill < device_layout.nells; ++ill) {
             const size_t ell = device_layout.ells[ill];
@@ -689,7 +691,7 @@ __device__ inline void add_weight2(FLOAT *counts, FLOAT *sposition1, FLOAT *spos
     else if ((i == battrs.ndim - 2) && (battrs.var[i] == VAR_K) && (battrs.var[i + 1] == VAR_POLE)) {
         size_t ik_dim = i;
         FLOAT legendre_cache[MAX_POLE + 1];
-        set_legendre(legendre_cache, device_layout.ells[0], device_layout.ells[device_layout.nells - 1], 1, mu, mu2);
+        set_legendre(legendre_cache, device_layout.ells[0], device_layout.ells[device_layout.nells - 1], ellstep_legendre, mu, mu2);
 
         size_t nk = battrs.shape[ik_dim];
         size_t npole = device_layout.nells;

@@ -387,27 +387,12 @@ ffi::Error count3closeImpl(
     set_mesh(plist, mlist, mattrs3_3, &membuffer, stream);
     mesh3 = mlist[0];
 
-    count3_close(
-        counts->typed_data(),
-        mesh1,
-        mesh2,
-        mesh3,
-        mattrs3_1,
-        mattrs3_2,
-        mattrs3_3,
-        sattrs3_12,
-        sattrs3_13,
-        sattrs3_23,
-        veto3_12,
-        veto3_13,
-        veto3_23,
-        battrs3_12,
-        battrs3_13,
-        battrs3_23,
-        wattrs3,
-        close_pair_3,
-        &membuffer,
-        stream);
+    count3_close(counts->typed_data(), mesh1,mesh2, mesh3,
+                mattrs3_1, mattrs3_2, mattrs3_3,
+                sattrs3_12, sattrs3_13, sattrs3_23,
+                veto3_12, veto3_13, veto3_23,
+                battrs3_12, battrs3_13, battrs3_23,
+                wattrs3, close_pair_3, &membuffer, stream);
 
     cudaError_t last_error = cudaGetLastError();
     if (last_error != cudaSuccess) {

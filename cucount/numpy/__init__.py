@@ -126,12 +126,17 @@ class AngularWeight:
         sorted_axes = [axis[idx] for axis, idx in zip(converted, argsorts)]
 
         weight = state["weight"]
-        for idim, idx in enumerate(argsorts):
+        for idim in range(weight.ndim):
+            idx = np.argsort(converted[idim] if self.tabulation == 'sep' else converted[idim][:-1])
             weight = np.take(weight, idx, axis=idim)
 
-        state[self.tabulation] = [np.array(axis, dtype=np.float64, copy=False) for axis in sorted_axes]
-        state["weight"] = np.array(weight, dtype=np.float64, copy=False)
+        state[self.tabulation] = [np.array(axis, dtype=np.float64) for axis in sorted_axes]
+        state["weight"] = np.array(weight, dtype=np.float64)
         return state
+
+    @property
+    def ndim(self):
+        return self.weight.ndim
 
     def __call__(self, sep):
         """
@@ -154,16 +159,15 @@ class AngularWeight:
 
         # Normalize input into one entry per angular dimension
         if self.weight.ndim == 1:
-            coords_in = [sep]
+            if not isinstance(sep, (tuple, list)):
+                sep = [sep]
         else:
-            assert isinstance(sep, (tuple, list)), (
-                f"for {self.weight.ndim}D angular weights, sep must be a tuple/list "
-                f"with one entry per dimension"
-            )
+            assert isinstance(sep, (tuple, list)), (f"for {self.weight.ndim}D angular weights, sep must be a tuple/list "
+                f"with one entry per dimension")
             assert len(sep) == self.weight.ndim, (
                 f"expected {self.weight.ndim} separation arrays, got {len(sep)}"
             )
-            coords_in = list(sep)
+        coords_in = list(sep)
 
         coords = [self._np.cos(self._np.radians(self._np.asarray(coord))) for coord in coords_in]
         coords = self._np.broadcast_arrays(*coords)
@@ -354,7 +358,7 @@ class WeightAttrs(object):
         if self.bitwise:
             weight *= self.bitwise(*[particle.get('bitwise_weight') for particle in particles])
         if self.angular:
-            angular = self.angular(0.)
+            angular = self.angular((0.,) * self.angular.ndim)
             weight *= angular
         negatives = [particle.get('negative_weight') for particle in particles]
         if all(negatives):
@@ -831,84 +835,49 @@ def wigner_3j(*ells):
     return float(wigner_3j(*ells))
 
 
-def _triposh_transform_matrix_sub(ell1, ell2, ell3s=None, tol=1e-12):
+def _triposh_transform_matrix_sub(ell1, ell2, ell3, tol=1e-12):
     """
-    Return matrix M such that, for fixed (ell1, ell2),
+    Matrix M such that, for fixed (ell1, ell2, ell3),
 
         c_triposh = M @ c_ylm
 
-    where c_ylm contains the stored coefficients in the order
+    with Eq. 30 of arXiv:1803.02132:
 
-        [cos(m=0), cos(1), ..., cos(mmax), sin(1), ..., sin(mmax)].
+        zeta_{ell1 ell2 ell3}
+        = (2 ell3 + 1) H_{ell1 ell2 ell3}
+          sum_m (-1)^m
+          ( ell1 ell2 ell3 ; m -m 0 )
+          zeta^m_{ell1 ell2}
 
-    Parameters
-    ----------
-    ell1, ell2 : int
-        Multipoles of the two explicit legs.
-    ell3s : sequence of int, optional
-        Which ell3 values to include as rows. If None, uses all valid triangle values.
-    tol : float
-        Threshold for treating Wigner-3j values as zero.
+    where c_ylm is stored as
 
-    Returns
-    -------
-    ell3s_out : ndarray, shape (nrow,)
-        The ell3 values corresponding to matrix rows.
-    M : ndarray, shape (nrow, 2*mmax+1)
-        Change-of-basis matrix.
-    labels : list[tuple]
-        Column labels [('c', 0),...,('c', mmax), ('s', 1),...,('s', mmax)].
+        [Re(m=0), Re(m=1), ..., Re(mmax),
+         Im(m=1), ..., Im(mmax)].
     """
-    from scipy import special
-
-    def _ylm_amp(ell, m):
-        """Amplitude multiplying P_ell^m e^{i m phi} in your get_Ylm."""
-        m = abs(m)
-        return np.sqrt(special.factorial(ell - m, exact=False) / special.factorial(ell + m, exact=False))
-
+    ell1, ell2, ell3 = int(ell1), int(ell2), int(ell3)
     mmax = min(ell1, ell2)
 
-    if ell3s is None:
-        ell3s = np.arange(abs(ell1 - ell2), ell1 + ell2 + 1, dtype=int)
-    else:
-        ell3s = np.asarray(ell3s, dtype=int)
+    M = np.zeros((2 * mmax + 1,), dtype=float)
 
-    labels = [('c', 0)]
-    labels += [('c', m) for m in range(1, mmax + 1)]
-    labels += [('s', m) for m in range(1, mmax + 1)]
+    H = float(wigner_3j(ell1, ell2, ell3, 0, 0, 0))
+    if abs(H) < tol:
+        return M
 
-    M = np.zeros((len(ell3s), 2 * mmax + 1), dtype=float)
-
-    for irow, ell3 in enumerate(ell3s):
-        H = float(wigner_3j(ell1, ell2, ell3, 0, 0, 0))
-        if abs(H) < tol:
+    prefactor = (2 * ell3 + 1) * H
+    # m = 0
+    W0 = float(wigner_3j(ell1, ell2, ell3, 0, 0, 0))
+    M[0] = prefactor * W0
+    # m > 0: fold ±m into real/imag stored coefficients.
+    # For Eq. 30, H != 0 implies even parity, so only Re/cos contributes.
+    for m in range(1, mmax + 1):
+        Wm = float(wigner_3j(ell1, ell2, ell3, m, -m, 0))
+        if abs(Wm) < tol:
             continue
-
-        even = ((ell1 + ell2 + ell3) % 2 == 0)
-
-        # m = 0 contributes only to the cosine sector
-        gaunt0 = float(wigner_3j(ell1, ell2, ell3, 0, 0, 0) / H)
-        # this is always 1 when H != 0, but keeping it explicit is clearer
-        M[irow, 0] = gaunt0 * _ylm_amp(ell1, 0) * _ylm_amp(ell2, 0)
-
-        for m in range(1, mmax + 1):
-            gaunt = float(wigner_3j(ell1, ell2, ell3, m, -m, 0) / H)
-            if abs(gaunt) < tol:
-                continue
-
-            coeff = 2.0 * gaunt * _ylm_amp(ell1, m) * _ylm_amp(ell2, m)
-
-            if even:
-                # even parity => real part => cosine block
-                M[irow, m] = coeff
-            else:
-                # odd parity => imaginary part => sine block
-                M[irow, mmax + m] = coeff
-
-                # odd parity has no m=0 contribution
-                M[irow, 0] = 0.0
-
-    return ell3s, M, labels
+        coeff = prefactor * ((-1) ** m) * Wm
+        # contribution from +m and -m gives 2 Re[zeta^m]
+        M[m] = 2.0 * coeff
+        # sine block remains zero for Eq. 30 allowed rows
+    return M
 
 
 def triposh_to_poles(ells):
@@ -917,7 +886,7 @@ def triposh_to_poles(ells):
     for ell1, ell2, ell3 in ells:
         ells1.append(ell1)
         ells2.append(ell2)
-    return ells1, ells2
+    return np.unique(ells1).tolist(), np.unique(sorted(ells2)).tolist()
 
 
 def triposh_transform_matrix(battrs12, battrs13, ells=None):
@@ -1019,20 +988,23 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
         if not found:
             raise ValueError(f"(ell1, ell2)=({ell1}, {ell2}) not found in provided pole coordinates")
 
-        out = np.zeros((M.shape[0], total), dtype=M.dtype)
-        out[:, offset:offset + M.shape[1]] = M
+        out = np.zeros(total, dtype=M.dtype)
+        out[offset:offset + M.shape[0]] = M
         return out
 
     bells1, bells2 = list(battrs12.coords('pole')), list(battrs13.coords('pole'))
+    bells1, bells2 = [int(ell) for ell in bells1], [int(ell) for ell in bells2]
     if ells is None:
         ells = list(itertools.product(bells1, bells2))
         ells = [tuple(ell) + (None,) for ell in ells]
     matrix = []
     out_ells = []
     for ell1, ell2, ell3 in ells:
-        ell3s, M = _triposh_transform_matrix_sub(ell1, ell2, ell3s=ell3)[:2]
-        matrix.append(pad(M, ell1, ell2, bells1, bells2))
-        out_ells.extend((ell1, ell2, int(ell3)) for ell3 in ell3s)
+        ells3 = [ell3] if ell3 is not None else list(range(abs(ell1 - ell2), ell1 + ell2 + 1))
+        for ell3 in ells3:
+            M = _triposh_transform_matrix_sub(ell1, ell2, ell3)
+            matrix.append(pad(M, ell1, ell2, bells1, bells2)[None, :])
+            out_ells.append((ell1, ell2, ell3))
     return out_ells, np.concatenate(matrix, axis=0)
 
 
