@@ -4,7 +4,7 @@ from test_pp import generate_catalogs
 import time
 
 
-def test_cucount():
+def test_count3close():
 
     from cucount.numpy import count2, count3close, Particles, BinAttrs, SelectionAttrs, setup_logging
 
@@ -24,7 +24,7 @@ def test_cucount():
     print(f'count3 {time.time() - t0:.2f}')
 
 
-def test_jax():
+def test_backends():
 
     boxsize = (3000.,) * 3
     # Cutsky geometry
@@ -32,8 +32,13 @@ def test_jax():
     data, _ = generate_catalogs(size, boxsize, n_individual_weights=1, seed=42)
     data_positions, data_weights = np.column_stack(data[:3]), data[3:]
 
-    def test_numpy(binning='theta'):
-        from cucount.numpy import Particles, count3close, BinAttrs, SelectionAttrs
+    def test(func='count3', binning='theta', backend='numpy'):
+        if backend == 'numpy':
+            from cucount.numpy import Particles, count3close, count3, BinAttrs, SelectionAttrs
+        else:
+            import jax
+            jax.config.update("jax_enable_x64", True)
+            from cucount.jax import Particles, count3close, BinAttrs, SelectionAttrs, create_sharding_mesh
         particles = Particles(positions=data_positions, weights=data_weights)
         data = Particles(data_positions, data_weights)
         if binning == 'theta':
@@ -41,30 +46,21 @@ def test_jax():
         else:
             battrs = BinAttrs(s=np.linspace(0., 10, 101), pole=(np.array([0, 2]), 'firstpoint'))
         sattrs = SelectionAttrs(theta=(0., 0.05))
-        toret = count3close(data, data, data, battrs12=battrs, battrs13=battrs, sattrs12=sattrs, sattrs13=sattrs)['weight']
-        return toret
-
-    def test_jax(binning='theta'):
-        import jax
-        jax.config.update("jax_enable_x64", True)
-        from cucount.jax import Particles, count3close, BinAttrs, SelectionAttrs, create_sharding_mesh
-        data = Particles(data_positions, data_weights)
-        if binning == 'theta':
-            battrs = BinAttrs(theta=np.linspace(0., 1, 100))
-        else:
-            battrs = BinAttrs(s=np.linspace(0., 10, 101), pole=(np.array([0, 2]), 'firstpoint'))
-        sattrs = SelectionAttrs(theta=(0., 0.05))
-        with create_sharding_mesh():
-            toret = count3close(data, data, data, battrs12=battrs, battrs13=battrs, sattrs12=sattrs, sattrs13=sattrs)['weight']
+        func = {'count3': count3, 'count3close': count3close}[func]
+        toret = func(data, data, data, battrs12=battrs, battrs13=battrs, sattrs12=sattrs, sattrs13=sattrs)['weight']
         return toret
 
     for binning in ['theta', 's']:
-        counts_numpy = test_numpy(binning=binning)
-        counts_jax = test_jax(binning=binning)
-        assert np.allclose(counts_jax, counts_numpy)
+        counts = {}
+        for func in ['count3', 'count3close']:
+            counts_numpy = test(binning=binning, backend='numpy')
+            counts_jax = test(binning=binning, backend='jax')
+            assert np.allclose(counts_jax, counts_numpy)
+            counts[func] = counts_numpy
+        assert np.allclose(counts['count3'], counts['count3close'])
 
 
-def test_symmetry():
+def test_count3close_symmetry():
 
     boxsize = (3000.,) * 3
     # Cutsky geometry
@@ -91,7 +87,7 @@ def test_symmetry():
 
 def test_triposh():
     from scipy import special
-    from cucount.numpy import Particles, count3close, BinAttrs, SelectionAttrs, triposh_to_poles, triposh_transform_matrix
+    from cucount.numpy import Particles, count3, count3close, BinAttrs, SelectionAttrs, triposh_to_poles, triposh_transform_matrix
 
     def normalize(x):
         n = np.linalg.norm(x, axis=-1, keepdims=True)
@@ -229,47 +225,20 @@ def test_triposh():
     battrs13 = BinAttrs(s=sedges, pole=(ells2, "firstpoint"))
     out_ells, matrix = triposh_transform_matrix(battrs12, battrs13, ells=triposh_ells)
 
-    cuda = count3close(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
-    cuda.dot(matrix.T)
-
     ref, labels = brute_count3close_firstpoint_with_zero_r_zaxis(positions, weights, sedges, ells1=tuple(ells1), ells2=tuple(ells2), theta_max=theta_max)
-    assert np.allclose(cuda, ref, rtol=5e-5, atol=5e-5)
 
+    counts = count3(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
+    counts.dot(matrix.T)
+    assert np.allclose(counts, ref, rtol=5e-5, atol=5e-5)
 
-def test_jax():
-
-    boxsize = (2000.,) * 3
-    # Cutsky geometry
-    size = int(1e6)
-    data, _ = generate_catalogs(size, boxsize, n_individual_weights=1, seed=42)
-    data_positions, data_weights = np.column_stack(data[:3]), data[3:]
-
-    def test_jax(binning='s'):
-        import jax
-        jax.config.update("jax_enable_x64", True)
-        jax.distributed.initialize()
-        from cucount.jax import Particles, count3close, BinAttrs, SelectionAttrs, create_sharding_mesh
-        if binning == 'theta':
-            battrs = BinAttrs(theta=np.linspace(0., 1, 100))
-        else:
-            battrs = BinAttrs(s=np.linspace(0., 10, 101), pole=(np.array([0, 2]), 'firstpoint'))
-        sattrs = SelectionAttrs(theta=(0., 0.05))
-        with create_sharding_mesh():
-            data = Particles(data_positions, data_weights, exchange=True)
-            toret = count3close(data, data, data, battrs12=battrs, battrs13=battrs, sattrs12=sattrs, sattrs13=sattrs)#['weight']
-        return toret
-
-    for binning in ['s']:
-        counts_jax = test_jax(binning=binning)
-
+    counts = count3close(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
+    counts.dot(matrix.T)
+    assert np.allclose(counts, ref, rtol=5e-5, atol=5e-5)
 
 
 if __name__ == '__main__':
 
-    #test_cucount()
-    #test_jax()
-    #test_symmetry()
+    #test_count3close()
+    #test_count3close_symmetry()
+    #test_backends()
     test_triposh()
-    #import os
-    #os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'
-    #test_jax()

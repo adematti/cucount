@@ -803,6 +803,47 @@ static Count3CloseLayout get_count3close_layout(
 }
 
 
+static Count3CloseLayout get_count3_layout(
+    const BinAttrs& battrs12,
+    const BinAttrs& battrs13)
+{
+    std::vector<std::string> names = {"weight"};
+    const size_t nweights = 1;
+
+    std::vector<ssize_t> shape;
+    size_t size = 1;
+
+    BinAttrs battrs23{};
+    DeviceCount3Layout layout3 = make_device_count3_layout(
+        battrs12,
+        battrs13,
+        battrs23);
+
+    // Axes from 1-2
+    for (size_t idim = 0; idim < battrs12.ndim; ++idim) {
+        if (battrs12.var[idim] == VAR_POLE) continue;
+        shape.push_back(static_cast<ssize_t>(battrs12.shape[idim]));
+    }
+
+    // Axes from 1-3
+    for (size_t idim = 0; idim < battrs13.ndim; ++idim) {
+        if (battrs13.var[idim] == VAR_POLE) continue;
+        shape.push_back(static_cast<ssize_t>(battrs13.shape[idim]));
+    }
+
+    // Extra flattened projection axis
+    if (layout3.nprojs >= 1) {
+        shape.push_back(static_cast<ssize_t>(layout3.nprojs));
+    }
+
+    for (ssize_t s : shape) {
+        size *= static_cast<size_t>(s);
+    }
+
+    return {nweights, std::move(names), std::move(shape), size};
+}
+
+
 static CLOSE_PAIR parse_close_pair(py::tuple close_pair)
 {
     if (close_pair.size() != 2) {

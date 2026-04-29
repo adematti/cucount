@@ -407,6 +407,8 @@ class BinAttrs(cucountlib.cucount.BinAttrs):
             return np.column_stack([array[:-1], array[1:]])
         if name is None:
             return {coord: edge(self.array[icoord], coord) for icoord, coord in enumerate(self.varnames)}
+        if isinstance(name, list):
+            return [self.edges(name) for name in name]
         index = self.varnames.index(name)
         return edge(self.array[index], name)
 
@@ -417,6 +419,8 @@ class BinAttrs(cucountlib.cucount.BinAttrs):
             return (array[:-1] + array[1:]) / 2.
         if name is None:
             return {coord: mid(self.array[icoord], coord) for icoord, coord in enumerate(self.varnames)}
+        if isinstance(name, list):
+            return [self.coords(name) for name in name]
         index = self.varnames.index(name)
         return mid(self.array[index], name)
 
@@ -889,7 +893,34 @@ def triposh_to_poles(ells):
     return np.unique(ells1).tolist(), np.unique(sorted(ells2)).tolist()
 
 
-def triposh_transform_matrix(battrs12, battrs13, ells=None):
+def _get_ells(battrs):
+    if isinstance(battrs, BinAttrs):
+        try:
+            ells = battrs.coords('pole')
+        except (AttributeError, IndexError):
+            ells = []
+    else:
+        ells = battrs
+    return [int(ell) for ell in ells]
+
+
+def poles_to_ells(ells1, ells2):
+    """Return :math:`\ell_1, \ell_2, m` given input :class:`BinAttrs` or list of :math:`\ell`."""
+    ells1, ells2 = _get_ells(ells1), _get_ells(ells1)
+    ells = []
+    for ell1 in ells1:
+        for ell2 in ells2:
+            mmax = min(ell1, ell2)
+            # First positive
+            for m in range(mmax + 1):
+                ells.append((ell1, ell2, m))
+            # Then negative
+            for m in range(1, mmax + 1):
+                ells.append((ell1, ell2, -m))
+    return ells
+
+
+def triposh_transform_matrix(ells1, ells2, ells=None):
     """
     Build the linear transform from the CUDA Ylm-product basis to the
     tripoSH basis.
@@ -910,10 +941,10 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
 
     Parameters
     ----------
-    battrs12 : BinAttrs
+    ells1 : BinAttrs, list
         Bin attributes for the first leg.
         The ``'pole'`` coordinate determines the ordered list of ``ell1`` values.
-    battrs13 : BinAttrs
+    ells2 : BinAttrs, list
         Bin attributes for the second leg.
         The ``'pole'`` coordinate determines the ordered list of ``ell2`` values.
     ells : list[tuple], optional
@@ -992,10 +1023,9 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
         out[offset:offset + M.shape[0]] = M
         return out
 
-    bells1, bells2 = list(battrs12.coords('pole')), list(battrs13.coords('pole'))
-    bells1, bells2 = [int(ell) for ell in bells1], [int(ell) for ell in bells2]
+    ells1, ells2 = _get_ells(ells1), _get_ells(ells1)
     if ells is None:
-        ells = list(itertools.product(bells1, bells2))
+        ells = list(itertools.product(ells1, ells2))
         ells = [tuple(ell) + (None,) for ell in ells]
     matrix = []
     out_ells = []
@@ -1003,7 +1033,7 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
         ells3 = [ell3] if ell3 is not None else list(range(abs(ell1 - ell2), ell1 + ell2 + 1))
         for ell3 in ells3:
             M = _triposh_transform_matrix_sub(ell1, ell2, ell3)
-            matrix.append(pad(M, ell1, ell2, bells1, bells2)[None, :])
+            matrix.append(pad(M, ell1, ell2, ells1, ells2)[None, :])
             out_ells.append((ell1, ell2, ell3))
     return out_ells, np.concatenate(matrix, axis=0)
 
@@ -1160,6 +1190,110 @@ def count3close(*particles: Particles,
         veto13=veto13,
         veto23=veto23,
         close_pair=close_pair,
+        nthreads=nthreads,
+    )
+
+
+def count3(*particles: Particles,
+           battrs12: BinAttrs,
+           battrs13: BinAttrs,
+           wattrs: WeightAttrs = None,
+           sattrs12: SelectionAttrs = None,
+           sattrs13: SelectionAttrs = None,
+           veto12: SelectionAttrs = None,
+           veto13: SelectionAttrs = None,
+           mattrs1: MeshAttrs = None,
+           mattrs2: MeshAttrs = None,
+           mattrs3: MeshAttrs = None,
+           nthreads: int = 1):
+    """
+    Perform factorized triplet counts using the native cucount library.
+
+    For each primary particle in catalog 1, catalog 2 is binned as a
+    function of the (1, 2) separation and catalog 3 is binned as a function
+    of the (1, 3) separation. The accumulated contribution is
+
+    .. math::
+
+        w_1 \\, w_2(r_{12}) \\, w_3(r_{13})
+
+    There is no binning or selection in terms of the (2, 3) separation.
+
+    Parameters
+    ----------
+    *particles : Particles
+        Exactly three ``Particles`` instances corresponding to catalogs
+        1, 2, and 3.
+    battrs12 : BinAttrs
+        Binning specification for pair (1, 2).
+    battrs13 : BinAttrs
+        Binning specification for pair (1, 3).
+    wattrs : WeightAttrs, optional
+        Weight attributes. If ``None``, defaults to ``WeightAttrs()``.
+    sattrs12 : SelectionAttrs, optional
+        Selection attributes for pair (1, 2).
+    sattrs13 : SelectionAttrs, optional
+        Selection attributes for pair (1, 3).
+    veto12 : SelectionAttrs, optional
+        Veto selection for pair (1, 2).
+    veto13 : SelectionAttrs, optional
+        Veto selection for pair (1, 3).
+    mattrs1, mattrs2, mattrs3 : MeshAttrs, optional
+        Mesh attributes used for catalogs 1, 2, and 3.
+    nthreads : int, optional
+        Number of GPUs within the same node to run in parallel on.
+
+    Returns
+    -------
+    dict
+        Output of the native ``count3`` call, typically ``{"weight": array}``.
+    """
+    _setup_cucount_logging()
+    assert len(particles) == 3
+
+    if wattrs is None:
+        wattrs = WeightAttrs()
+
+    if sattrs12 is None:
+        sattrs12 = SelectionAttrs()
+    if sattrs13 is None:
+        sattrs13 = SelectionAttrs()
+
+    if veto12 is None:
+        veto12 = SelectionAttrs()
+    if veto13 is None:
+        veto13 = SelectionAttrs()
+
+    wattrs.check(*particles)
+
+    if mattrs1 is None:
+        mattrs1 = MeshAttrs(particles[0], sattrs=sattrs12, battrs=battrs12)
+    if mattrs2 is None:
+        mattrs2 = MeshAttrs(particles[1], sattrs=sattrs12, battrs=battrs12)
+    if mattrs3 is None:
+        mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13)
+
+    particles = [
+        cucountlib.cucount.Particles(
+            p.positions,
+            values=_stack_values(p.values, np=np),
+            **p.index_value._to_c(),
+        )
+        for p in particles
+    ]
+
+    return cucountlib.cucount.count3(
+        *particles,
+        mattrs1._to_c(),
+        mattrs2._to_c(),
+        mattrs3._to_c(),
+        battrs12=battrs12,
+        battrs13=battrs13,
+        wattrs=wattrs._to_c(),
+        sattrs12=sattrs12,
+        sattrs13=sattrs13,
+        veto12=veto12,
+        veto13=veto13,
         nthreads=nthreads,
     )
 
@@ -1339,6 +1473,10 @@ def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
         # we bin in mu
         v = 2. / 3. * np.pi * edges['s'][..., None, None]**3 * edges['mu']
         dv = np.diff(np.diff(v, axis=1), axis=-1)
+    elif mode == ('s', 'pole'):
+        v = 4. / 3. * np.pi * edges['s']**3
+        dv = np.diff(v, axis=-1)
+        dv = np.concatenate([(ell == 0) * dv[..., None] for ell in battrs.coords('pole')], axis=-1)
     elif mode == ('rp', 'pi'):
         v = np.pi * edges['rp'][..., None, None]**2 * edges['pi']
         dv = np.diff(np.diff(v, axis=1), axis=-1)

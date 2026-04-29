@@ -475,3 +475,228 @@ def count3close(
         )
 
     return count3close_fn(*particles)
+
+
+jax.ffi.register_ffi_target("count3", ffi_cucount.count3(), platform="CUDA")
+
+
+def _count3_no_shard(
+    *particles: Particles,
+    mattrs1: MeshAttrs,
+    mattrs2: MeshAttrs,
+    mattrs3: MeshAttrs,
+    battrs12: BinAttrs,
+    battrs13: BinAttrs,
+    wattrs: WeightAttrs = None,
+    sattrs12: SelectionAttrs = None,
+    sattrs13: SelectionAttrs = None,
+    veto12: SelectionAttrs = None,
+    veto13: SelectionAttrs = None,
+):
+    assert len(particles) == 3
+
+    ffi_cucount.set_count3_attrs(
+        mattrs1._to_c(),
+        mattrs2._to_c(),
+        mattrs3._to_c(),
+        battrs12,
+        battrs13,
+        wattrs=wattrs._to_c(),
+        sattrs12=sattrs12,
+        sattrs13=sattrs13,
+        veto12=veto12,
+        veto13=veto13,
+    )
+
+    for i, p in enumerate(particles):
+        ffi_cucount.set_count3_index_value(i, **p.index_value._to_c())
+
+    dtype = jnp.float64
+
+    names, shape = ffi_cucount.get_count3_layout()
+    shape = tuple(shape)
+    size = int(np.prod(shape, dtype=int))
+
+    res_type = jax.ShapeDtypeStruct((len(names) * size,), dtype)
+
+    nblocks = 256
+
+    meshsize1 = int(np.prod(mattrs1.meshsize))
+    meshsize2 = int(np.prod(mattrs2.meshsize))
+    meshsize3 = int(np.prod(mattrs3.meshsize))
+
+    bufsize = 0
+    bufsize += 2 * (meshsize1 + meshsize2 + meshsize3)
+
+    bufsize += sum(particle.positions.shape[0] for particle in particles)
+    bufsize += 2 * sum(particle.positions.size for particle in particles)
+    bufsize += sum(
+        particle.index_value.size * particle.positions.shape[0]
+        for particle in particles
+    )
+
+    bufsize += 2 * ((meshsize1 + 1024 - 1) // 1024)
+    bufsize += 2 * ((meshsize2 + 1024 - 1) // 1024)
+    bufsize += 2 * ((meshsize3 + 1024 - 1) // 1024)
+
+    if wattrs.angular is not None:
+        bufsize += 2 * wattrs.angular.weight.size + 1
+
+    if wattrs.bitwise is not None and wattrs.bitwise.p_correction_nbits is not None:
+        bufsize += wattrs.bitwise.p_correction_nbits.size
+
+    bufsize += sum(s + 1 for s in battrs12.shape)
+    bufsize += sum(s + 1 for s in battrs13.shape)
+
+    bufsize += nblocks * len(names) * size
+
+    buffer_type = jax.ShapeDtypeStruct((bufsize,), dtype)
+    call = jax.ffi.ffi_call("count3", (res_type, buffer_type))
+
+    args = sum(
+        ([particle.positions, _stack_values(particle.values, np=jnp)] for particle in particles),
+        start=[],
+    )
+    counts = call(*args)[0]
+
+    return {
+        name: counts[iweight * size:(iweight + 1) * size].reshape(shape)
+        for iweight, name in enumerate(names)
+    }
+
+
+@default_sharding_mesh
+def count3(
+    *particles: Particles,
+    battrs12: BinAttrs,
+    battrs13: BinAttrs,
+    wattrs: WeightAttrs = None,
+    sattrs12: SelectionAttrs = None,
+    sattrs13: SelectionAttrs = None,
+    veto12: SelectionAttrs = None,
+    veto13: SelectionAttrs = None,
+    mattrs1: MeshAttrs = None,
+    mattrs2: MeshAttrs = None,
+    mattrs3: MeshAttrs = None,
+    sharding_mesh=None,
+    shard_particle: int = 1,
+):
+    """
+    Compute factorized 3-point counts around each primary catalog D1.
+
+    For each primary particle :math:`D_1(\\vec{r}_1)`:
+
+    - particles in :math:`D_2` are binned as a function of
+      :math:`r_{12} = |\\vec{r}_2 - \\vec{r}_1|` to obtain
+      :math:`w_2(r_{12})`
+    - particles in :math:`D_3` are binned as a function of
+      :math:`r_{13} = |\\vec{r}_3 - \\vec{r}_1|` to obtain
+      :math:`w_3(r_{13})`
+    - the total contribution
+
+      .. math::
+
+          w_1 \\, w_2(r_{12}) \\, w_3(r_{13})
+
+      is accumulated
+
+    Unlike :func:`count3close`, there is no binning or selection in
+    :math:`r_{23}`. The count is therefore factorized into two independent
+    pair counts around the same primary object.
+
+    If ``battrs12`` and ``battrs13`` include a ``pole`` dimension
+    (``VAR_POLE``), local-frame spherical harmonic projections are computed
+    using the LOS of the primary particle as the local z-axis, following the
+    same convention as :func:`count3close`.
+
+    Parameters
+    ----------
+    particles : Particles
+        Three particle catalogs ``(D1, D2, D3)``.
+    battrs12 : BinAttrs
+        Binning definition for the ``(1, 2)`` pair.
+    battrs13 : BinAttrs
+        Binning definition for the ``(1, 3)`` pair.
+    wattrs : WeightAttrs, optional
+        Weight definitions (individual, bitwise, angular, etc.).
+    sattrs12 : SelectionAttrs, optional
+        Pair selection for the ``(1, 2)`` pair.
+    sattrs13 : SelectionAttrs, optional
+        Pair selection for the ``(1, 3)`` pair.
+    veto12 : SelectionAttrs, optional
+        Pair veto for the ``(1, 2)`` pair.
+    veto13 : SelectionAttrs, optional
+        Pair veto for the ``(1, 3)`` pair.
+    mattrs1, mattrs2, mattrs3 : MeshAttrs, optional
+        Mesh construction attributes for each catalog. If not provided,
+        reasonable defaults are inferred from the corresponding binning and
+        selection attributes.
+    sharding_mesh : optional
+        JAX sharding mesh used for distributed execution.
+    shard_particle : int, default=1
+        Which particle catalog to shard across devices (1, 2, or 3).
+
+    Returns
+    -------
+    dict
+        Output of the native ``count3`` call, typically ``{"weight": array}``.
+    """
+    assert jax.config.read("jax_enable_x64"), "for cucount you have to enable float64"
+    assert len(particles) == 3
+    assert shard_particle in (1, 2, 3)
+
+    _setup_cucount_logging()
+
+    if wattrs is None:
+        wattrs = WeightAttrs()
+
+    if sattrs12 is None:
+        sattrs12 = SelectionAttrs()
+    if sattrs13 is None:
+        sattrs13 = SelectionAttrs()
+
+    if veto12 is None:
+        veto12 = SelectionAttrs()
+    if veto13 is None:
+        veto13 = SelectionAttrs()
+
+    if mattrs1 is None:
+        mattrs1 = MeshAttrs(particles[0], sattrs=sattrs12, battrs=battrs12)
+    if mattrs2 is None:
+        mattrs2 = MeshAttrs(particles[1], sattrs=sattrs12, battrs=battrs12)
+    if mattrs3 is None:
+        mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13)
+
+    wattrs.check(*particles)
+
+    _count3 = partial(
+        _count3_no_shard,
+        mattrs1=mattrs1,
+        mattrs2=mattrs2,
+        mattrs3=mattrs3,
+        battrs12=battrs12,
+        battrs13=battrs13,
+        wattrs=wattrs,
+        sattrs12=sattrs12,
+        sattrs13=sattrs13,
+        veto12=veto12,
+        veto13=veto13,
+    )
+
+    count3_fn = _count3
+
+    if sharding_mesh.axis_names:
+        in_specs = [P(None), P(None), P(None)]
+        in_specs[shard_particle - 1] = P(sharding_mesh.axis_names)
+
+        count3_fn = shard_map(
+            lambda *particles: jax.lax.psum(
+                _count3(*particles),
+                sharding_mesh.axis_names,
+            ),
+            mesh=sharding_mesh,
+            in_specs=tuple(in_specs),
+            out_specs=P(None),
+        )
+
+    return count3_fn(*particles)
