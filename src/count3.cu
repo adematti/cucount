@@ -364,8 +364,68 @@ __global__ void count3_kernel(
             w1 -= value1[mesh1.index_value.start_negative_weight];
         }
 
-        for (size_t i = 0; i < csize; i++) {
-            atomicAdd(&local_counts[i], w1 * hist2[i] * hist3[i]);
+        if (device_layout.nprojs == 0) {
+            for (size_t i = 0; i < csize; i++) {
+                atomicAdd(&local_counts[i], w1 * hist2[i] * hist3[i]);
+            }
+        }
+        else {
+            size_t iproj = 0;
+
+            for (size_t iell1 = 0; iell1 < device_layout.nells1; iell1++) {
+                int ell1 = (int)device_layout.ells1[iell1];
+
+                for (size_t iell2 = 0; iell2 < device_layout.nells2; iell2++) {
+                    int ell2 = (int)device_layout.ells2[iell2];
+                    int mmax = MIN(ell1, ell2);
+
+                    for (size_t ibin12 = 0; ibin12 < (size_t)battrs12.shape[0]; ibin12++) {
+                        FLOAT *hist2_bin = hist2 + ibin12 * device_layout.nprojs;
+
+                        for (size_t ibin13 = 0; ibin13 < (size_t)battrs13.shape[0]; ibin13++) {
+                            FLOAT *hist3_bin = hist3 + ibin13 * device_layout.nprojs;
+
+                            size_t ibin = ibin12 * (size_t)battrs13.shape[0] + ibin13;
+                            FLOAT *counts_bin = local_counts + ibin * device_layout.nprojs;
+
+                            // m = 0: real-only mode
+                            {
+                                FLOAT c2 = hist2_bin[iproj];
+                                FLOAT c3 = hist3_bin[iproj];
+
+                                atomicAdd(
+                                    &counts_bin[iproj],
+                                    w1 * c2 * c3
+                                );
+                            }
+
+                            // m > 0: contract same-m modes for ell, ell'
+                            for (int m = 1; m <= mmax; m++) {
+                                size_t ireal = iproj + (size_t)m;
+                                size_t iimag = iproj + (size_t)(mmax + m);
+
+                                FLOAT c2 = hist2_bin[ireal];
+                                FLOAT s2 = hist2_bin[iimag];
+
+                                FLOAT c3 = hist3_bin[ireal];
+                                FLOAT s3 = hist3_bin[iimag];
+
+                                atomicAdd(
+                                    &counts_bin[ireal],
+                                    w1 * (c2 * c3 + s2 * s3)
+                                );
+
+                                atomicAdd(
+                                    &counts_bin[iimag],
+                                    w1 * (s2 * c3 - c2 * s3)
+                                );
+                            }
+                        }
+                    }
+
+                    iproj += (size_t)(2 * mmax + 1);
+                }
+            }
         }
     }
 }

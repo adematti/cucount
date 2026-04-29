@@ -5,7 +5,7 @@ from functools import partial
 import numpy as np
 from scipy import special
 
-from cucount.numpy import Particles, BinAttrs, WeightAttrs, MeshAttrs, poles_to_ells
+from cucount.numpy import Particles, BinAttrs, WeightAttrs, MeshAttrs, symmetrize_poles
 
 
 prod = partial(functools.reduce, operator.mul)
@@ -222,7 +222,7 @@ def count3close(*particles: Particles,
         norm = norm * np.ones_like(counts)
         kw = dict(**coords, **edges, coords=names, attrs=attrs)
         if ells12 and ells13:
-            ells = poles_to_ells(ells12, ells13)
+            counts, ells = symmetrize_poles(counts, ells12, ells13)
             poles = [types.Count3Pole(counts=counts[..., ill], norm=norm[..., ill], **kw, ell=ell) for ill, ell in enumerate(ells)]
             return types.Count3Poles(poles)
         return types.Count3(counts=counts, norm=norm, **kw)
@@ -323,7 +323,7 @@ def count3(*particles: Particles,
         norm = norm * np.ones_like(counts)
         kw = dict(**coords, **edges, coords=names, attrs=attrs)
         if ells12 and ells13:
-            ells = poles_to_ells(ells12, ells13)
+            counts, ells = symmetrize_poles(counts, ells12, ells13)
             poles = [types.Count3Pole(counts=counts[..., ill], norm=norm[..., ill], **kw, ell=ell) for ill, ell in enumerate(ells)]
             return types.Count3Poles(poles)
         return types.Count3(counts=counts, norm=norm, **kw)

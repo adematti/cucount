@@ -905,20 +905,53 @@ def _get_ells(battrs):
 
 
 def poles_to_ells(ells1, ells2):
-    """Return :math:`\ell_1, \ell_2, m` given input :class:`BinAttrs` or list of :math:`\ell`."""
-    ells1, ells2 = _get_ells(ells1), _get_ells(ells1)
+    """Return (factor, ell1, ell2, m) for the stored pole axis."""
+    ells1, ells2 = _get_ells(ells1), _get_ells(ells2)
     ells = []
     for ell1 in ells1:
         for ell2 in ells2:
             mmax = min(ell1, ell2)
-            # First positive
             for m in range(mmax + 1):
-                ells.append((ell1, ell2, m))
-            # Then negative
+                ells.append((1, ell1, ell2, m))   # Re
             for m in range(1, mmax + 1):
-                ells.append((ell1, ell2, -m))
+                ells.append((1j, ell1, ell2, m))  # Im
     return ells
 
+def symmetrize_poles(poles, ells1, ells2, axis=-1, np=np):
+    """
+    Symmetrize pole coefficients following Eq. 9 of https://arxiv.org/pdf/1709.10150
+    2017, retaining only real-valued positive-m coefficients.
+
+    Returns
+    -------
+    sym : array
+        Array with the pole axis replaced by the real-only symmetrized
+        coefficients.
+    ells : list
+        Output labels ``(ell1, ell2, m)``.
+    """
+    labels = poles_to_ells(ells1, ells2)
+
+    keep = []
+    factors = []
+    out_labels = []
+
+    for ipole, (part, ell1, ell2, m) in enumerate(labels):
+        if part == 1:
+            keep.append(ipole)
+            factors.append(1 if m == 0 else 2)
+            out_labels.append((ell1, ell2, m))
+
+    keep = np.asarray(keep)
+    factors = np.asarray(factors, dtype=poles.dtype)
+
+    sym = np.take(poles, keep, axis=axis)
+
+    shape = [1] * sym.ndim
+    shape[axis % sym.ndim] = factors.size
+    sym = sym * factors.reshape(shape)
+
+    return sym, out_labels
 
 def triposh_transform_matrix(ells1, ells2, ells=None):
     """
