@@ -641,7 +641,7 @@ def _format_values(weights=None, spin_values=None, splits=None, index_value=None
         spin_values = _make_list_weights(spin_values)
         _spin_values = []
         for value in spin_values:
-            value = value.astype(np.float64)
+            value = np.asarray(value).astype(np.float64)
             if value.ndim == 2:
                 _spin_values += list(value.T)
             else:
@@ -653,6 +653,7 @@ def _format_values(weights=None, spin_values=None, splits=None, index_value=None
         weights = _make_list_weights(weights)
         individual_weights, bitwise_weights, negative_weights = [], [], []
         for weight in weights:
+            weight = np.asarray(weight)
             if np.issubdtype(weight.dtype, np.integer):
                 bitwise_weights += reformat_bitarrays(weight, dtype=np.uint64, copy=True, np=np)
             else:
