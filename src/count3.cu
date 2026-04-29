@@ -1,6 +1,7 @@
 #include "common.h"
 #include "count2.h"
 #include "count3close.h"
+#include "count3.h"
 
 /*
  * count3.cu
@@ -108,6 +109,13 @@ __device__ inline void for_each_candidate(
         for_each_candidate_cartesian(center_position, target_mesh, target_mattrs, op);
     }
 }
+
+
+__device__ inline FLOAT clamp1(FLOAT x)
+{
+    return MIN((FLOAT)1., MAX((FLOAT)-1., x));
+}
+
 
 
 __device__ inline void add_pair_weight(
@@ -276,10 +284,15 @@ struct Count3PairOp {
     }
 };
 
+
 template <MESH_TYPE MESH_TYPE_2, MESH_TYPE MESH_TYPE_3>
 __global__ void count3_kernel(
     FLOAT *block_counts,
+    FLOAT *hist2_all,
+    FLOAT *hist3_all,
     size_t csize,
+    size_t hsize2,
+    size_t hsize3,
     Mesh mesh1,
     Mesh mesh2,
     Mesh mesh3,
@@ -295,23 +308,27 @@ __global__ void count3_kernel(
     WeightAttrs wattrs)
 {
     size_t tid = threadIdx.x;
+    size_t gtid = blockIdx.x * blockDim.x + tid;
+    size_t nthreads_total = gridDim.x * blockDim.x;
+
     FLOAT *local_counts = &block_counts[blockIdx.x * csize];
+    FLOAT *hist2 = hist2_all + gtid * hsize2;
+    FLOAT *hist3 = hist3_all + gtid * hsize3;
 
     for (size_t i = tid; i < csize; i += blockDim.x) {
         local_counts[i] = (FLOAT)0.;
     }
     __syncthreads();
 
-    size_t gid = blockIdx.x * blockDim.x + tid;
-    size_t stride = gridDim.x * blockDim.x;
-
-    for (size_t i1 = gid; i1 < mesh1.total_nparticles; i1 += stride) {
+    for (size_t i1 = gtid; i1 < mesh1.total_nparticles; i1 += nthreads_total) {
         FLOAT *position1 = &(mesh1.positions[NDIM * i1]);
         FLOAT *sposition1 = &(mesh1.spositions[NDIM * i1]);
         FLOAT *value1 = &(mesh1.values[mesh1.index_value.size * i1]);
 
-        for (size_t i = 0; i < csize; i++) {
+        for (size_t i = 0; i < hsize2; i++) {
             hist2[i] = (FLOAT)0.;
+        }
+        for (size_t i = 0; i < hsize3; i++) {
             hist3[i] = (FLOAT)0.;
         }
 
@@ -365,8 +382,17 @@ __global__ void count3_kernel(
         }
 
         if (device_layout.nprojs == 0) {
-            for (size_t i = 0; i < csize; i++) {
-                atomicAdd(&local_counts[i], w1 * hist2[i] * hist3[i]);
+            for (size_t ibin12 = 0; ibin12 < (size_t)battrs12.shape[0]; ibin12++) {
+                FLOAT w2 = hist2[ibin12];
+                if (w2 == (FLOAT)0.) continue;
+
+                for (size_t ibin13 = 0; ibin13 < (size_t)battrs13.shape[0]; ibin13++) {
+                    FLOAT w3 = hist3[ibin13];
+                    if (w3 == (FLOAT)0.) continue;
+
+                    size_t ibin = ibin12 * (size_t)battrs13.shape[0] + ibin13;
+                    atomicAdd(&local_counts[ibin], w1 * w2 * w3);
+                }
             }
         }
         else {
@@ -388,18 +414,14 @@ __global__ void count3_kernel(
                             size_t ibin = ibin12 * (size_t)battrs13.shape[0] + ibin13;
                             FLOAT *counts_bin = local_counts + ibin * device_layout.nprojs;
 
-                            // m = 0: real-only mode
-                            {
-                                FLOAT c2 = hist2_bin[iproj];
-                                FLOAT c3 = hist3_bin[iproj];
+                            FLOAT c2 = hist2_bin[iproj];
+                            FLOAT c3 = hist3_bin[iproj];
 
-                                atomicAdd(
-                                    &counts_bin[iproj],
-                                    w1 * c2 * c3
-                                );
-                            }
+                            atomicAdd(
+                                &counts_bin[iproj],
+                                w1 * c2 * c3
+                            );
 
-                            // m > 0: contract same-m modes for ell, ell'
                             for (int m = 1; m <= mmax; m++) {
                                 size_t ireal = iproj + (size_t)m;
                                 size_t iimag = iproj + (size_t)(mmax + m);
@@ -435,7 +457,11 @@ __global__ void count3_kernel(
     count3_kernel<MESH_TYPE_2, MESH_TYPE_3>                                    \
         <<<nblocks, nthreads_per_block, 0, stream>>>(                          \
             block_counts,                                                      \
+            hist2_all,                                                         \
+            hist3_all,                                                         \
             csize,                                                             \
+            hsize2,                                                            \
+            hsize3,                                                            \
             mesh1, mesh2, mesh3,                                               \
             mattrs2, mattrs3,                                                  \
             sattrs12, sattrs13,                                                \
@@ -464,8 +490,7 @@ void count3(
     BinAttrs battrs23;
     memset(&battrs23, 0, sizeof(BinAttrs));
 
-    DeviceCount3Layout layout = make_device_count3_layout(
-        battrs12, battrs13, battrs23);
+    DeviceCount3Layout layout = make_device_count3_layout(battrs12, battrs13, battrs23);
     size_t csize = layout.csize;
 
     BinAttrs device_battrs12 = battrs12;
@@ -476,10 +501,16 @@ void count3(
     copy_bin_attrs_to_device(&device_battrs13, &battrs13, buffer);
 
     int nblocks, nthreads_per_block;
-    CONFIGURE_KERNEL_LAUNCH((count3_kernel), nblocks, nthreads_per_block, buffer);
+    CONFIGURE_KERNEL_LAUNCH((count3_kernel<MESH_CARTESIAN, MESH_CARTESIAN>), nblocks, nthreads_per_block, buffer);
 
-    FLOAT *block_counts = (FLOAT *)my_device_malloc(
-        nblocks * csize * sizeof(FLOAT), buffer);
+    const size_t pair_stride = (layout.nprojs > 0) ? layout.nprojs : 1;
+    const size_t hsize2 = (size_t)battrs12.shape[0] * pair_stride;
+    const size_t hsize3 = (size_t)battrs13.shape[0] * pair_stride;
+    const size_t nthreads_total = (size_t)nblocks * (size_t)nthreads_per_block;
+
+    FLOAT *block_counts = (FLOAT *)my_device_malloc(nblocks * csize * sizeof(FLOAT), buffer);
+    FLOAT *hist2_all = (FLOAT *)my_device_malloc(nthreads_total * hsize2 * sizeof(FLOAT), buffer);
+    FLOAT *hist3_all = (FLOAT *)my_device_malloc(nthreads_total * hsize3 * sizeof(FLOAT), buffer);
 
     CUDA_CHECK(cudaMemsetAsync(counts, 0, csize * sizeof(FLOAT), stream));
     CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(DeviceCount3Layout)));
@@ -499,14 +530,16 @@ void count3(
 
     CUDA_CHECK(cudaGetLastError());
 
-    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(
-        block_counts, nblocks, counts, csize);
+    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, csize);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
+    my_device_free(hist3_all, buffer);
+    my_device_free(hist2_all, buffer);
     my_device_free(block_counts, buffer);
     free_device_bin_attrs(&device_battrs12, buffer);
     free_device_bin_attrs(&device_battrs13, buffer);
 }
+
 
 #undef LAUNCH_COUNT3_KERNEL

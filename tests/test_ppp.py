@@ -113,7 +113,7 @@ def test_triposh():
                     labels.append((ell1, ell2, m, "im"))
         return labels
 
-    def brute_count3close_firstpoint_with_zero_r_zaxis(
+    def brute_count3close(
         positions,
         weights,
         sedges,
@@ -207,14 +207,14 @@ def test_triposh():
                             ip += 2 * mmax + 1
         return out, labels
 
-    boxsize = (3000.,) * 3
+    boxsize = (1000.,) * 3
     size = 200
 
     data, _ = generate_catalogs(size, boxsize, n_individual_weights=1, seed=42)
     positions = np.column_stack(data[:3])
     weights = np.asarray(data[3])
-    sedges = np.linspace(0., 10., 101)
-    theta_max = 0.05
+    sedges = np.linspace(0., 40., 11)
+    theta_max = 0.2
 
     particles = Particles(positions=positions, weights=weights)
     sattrs = SelectionAttrs(theta=(0., theta_max))
@@ -225,15 +225,20 @@ def test_triposh():
     battrs13 = BinAttrs(s=sedges, pole=(ells2, "firstpoint"))
     out_ells, matrix = triposh_transform_matrix(battrs12, battrs13, ells=triposh_ells)
 
-    ref, labels = brute_count3close_firstpoint_with_zero_r_zaxis(positions, weights, sedges, ells1=tuple(ells1), ells2=tuple(ells2), theta_max=theta_max)
+    ref, labels = brute_count3close(positions, weights, sedges, ells1=tuple(ells1), ells2=tuple(ells2), theta_max=theta_max)
+
+    counts_close = count3close(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
+    assert np.allclose(counts_close, ref, rtol=5e-5, atol=5e-5)
 
     counts = count3(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
     counts.dot(matrix.T)
     assert np.allclose(counts, ref, rtol=5e-5, atol=5e-5)
 
-    counts = count3close(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
-    counts.dot(matrix.T)
-    assert np.allclose(counts, ref, rtol=5e-5, atol=5e-5)
+    from cucount.types import count3, count3close
+    counts = count3(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
+    counts_close = count3close(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
+    print(counts)
+    assert np.allclose(counts.value(), counts_close.value())
 
 
 if __name__ == '__main__':

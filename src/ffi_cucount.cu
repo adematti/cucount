@@ -15,6 +15,7 @@
 #include "mesh.h"
 #include "count2.h"
 #include "count3close.h"
+#include "count3.h"
 #include "common.h"
 #include "cucount.h"
 
@@ -291,10 +292,9 @@ py::tuple get_count3close_layout_py()
 }
 
 
-
 py::tuple get_count3_layout_py()
 {
-    DeviceCount3Layout layout = make_device_count3_layout(
+    Count3CloseLayout layout = get_count3_layout(
         battrs3_12,
         battrs3_13);
 
@@ -303,7 +303,7 @@ py::tuple get_count3_layout_py()
         shape[i] = py::int_(layout.shape[i]);
     }
 
-    return py::make_tuple(names, shape);
+    return py::make_tuple(layout.names, shape);
 }
 
 

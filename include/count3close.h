@@ -44,6 +44,38 @@ typedef enum {
 } CLOSE_PAIR;
 
 
+__device__ bool is_selected_pair_with_sattrs(
+    FLOAT *sposition1,
+    FLOAT *sposition2,
+    FLOAT *position1,
+    FLOAT *position2,
+    const SelectionAttrs &sattrs);
+
+
+__device__ void set_angular_bounds_from_attrs(
+    const FLOAT *sposition,
+    const MeshAttrs &mattrs,
+    int *bounds);
+
+
+__device__ void set_cartesian_bounds_from_attrs(
+    const FLOAT *position,
+    const MeshAttrs &mattrs,
+    int *bounds);
+
+
+__device__ void build_local_frame(const FLOAT *ez_in, FLOAT local_frame[3][NDIM]);
+
+
+__device__ void compute_trig_up_to_m(
+    int mmax, FLOAT c1, FLOAT s1, FLOAT cm[5], FLOAT sm[5]);
+
+
+__device__ void compute_pbar_row_lmax4(
+    int ell, int mmax, FLOAT mu, FLOAT Prow[5]);
+
+
+
 typedef struct DeviceCount3Layout {
     size_t nbins;
     size_t nprojs;

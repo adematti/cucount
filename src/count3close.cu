@@ -1,5 +1,6 @@
 #include "common.h"
 #include "count2.h"
+#include "count3.h"
 #include "count3close.h"
 
 
@@ -7,7 +8,7 @@
 // Explicit pair selection
 // ============================================================================
 
-__device__ inline bool is_selected_pair_with_sattrs(
+__device__ bool is_selected_pair_with_sattrs(
     FLOAT *sposition1,
     FLOAT *sposition2,
     FLOAT *position1,
@@ -37,7 +38,7 @@ __device__ inline bool is_selected_pair_with_sattrs(
 // Search bounds helpers with explicit MeshAttrs
 // ============================================================================
 
-__device__ inline void set_angular_bounds_from_attrs(
+__device__ void set_angular_bounds_from_attrs(
     const FLOAT *sposition,
     const MeshAttrs &mattrs,
     int *bounds)
@@ -112,7 +113,7 @@ __device__ inline void set_angular_bounds_from_attrs(
 }
 
 
-__device__ inline void set_cartesian_bounds_from_attrs(
+__device__ void set_cartesian_bounds_from_attrs(
     const FLOAT *position,
     const MeshAttrs &mattrs,
     int *bounds)
@@ -138,10 +139,6 @@ __device__ inline void set_cartesian_bounds_from_attrs(
     }
 }
 
-
-// ============================================================================
-// Existing helpers
-// ============================================================================
 
 __device__ inline FLOAT clamp1(FLOAT x)
 {
@@ -179,7 +176,8 @@ __device__ inline void cross3(FLOAT *out, const FLOAT *a, const FLOAT *b)
     out[2] = a[0] * b[1] - a[1] * b[0];
 }
 
-__device__ inline void build_local_frame(const FLOAT *ez_in, FLOAT local_frame[3][NDIM])
+
+__device__ void build_local_frame(const FLOAT *ez_in, FLOAT local_frame[3][NDIM])
 {
     FLOAT ref[NDIM];
     if (fabs((double)ez_in[2]) < 0.9) {
@@ -284,7 +282,7 @@ DeviceCount3Layout make_device_count3_layout(
 // add_weight3
 // ============================================================================
 
-__device__ inline void compute_trig_up_to_m(
+__device__ void compute_trig_up_to_m(
     int mmax, FLOAT c1, FLOAT s1, FLOAT cm[5], FLOAT sm[5])
 {
     #pragma unroll
@@ -310,7 +308,7 @@ __device__ inline void compute_trig_up_to_m(
 }
 
 
-__device__ inline void compute_pbar_row_lmax4(
+__device__ void compute_pbar_row_lmax4(
     int ell, int mmax, FLOAT mu, FLOAT Prow[5])
 {
     FLOAT x  = clamp1(mu);
@@ -1354,12 +1352,7 @@ void count3_close(
     copy_weight_attrs_to_device(&device_wattrs, &wattrs, buffer);
 
     int nblocks, nthreads_per_block;
-    CONFIGURE_KERNEL_LAUNCH(
-        (count3_close_kernel<MESH_ANGULAR>),
-        nblocks,
-        nthreads_per_block,
-        buffer
-    );
+    CONFIGURE_KERNEL_LAUNCH((count3_close_kernel<MESH_ANGULAR>), nblocks, nthreads_per_block, buffer);
 
     FLOAT *block_counts = (FLOAT *) my_device_malloc(
         nblocks * csize * sizeof(FLOAT), buffer);

@@ -9,6 +9,7 @@
 #include "mesh.h"
 #include "count2.h"
 #include "count3close.h"
+#include "count3.h"
 #include "common.h"
 #include "cucount.h"
 
@@ -725,7 +726,7 @@ PYBIND11_MODULE(cucount, m) {
         py::arg("veto13") = SelectionAttrs_py(),
         py::arg("veto23") = SelectionAttrs_py(),
         py::arg("close_pair") = py::make_tuple(1, 2),
-        py::arg("nthreads") = 1)
+        py::arg("nthreads") = 1);
 
     m.def("count3", &count3_py,
         "Take three particle catalogs, run factorized 3-point counts on the GPU and return numpy arrays",

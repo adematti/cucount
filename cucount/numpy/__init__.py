@@ -953,6 +953,7 @@ def symmetrize_poles(poles, ells1, ells2, axis=-1, np=np):
 
     return sym, out_labels
 
+
 def triposh_transform_matrix(ells1, ells2, ells=None):
     """
     Build the linear transform from the CUDA Ylm-product basis to the
@@ -1012,7 +1013,7 @@ def triposh_transform_matrix(ells1, ells2, ells=None):
     with each pair block occupying
     ``2 * min(ell1, ell2) + 1`` consecutive coefficients.
     """
-    def pad(M, ell1, ell2, bells1, bells2):
+    def pad(M, ell1, ell2, ells1, ells2):
         """
         Pad a local (ell1, ell2) tripoSH transform block into the full CUDA
         projection layout.
@@ -1035,13 +1036,13 @@ def triposh_transform_matrix(ells1, ells2, ells=None):
             return 2 * min(l1, l2) + 1
 
         # Total number of CUDA projections
-        total = sum(block_size(l1, l2) for l1 in bells1 for l2 in bells2)
+        total = sum(block_size(l1, l2) for l1 in ells1 for l2 in ells2)
 
         # Find start offset of this block in CUDA ordering
         offset = 0
         found = False
-        for l1 in bells1:
-            for l2 in bells2:
+        for l1 in ells1:
+            for l2 in ells2:
                 if l1 == ell1 and l2 == ell2:
                     found = True
                     break
@@ -1056,7 +1057,7 @@ def triposh_transform_matrix(ells1, ells2, ells=None):
         out[offset:offset + M.shape[0]] = M
         return out
 
-    ells1, ells2 = _get_ells(ells1), _get_ells(ells1)
+    ells1, ells2 = _get_ells(ells1), _get_ells(ells2)
     if ells is None:
         ells = list(itertools.product(ells1, ells2))
         ells = [tuple(ell) + (None,) for ell in ells]

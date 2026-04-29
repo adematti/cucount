@@ -1,5 +1,5 @@
-#ifndef _CUCOUNT_COUNT3CLOSE_
-#define _CUCOUNT_COUNT3CLOSE_
+#ifndef _CUCOUNT_COUNT3_
+#define _CUCOUNT_COUNT3_
 
 #include <math.h>
 #include <stdio.h>
