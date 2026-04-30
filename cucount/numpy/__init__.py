@@ -917,6 +917,7 @@ def poles_to_ells(ells1, ells2):
                 ells.append((1j, ell1, ell2, m))  # Im
     return ells
 
+
 def symmetrize_poles(poles, ells1, ells2, axis=-1, np=np):
     """
     Symmetrize pole coefficients following Eq. 9 of https://arxiv.org/pdf/1709.10150
@@ -931,6 +932,7 @@ def symmetrize_poles(poles, ells1, ells2, axis=-1, np=np):
         Output labels ``(ell1, ell2, m)``.
     """
     labels = poles_to_ells(ells1, ells2)
+    print(labels)
 
     keep = []
     factors = []

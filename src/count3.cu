@@ -118,6 +118,12 @@ __device__ inline FLOAT clamp1(FLOAT x)
 
 
 
+enum Count3Leg {
+    COUNT3_LEG_12 = 0,
+    COUNT3_LEG_13 = 1
+};
+
+
 __device__ inline void add_pair_weight(
     FLOAT *hist,
     const FLOAT local_frame[3][NDIM],
@@ -127,7 +133,9 @@ __device__ inline void add_pair_weight(
     FLOAT *position2,
     FLOAT *value2,
     IndexValue index_value2,
-    BinAttrs battrs)
+    BinAttrs battrs,
+    Count3Leg leg
+)
 {
     if (battrs.ndim == 0) return;
 
@@ -211,8 +219,11 @@ __device__ inline void add_pair_weight(
     }
 
     int global_mmax = 0;
-    for (size_t iell = 0; iell < device_layout.nells1; iell++) {
-        global_mmax = MAX(global_mmax, (int)device_layout.ells1[iell]);
+    for (size_t iell1 = 0; iell1 < device_layout.nells1; iell1++) {
+        global_mmax = MAX(global_mmax, (int)device_layout.ells1[iell1]);
+    }
+    for (size_t iell2 = 0; iell2 < device_layout.nells2; iell2++) {
+        global_mmax = MAX(global_mmax, (int)device_layout.ells2[iell2]);
     }
 
     FLOAT cm[5], sm[5];
@@ -221,24 +232,29 @@ __device__ inline void add_pair_weight(
     FLOAT *hist_bin = hist + (size_t)ibin * device_layout.nprojs;
 
     size_t iproj = 0;
-    for (size_t iell = 0; iell < device_layout.nells1; iell++) {
-        int ell = (int)device_layout.ells1[iell];
 
-        FLOAT P[5];
-        compute_pbar_row_lmax4(ell, ell, mu, P);
+    for (size_t iell1 = 0; iell1 < device_layout.nells1; iell1++) {
+        int ell1 = (int)device_layout.ells1[iell1];
 
-        for (int m = 0; m <= ell; m++) {
-            atomicAdd(&hist_bin[iproj + (size_t)m], weight * P[m] * cm[m]);
+        for (size_t iell2 = 0; iell2 < device_layout.nells2; iell2++) {
+            int ell2 = (int)device_layout.ells2[iell2];
 
-            if (m > 0) {
-                atomicAdd(
-                    &hist_bin[iproj + (size_t)(ell + m)],
-                    weight * P[m] * sm[m]
-                );
+            int mmax = MIN(ell1, ell2);
+            int ell = (leg == COUNT3_LEG_12) ? ell1 : ell2;
+
+            FLOAT P[5];
+            compute_pbar_row_lmax4(ell, mmax, mu, P);
+
+            for (int m = 0; m <= mmax; m++) {
+                atomicAdd(&hist_bin[iproj + (size_t)m], weight * P[m] * cm[m]);
+
+                if (m > 0) {
+                    atomicAdd(&hist_bin[iproj + (size_t)(mmax + m)], weight * P[m] * sm[m]);
+                }
             }
-        }
 
-        iproj += (size_t)(2 * ell + 1);
+            iproj += (size_t)(2 * mmax + 1);
+        }
     }
 }
 
@@ -255,6 +271,7 @@ struct Count3PairOp {
     BinAttrs battrs;
 
     IndexValue index_value;
+    Count3Leg leg;
 
     __device__ inline void operator()(
         size_t i,
@@ -279,7 +296,8 @@ struct Count3PairOp {
             position,
             value,
             index_value,
-            battrs
+            battrs,
+            leg
         );
     }
 };
@@ -343,7 +361,8 @@ __global__ void count3_kernel(
             sattrs12,
             veto12,
             battrs12,
-            mesh2.index_value
+            mesh2.index_value,
+            COUNT3_LEG_12
         };
 
         for_each_candidate<MESH_TYPE_2>(
@@ -362,7 +381,8 @@ __global__ void count3_kernel(
             sattrs13,
             veto13,
             battrs13,
-            mesh3.index_value
+            mesh3.index_value,
+            COUNT3_LEG_13
         };
 
         for_each_candidate<MESH_TYPE_3>(
@@ -404,6 +424,7 @@ __global__ void count3_kernel(
                 for (size_t iell2 = 0; iell2 < device_layout.nells2; iell2++) {
                     int ell2 = (int)device_layout.ells2[iell2];
                     int mmax = MIN(ell1, ell2);
+                    FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1))) / ((FLOAT)(4.0 * M_PI));
 
                     for (size_t ibin12 = 0; ibin12 < (size_t)battrs12.shape[0]; ibin12++) {
                         FLOAT *hist2_bin = hist2 + ibin12 * device_layout.nprojs;
@@ -417,30 +438,20 @@ __global__ void count3_kernel(
                             FLOAT c2 = hist2_bin[iproj];
                             FLOAT c3 = hist3_bin[iproj];
 
-                            atomicAdd(
-                                &counts_bin[iproj],
-                                w1 * c2 * c3
-                            );
+                            atomicAdd(&counts_bin[iproj], ell_norm * w1 * (c2 * c3));
 
                             for (int m = 1; m <= mmax; m++) {
                                 size_t ireal = iproj + (size_t)m;
                                 size_t iimag = iproj + (size_t)(mmax + m);
-
+                            
                                 FLOAT c2 = hist2_bin[ireal];
                                 FLOAT s2 = hist2_bin[iimag];
-
+                            
                                 FLOAT c3 = hist3_bin[ireal];
                                 FLOAT s3 = hist3_bin[iimag];
-
-                                atomicAdd(
-                                    &counts_bin[ireal],
-                                    w1 * (c2 * c3 + s2 * s3)
-                                );
-
-                                atomicAdd(
-                                    &counts_bin[iimag],
-                                    w1 * (s2 * c3 - c2 * s3)
-                                );
+                            
+                                atomicAdd(&counts_bin[ireal], ell_norm * w1 * (c2 * c3 + s2 * s3));
+                                atomicAdd(&counts_bin[iimag], ell_norm * w1 * (s2 * c3 - c2 * s3));
                             }
                         }
                     }

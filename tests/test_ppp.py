@@ -136,7 +136,7 @@ def test_triposh():
         labels = proj_labels(ells1, ells2)
         out = np.zeros((nbins, nbins, len(labels)), dtype="f8")
 
-        cos_theta_min = np.cos(theta_max)
+        cos_theta_min = np.cos(np.radians(theta_max))
 
         def Y(ell, mm, xhat):
             mu = xhat[2]
@@ -213,8 +213,8 @@ def test_triposh():
     data, _ = generate_catalogs(size, boxsize, n_individual_weights=1, seed=42)
     positions = np.column_stack(data[:3])
     weights = np.asarray(data[3])
-    sedges = np.linspace(0., 40., 11)
-    theta_max = 0.2
+    sedges = np.linspace(1e-5, 40., 11)
+    theta_max = 20.
 
     particles = Particles(positions=positions, weights=weights)
     sattrs = SelectionAttrs(theta=(0., theta_max))
@@ -237,7 +237,6 @@ def test_triposh():
     from cucount.types import count3, count3close
     counts = count3(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
     counts_close = count3close(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
-    print(counts)
     assert np.allclose(counts.value(), counts_close.value())
 
 

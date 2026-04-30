@@ -179,8 +179,8 @@ def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
 
 def count3close(*particles: Particles,
                 battrs12: BinAttrs,
-                battrs23: BinAttrs,
-                battrs13: BinAttrs=None,
+                battrs13: BinAttrs,
+                battrs23: BinAttrs = None,
                 wattrs: WeightAttrs = None,
                 **kwargs):
     """
@@ -211,7 +211,7 @@ def count3close(*particles: Particles,
 
     def count3_to_lsstypes(counts: np.ndarray, norm: np.ndarray, attrs: dict):
         coords12, edges12, ells12 = _get_coords_edges(battrs12, suffix='1')
-        coords13, edges13, ells13 = _get_coords_edges(battrs12, suffix='2')
+        coords13, edges13, ells13 = _get_coords_edges(battrs13, suffix='2')
         coords = coords12 | coords13
         edges = edges12 | edges13
         if battrs23 is not None:
@@ -316,7 +316,7 @@ def count3(*particles: Particles,
 
     def count3_to_lsstypes(counts: np.ndarray, norm: np.ndarray, attrs: dict):
         coords12, edges12, ells12 = _get_coords_edges(battrs12, suffix='1')
-        coords13, edges13, ells13 = _get_coords_edges(battrs12, suffix='2')
+        coords13, edges13, ells13 = _get_coords_edges(battrs13, suffix='2')
         coords = coords12 | coords13
         edges = edges12 | edges13
         names = list(coords)

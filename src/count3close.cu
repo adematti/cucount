@@ -571,9 +571,7 @@ __device__ inline void add_weight3(
             int ell2 = (int)device_layout.ells2[i2];
             int mmax = MIN(ell1, ell2);
 
-            FLOAT ell_norm = sqrt(
-                (FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1))
-            ) / ((FLOAT)(4.0 * M_PI));
+            FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1))) / ((FLOAT)(4.0 * M_PI));
 
             for (int m = 0; m <= mmax; m++) {
                 FLOAT amp = triplet_weight * ell_norm * P1[i1][m] * P2[i2][m];
