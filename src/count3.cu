@@ -6,13 +6,7 @@
 /*
  * count3.cu
  *
- * Triplet counts around each primary D1:
- *
- *   for each x1 in D1:
- *     for each selected x2 in D2, binned by r12/theta12:
- *       for each selected x3 in D3, binned by r13/theta13:
- *         counts += w1 w2 w3
- *
+ * Triplet counts around each primary D1.
  */
 
 static __device__ __constant__ DeviceCount3Layout device_layout;
@@ -22,7 +16,6 @@ __device__ inline FLOAT clamp1(FLOAT x)
 {
     return MIN((FLOAT)1., MAX((FLOAT)-1., x));
 }
-
 
 
 enum Count3Leg {
@@ -46,7 +39,8 @@ __device__ inline void add_pair_weight(
 {
     if (battrs.ndim == 0) return;
 
-    const bool need_pole = (bool)(device_layout.nprojs > 0);
+    const size_t nprojs = (leg == COUNT3_LEG_12) ? device_layout.nprojs1 : device_layout.nprojs2;
+    const bool need_pole = (bool)(nprojs > 0);
 
     FLOAT costheta = clamp1(dot(sposition1, sposition2));
 
@@ -125,45 +119,39 @@ __device__ inline void add_pair_weight(
         sphi = y / rho;
     }
 
+    const size_t nells = (leg == COUNT3_LEG_12) ? device_layout.nells1 : device_layout.nells2;
+    const size_t *ells = (leg == COUNT3_LEG_12) ? device_layout.ells1 : device_layout.ells2;
+
     int global_mmax = 0;
-    for (size_t iell1 = 0; iell1 < device_layout.nells1; iell1++) {
-        global_mmax = MAX(global_mmax, (int)device_layout.ells1[iell1]);
-    }
-    for (size_t iell2 = 0; iell2 < device_layout.nells2; iell2++) {
-        global_mmax = MAX(global_mmax, (int)device_layout.ells2[iell2]);
+    for (size_t iell = 0; iell < nells; iell++) {
+        global_mmax = MAX(global_mmax, (int)ells[iell]);
     }
 
     FLOAT cm[MMAX_SIZE], sm[MMAX_SIZE];
     compute_trig_up_to_m(global_mmax, cphi, sphi, cm, sm);
 
-    FLOAT *hist_bin = hist + (size_t)ibin * device_layout.nprojs;
+    FLOAT *hist_bin = hist + (size_t)ibin * nprojs;
 
     size_t iproj = 0;
 
-    for (size_t iell1 = 0; iell1 < device_layout.nells1; iell1++) {
-        int ell1 = (int)device_layout.ells1[iell1];
+    for (size_t iell = 0; iell < nells; iell++) {
+        int ell = (int)ells[iell];
+        int mmax = ell;
 
-        for (size_t iell2 = 0; iell2 < device_layout.nells2; iell2++) {
-            int ell2 = (int)device_layout.ells2[iell2];
+        FLOAT P[MMAX_SIZE];
+        compute_pbar_row_lmax5(ell, mmax, mu, P);
 
-            int mmax = MIN(ell1, ell2);
-            int ell = (leg == COUNT3_LEG_12) ? ell1 : ell2;
+        for (int m = 0; m <= mmax; m++) {
+            atomicAdd(&hist_bin[iproj + (size_t)m], weight * P[m] * cm[m]);
 
-            FLOAT P[MMAX_SIZE];
-            compute_pbar_row_lmax5(ell, mmax, mu, P);
-
-            for (int m = 0; m <= mmax; m++) {
-                atomicAdd(&hist_bin[iproj + (size_t)m], weight * P[m] * cm[m]);
-
-                if (m > 0) {
-                    atomicAdd(
-                        &hist_bin[iproj + (size_t)(mmax + m)],
-                        weight * P[m] * sm[m]);
-                }
+            if (m > 0) {
+                atomicAdd(
+                    &hist_bin[iproj + (size_t)(mmax + m)],
+                    weight * P[m] * sm[m]);
             }
-
-            iproj += (size_t)(2 * mmax + 1);
         }
+
+        iproj += (size_t)(2 * mmax + 1);
     }
 }
 
@@ -241,6 +229,9 @@ __global__ void count3_kernel(
     BinAttrs battrs23,
     WeightAttrs wattrs)
 {
+    (void)battrs23;
+    (void)wattrs;
+
     size_t tid = threadIdx.x;
     size_t gtid = blockIdx.x * blockDim.x + tid;
     size_t nthreads_total = gridDim.x * blockDim.x;
@@ -268,12 +259,14 @@ __global__ void count3_kernel(
 
         FLOAT local_frame[3][NDIM];
         LOS_TYPE los = LOS_FIRSTPOINT;
+
         if (battrs12.ndim > 0 && battrs12.var[0] == VAR_POLE) {
             los = battrs12.los[0];
         }
         else if (battrs13.ndim > 0 && battrs13.var[0] == VAR_POLE) {
             los = battrs13.los[0];
         }
+
         build_los_frame(sposition1, los, local_frame);
 
         Count3PairOp op2{
@@ -342,40 +335,48 @@ __global__ void count3_kernel(
         }
         else {
             size_t iproj = 0;
+            size_t iproj1 = 0;
 
             for (size_t iell1 = 0; iell1 < device_layout.nells1; iell1++) {
                 int ell1 = (int)device_layout.ells1[iell1];
+                size_t iproj2 = 0;
 
                 for (size_t iell2 = 0; iell2 < device_layout.nells2; iell2++) {
                     int ell2 = (int)device_layout.ells2[iell2];
                     int mmax = MIN(ell1, ell2);
-                    //FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1))) / ((FLOAT)(4.0 * M_PI));
+
                     FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1)));
 
                     for (size_t ibin12 = 0; ibin12 < (size_t)battrs12.shape[0]; ibin12++) {
-                        FLOAT *hist2_bin = hist2 + ibin12 * device_layout.nprojs;
+                        FLOAT *hist2_bin = hist2 + ibin12 * device_layout.nprojs1;
 
                         for (size_t ibin13 = 0; ibin13 < (size_t)battrs13.shape[0]; ibin13++) {
-                            FLOAT *hist3_bin = hist3 + ibin13 * device_layout.nprojs;
+                            FLOAT *hist3_bin = hist3 + ibin13 * device_layout.nprojs2;
 
                             size_t ibin = ibin12 * (size_t)battrs13.shape[0] + ibin13;
                             FLOAT *counts_bin = local_counts + ibin * device_layout.nprojs;
 
-                            FLOAT c2 = hist2_bin[iproj];
-                            FLOAT c3 = hist3_bin[iproj];
+                            FLOAT c2 = hist2_bin[iproj1];
+                            FLOAT c3 = hist3_bin[iproj2];
 
-                            atomicAdd(&counts_bin[iproj], ell_norm * w1 * (c2 * c3));
+                            atomicAdd(&counts_bin[iproj], ell_norm * w1 * c2 * c3);
 
                             for (int m = 1; m <= mmax; m++) {
-                                size_t ireal = iproj + (size_t)m;
-                                size_t iimag = iproj + (size_t)(mmax + m);
-                            
-                                FLOAT c2 = hist2_bin[ireal];
-                                FLOAT s2 = hist2_bin[iimag];
-                            
-                                FLOAT c3 = hist3_bin[ireal];
-                                FLOAT s3 = hist3_bin[iimag];
-                            
+                                size_t ireal  = iproj + (size_t)m;
+                                size_t iimag  = iproj + (size_t)(mmax + m);
+
+                                size_t ireal1 = iproj1 + (size_t)m;
+                                size_t iimag1 = iproj1 + (size_t)(ell1 + m);
+
+                                size_t ireal2 = iproj2 + (size_t)m;
+                                size_t iimag2 = iproj2 + (size_t)(ell2 + m);
+
+                                FLOAT c2 = hist2_bin[ireal1];
+                                FLOAT s2 = hist2_bin[iimag1];
+
+                                FLOAT c3 = hist3_bin[ireal2];
+                                FLOAT s3 = hist3_bin[iimag2];
+
                                 atomicAdd(&counts_bin[ireal], ell_norm * w1 * (c2 * c3 + s2 * s3));
                                 atomicAdd(&counts_bin[iimag], ell_norm * w1 * (s2 * c3 - c2 * s3));
                             }
@@ -383,7 +384,10 @@ __global__ void count3_kernel(
                     }
 
                     iproj += (size_t)(2 * mmax + 1);
+                    iproj2 += (size_t)(2 * ell2 + 1);
                 }
+
+                iproj1 += (size_t)(2 * ell1 + 1);
             }
         }
     }
@@ -428,6 +432,7 @@ void count3(
     memset(&battrs23, 0, sizeof(BinAttrs));
 
     DeviceCount3Layout layout = make_device_count3_layout(battrs12, battrs13, battrs23);
+
     size_t csize = layout.csize;
 
     BinAttrs device_battrs12 = battrs12;
@@ -438,42 +443,56 @@ void count3(
     copy_bin_attrs_to_device(&device_battrs13, &battrs13, buffer);
 
     int nblocks, nthreads_per_block;
-    CONFIGURE_KERNEL_LAUNCH((count3_kernel<MESH_CARTESIAN, MESH_CARTESIAN>), nblocks, nthreads_per_block, buffer);
+    CONFIGURE_KERNEL_LAUNCH(
+        (count3_kernel<MESH_CARTESIAN, MESH_CARTESIAN>),
+        nblocks,
+        nthreads_per_block,
+        buffer);
 
-    const size_t pair_stride = (layout.nprojs > 0) ? layout.nprojs : 1;
-    const size_t hsize2 = (size_t)battrs12.shape[0] * pair_stride;
-    const size_t hsize3 = (size_t)battrs13.shape[0] * pair_stride;
-    const size_t nthreads_total = (size_t)nblocks * (size_t)nthreads_per_block;
+    const size_t hsize2 = (size_t)battrs12.shape[0] * ((layout.nprojs1 > 0) ? layout.nprojs1 : 1);
+    const size_t hsize3 = (size_t)battrs13.shape[0] * ((layout.nprojs2 > 0) ? layout.nprojs2 : 1);
+
+    const size_t nthreads = (size_t)nblocks * (size_t)nthreads_per_block;
 
     FLOAT *block_counts = (FLOAT *)my_device_malloc(nblocks * csize * sizeof(FLOAT), buffer);
-    FLOAT *hist2_all = (FLOAT *)my_device_malloc(nthreads_total * hsize2 * sizeof(FLOAT), buffer);
-    FLOAT *hist3_all = (FLOAT *)my_device_malloc(nthreads_total * hsize3 * sizeof(FLOAT), buffer);
+    FLOAT *hist2_all = (FLOAT *)my_device_malloc(nthreads * hsize2 * sizeof(FLOAT), buffer);
+    FLOAT *hist3_all = (FLOAT *)my_device_malloc(nthreads * hsize3 * sizeof(FLOAT), buffer);
 
     CUDA_CHECK(cudaMemsetAsync(counts, 0, csize * sizeof(FLOAT), stream));
     CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(DeviceCount3Layout)));
 
     if (mattrs2.type == MESH_ANGULAR && mattrs3.type == MESH_ANGULAR) {
         LAUNCH_COUNT3_KERNEL(MESH_ANGULAR, MESH_ANGULAR);
-    } else if (mattrs2.type == MESH_ANGULAR && mattrs3.type == MESH_CARTESIAN) {
+    }
+    else if (mattrs2.type == MESH_ANGULAR && mattrs3.type == MESH_CARTESIAN) {
         LAUNCH_COUNT3_KERNEL(MESH_ANGULAR, MESH_CARTESIAN);
-    } else if (mattrs2.type == MESH_CARTESIAN && mattrs3.type == MESH_ANGULAR) {
+    }
+    else if (mattrs2.type == MESH_CARTESIAN && mattrs3.type == MESH_ANGULAR) {
         LAUNCH_COUNT3_KERNEL(MESH_CARTESIAN, MESH_ANGULAR);
-    } else if (mattrs2.type == MESH_CARTESIAN && mattrs3.type == MESH_CARTESIAN) {
+    }
+    else if (mattrs2.type == MESH_CARTESIAN && mattrs3.type == MESH_CARTESIAN) {
         LAUNCH_COUNT3_KERNEL(MESH_CARTESIAN, MESH_CARTESIAN);
-    } else {
+    }
+    else {
         log_message(LOG_LEVEL_ERROR, "count3: unsupported mesh type.\n");
         exit(EXIT_FAILURE);
     }
 
     CUDA_CHECK(cudaGetLastError());
 
-    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, csize);
+    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(
+        block_counts,
+        nblocks,
+        counts,
+        csize);
+
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
     my_device_free(hist3_all, buffer);
     my_device_free(hist2_all, buffer);
     my_device_free(block_counts, buffer);
+
     free_device_bin_attrs(&device_battrs12, buffer);
     free_device_bin_attrs(&device_battrs13, buffer);
 }

@@ -13,7 +13,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
 from cucountlib import ffi_cucount
-from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weights, _format_positions, _format_values, _stack_values, count2_analytic, setup_logging, _setup_cucount_logging, triposh_to_poles, triposh_transform_matrix
+from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weights, _format_positions, _format_values, _stack_values, count2_analytic, setup_logging, _setup_cucount_logging, triposh_to_poles, triposh_transform_matrix, _get_ells
 from cucount import numpy
 
 
@@ -520,6 +520,7 @@ def _count3_no_shard(
     res_type = jax.ShapeDtypeStruct((len(names) * size,), dtype)
 
     nblocks = 256
+    nthreads_per_block = 256
 
     meshsize1 = int(np.prod(mattrs1.meshsize))
     meshsize2 = int(np.prod(mattrs2.meshsize))
@@ -548,6 +549,14 @@ def _count3_no_shard(
     bufsize += sum(s + 1 for s in battrs12.shape)
     bufsize += sum(s + 1 for s in battrs13.shape)
 
+    # Buffer for the 12 and 12 histograms
+    nthreads = nblocks * nthreads_per_block
+    nells2, nells3 = [max(sum(2 * ell + 1 for ell in _get_ells(battrs)), 1) for battrs in [battrs12, battrs13]]
+    hsize2 = battrs12.shape[0] * nells2
+    hsize3 = battrs13.shape[0] * nells3
+
+    bufsize += nthreads * hsize2
+    bufsize += nthreads * hsize3
     bufsize += nblocks * len(names) * size
 
     buffer_type = jax.ShapeDtypeStruct((bufsize,), dtype)

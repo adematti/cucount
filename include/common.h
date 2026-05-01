@@ -53,7 +53,7 @@ typedef enum {BIN_CUSTOM, BIN_LIN, BIN_LOG} BIN_TYPE;
 #define CONFIGURE_KERNEL_LAUNCH(kernel, nblocks_var, nthreads_var, buffer) \
     do { \
         cudaOccupancyMaxPotentialBlockSize(&(nblocks_var), &(nthreads_var), kernel, 0, 0); \
-        if (buffer) nblocks_var = MIN(buffer->nblocks, nblocks_var); \
+        if (buffer) {nblocks_var = MIN(buffer->nblocks, nblocks_var); nthreads_var = MIN(buffer->nthreads_per_block, nthreads_var);}; \
         log_message(LOG_LEVEL_DEBUG, "Configured kernel with %d blocks and %d threads per block.\n", (nblocks_var), (nthreads_var)); \
     } while (0)
 
@@ -161,6 +161,7 @@ struct DeviceMemoryBuffer {
     size_t size;
     size_t offset;
     size_t nblocks;
+    size_t nthreads_per_block;
 };
 
 

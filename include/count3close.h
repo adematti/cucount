@@ -33,6 +33,8 @@ __device__ void compute_pbar_row_lmax5(
 
 typedef struct DeviceCount3Layout {
     size_t nbins;
+    size_t nprojs1;
+    size_t nprojs2;
     size_t nprojs;
     size_t csize;
     size_t nells1;

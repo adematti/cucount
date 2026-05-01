@@ -134,20 +134,6 @@ static __device__ __constant__ DeviceCount3Layout device_layout;
 // Host helpers
 // ============================================================================
 
-static inline size_t count3_nprojs_from_ells(
-    size_t nells1, const size_t *ells1,
-    size_t nells2, const size_t *ells2)
-{
-    size_t nprojs = 0;
-
-    for (size_t i1 = 0; i1 < nells1; i1++) {
-        for (size_t i2 = 0; i2 < nells2; i2++) {
-            nprojs += (size_t)(2 * MIN(ells1[i1], ells2[i2]) + 1);
-        }
-    }
-
-    return nprojs;
-}
 
 
 DeviceCount3Layout make_device_count3_layout(
@@ -164,22 +150,43 @@ DeviceCount3Layout make_device_count3_layout(
 
     if (battrs23.ndim > 0) {
         layout.nbins *= (size_t)battrs23.shape[0];
-        layout.nprojs = 0;
-        layout.csize = layout.nbins;
+        layout.nprojs  = 0;
+        layout.nprojs1 = 0;
+        layout.nprojs2 = 0;
+        layout.csize   = layout.nbins;
         return layout;
     }
 
     if (battrs12.var[1] == VAR_POLE && battrs13.var[1] == VAR_POLE) {
         layout.nells1 = fill_ells(&battrs12, 1, layout.ells1);
         layout.nells2 = fill_ells(&battrs13, 1, layout.ells2);
-        layout.nprojs = count3_nprojs_from_ells(
-            layout.nells1, layout.ells1,
-            layout.nells2, layout.ells2);
+
+        layout.nprojs  = 0;
+        layout.nprojs1 = 0;
+        layout.nprojs2 = 0;
+
+        for (size_t iell1 = 0; iell1 < layout.nells1; iell1++) {
+            int ell1 = (int)layout.ells1[iell1];
+            layout.nprojs1 += (size_t)(2 * ell1 + 1);
+
+            for (size_t iell2 = 0; iell2 < layout.nells2; iell2++) {
+                int ell2 = (int)layout.ells2[iell2];
+                layout.nprojs += (size_t)(2 * MIN(ell1, ell2) + 1);
+            }
+        }
+
+        for (size_t iell2 = 0; iell2 < layout.nells2; iell2++) {
+            int ell2 = (int)layout.ells2[iell2];
+            layout.nprojs2 += (size_t)(2 * ell2 + 1);
+        }
+
         layout.csize = layout.nbins * layout.nprojs;
     }
     else {
-        layout.nprojs = 0;
-        layout.csize = layout.nbins;
+        layout.nprojs  = 0;
+        layout.nprojs1 = 0;
+        layout.nprojs2 = 0;
+        layout.csize   = layout.nbins;
     }
 
     return layout;

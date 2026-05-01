@@ -361,6 +361,7 @@ ffi::Error count2Impl(
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
     membuffer.nblocks = 256;
+    membuffer.nthreads_per_block = 256;
 
     set_mesh(list_particles, list_mesh, mattrs2, &membuffer, stream);
     count2(counts->typed_data(), list_mesh, mattrs2, sattrs2, battrs2, wattrs2, spattrs2, &membuffer, stream);
@@ -413,6 +414,7 @@ ffi::Error count3closeImpl(
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
     membuffer.nblocks = 256;
+    membuffer.nthreads_per_block = 256;
 
     Mesh mesh1{};
     Mesh mesh2{};
@@ -495,6 +497,7 @@ ffi::Error count3Impl(
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
     membuffer.nblocks = 256;
+    membuffer.nthreads_per_block = 256;
 
     Mesh mesh1{};
     Mesh mesh2{};

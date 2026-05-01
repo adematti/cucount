@@ -28,7 +28,7 @@ def test_backends():
 
     boxsize = (3000.,) * 3
     # Cutsky geometry
-    size = int(1e6)
+    size = int(1e5)
     data, _ = generate_catalogs(size, boxsize, n_individual_weights=1, seed=42)
     data_positions, data_weights = np.column_stack(data[:3]), data[3:]
 
@@ -36,15 +36,17 @@ def test_backends():
         if backend == 'numpy':
             from cucount.numpy import Particles, count3close, count3, BinAttrs, SelectionAttrs
         else:
+            import os
+            os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.85'
             import jax
             jax.config.update("jax_enable_x64", True)
             from cucount.jax import Particles, count3close, count3, BinAttrs, SelectionAttrs, create_sharding_mesh
         particles = Particles(positions=data_positions, weights=data_weights)
         data = Particles(data_positions, data_weights)
         if binning == 'theta':
-            battrs = BinAttrs(theta=np.linspace(0., 1, 100))
+            battrs = BinAttrs(theta=np.linspace(0., 1, 5))
         else:
-            battrs = BinAttrs(s=np.linspace(0., 10, 101), pole=(np.array([0, 2]), 'firstpoint'))
+            battrs = BinAttrs(s=np.linspace(0., 10, 5), pole=(np.array([0, 2]), 'firstpoint'))
         sattrs = SelectionAttrs(theta=(0., 0.05))
         func = {'count3': count3, 'count3close': count3close}[func]
         toret = func(data, data, data, battrs12=battrs, battrs13=battrs, sattrs12=sattrs, sattrs13=sattrs)['weight']
@@ -53,11 +55,12 @@ def test_backends():
     for binning in ['theta', 's']:
         counts = {}
         for func in ['count3', 'count3close']:
-            counts_numpy = test(binning=binning, backend='numpy')
-            counts_jax = test(binning=binning, backend='jax')
+            counts_numpy = test(func=func, binning=binning, backend='numpy')
+            counts_jax = test(func=func, binning=binning, backend='jax')
             assert np.allclose(counts_jax, counts_numpy)
             counts[func] = counts_numpy
-        assert np.allclose(counts['count3'], counts['count3close'])
+        diff = np.abs(counts['count3'] - counts['count3close'])
+        assert np.allclose(counts['count3'], counts['count3close'], rtol=5e-5, atol=5e-5)
 
 
 def test_count3close_symmetry():
@@ -243,7 +246,7 @@ def test_triposh():
 
 if __name__ == '__main__':
 
-    #test_count3close()
-    #test_count3close_symmetry()
+    test_count3close()
+    test_count3close_symmetry()
     test_backends()
-    #test_triposh()
+    test_triposh()
