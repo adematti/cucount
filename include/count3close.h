@@ -19,27 +19,7 @@ typedef enum {
 } CLOSE_PAIR;
 
 
-__device__ bool is_selected_pair_with_sattrs(
-    FLOAT *sposition1,
-    FLOAT *sposition2,
-    FLOAT *position1,
-    FLOAT *position2,
-    const SelectionAttrs &sattrs);
-
-
-__device__ void set_angular_bounds_from_attrs(
-    const FLOAT *sposition,
-    const MeshAttrs &mattrs,
-    int *bounds);
-
-
-__device__ void set_cartesian_bounds_from_attrs(
-    const FLOAT *position,
-    const MeshAttrs &mattrs,
-    int *bounds);
-
-
-__device__ void build_local_frame(const FLOAT *ez_in, FLOAT local_frame[3][NDIM]);
+__device__ void build_los_frame(FLOAT *sposition1, LOS_TYPE los, FLOAT local_frame[3][NDIM]);
 
 
 __device__ void compute_trig_up_to_m(

@@ -80,13 +80,18 @@ static void own_bin_attrs_arrays(BinAttrs *battrs) {
     }
 }
 
+
 static void own_weight_attrs_arrays(WeightAttrs *wattrs) {
     // Bitwise
-    if (wattrs->bitwise.p_nbits > 0 && wattrs->bitwise.p_correction_nbits != nullptr) {
+    if (wattrs->bitwise.p_nbits > 0 &&
+        wattrs->bitwise.p_correction_nbits != nullptr) {
         size_t size = wattrs->bitwise.p_nbits * wattrs->bitwise.p_nbits;
+
         FLOAT *buf = (FLOAT*) std::malloc(size * sizeof(FLOAT));
         if (!buf) throw std::bad_alloc();
+
         std::memcpy(buf, wattrs->bitwise.p_correction_nbits, size * sizeof(FLOAT));
+
         wattrs->bitwise.p_correction_nbits = buf;
         owned_host_ptrs.push_back(buf);
     }
@@ -94,28 +99,27 @@ static void own_weight_attrs_arrays(WeightAttrs *wattrs) {
     // Angular axis arrays
     for (size_t idim = 0; idim < wattrs->angular.ndim; ++idim) {
         if (wattrs->angular.sep[idim] != nullptr) {
-            const size_t n = wattrs->angular.shape[idim];
+            const size_t n = wattrs->angular.sep_is_edges ? wattrs->angular.shape[idim] + 1 : wattrs->angular.shape[idim];
+
             FLOAT *buf = (FLOAT*) std::malloc(n * sizeof(FLOAT));
             if (!buf) throw std::bad_alloc();
+
             std::memcpy(buf, wattrs->angular.sep[idim], n * sizeof(FLOAT));
+
             wattrs->angular.sep[idim] = buf;
-            owned_host_ptrs.push_back(buf);
-        }
-        if (wattrs->angular.edges[idim] != nullptr) {
-            const size_t n = wattrs->angular.shape[idim] + 1;
-            FLOAT *buf = (FLOAT*) std::malloc(n * sizeof(FLOAT));
-            if (!buf) throw std::bad_alloc();
-            std::memcpy(buf, wattrs->angular.edges[idim], n * sizeof(FLOAT));
-            wattrs->angular.edges[idim] = buf;
             owned_host_ptrs.push_back(buf);
         }
     }
 
     // Angular weight table
-    if (wattrs->angular.size > 0 && wattrs->angular.weight != nullptr) {
+    if (wattrs->angular.size > 0 &&
+        wattrs->angular.weight != nullptr) {
         FLOAT *buf = (FLOAT*) std::malloc(wattrs->angular.size * sizeof(FLOAT));
+
         if (!buf) throw std::bad_alloc();
+
         std::memcpy(buf, wattrs->angular.weight, wattrs->angular.size * sizeof(FLOAT));
+
         wattrs->angular.weight = buf;
         owned_host_ptrs.push_back(buf);
     }

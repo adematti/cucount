@@ -100,9 +100,10 @@ void reorder(std::vector<T>& vec, const std::vector<size_t>& indices) {
 
 // Function to test if battrs.array[i] increases linearly
 bool is_linear(const FLOAT *array, const size_t size, FLOAT step) {
+
     for (size_t i = 1; i < size; i++) {
-        FLOAT expected_value = array[i - 1] + step;
-        if (std::abs(array[i] - expected_value) > 1e-6 * step) { // Allow small numerical tolerance
+        FLOAT expected_value = array[0] + i * step;
+        if (std::abs(array[i] - expected_value) > 1e-6 * std::abs(step)) { // scale-safe tolerance
             return false;
         }
     }
@@ -110,10 +111,32 @@ bool is_linear(const FLOAT *array, const size_t size, FLOAT step) {
 }
 
 
+bool is_log(const FLOAT *array, const size_t size, FLOAT step) {
+    if (size < 2 || array[0] <= 0.) return false;
+
+    FLOAT logstep = log(array[1]) - log(array[0]);
+
+    // Reject near-linear grids
+    if (std::abs(logstep) < 1e-6) return false;
+
+    FLOAT log0 = log(array[0]);
+
+    for (size_t i = 1; i < size; i++) {
+        FLOAT expected_log = log0 + i * logstep;
+        FLOAT value_log = log(array[i]);
+
+        if (std::abs(value_log - expected_log) > 1e-6 * std::abs(logstep)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 struct BinAttrs_py {
     std::vector<FLOAT> min, max, step;
     std::vector<VAR_TYPE> var;
     std::vector<LOS_TYPE> los;
+    std::vector<BIN_TYPE> bin;
     std::vector<py::array_t<FLOAT>> array; // New member: list of arrays for each bin
 
     // Constructor that takes a Python dictionary
@@ -135,6 +158,7 @@ struct BinAttrs_py {
                 step.push_back((max.back() - min.back()) / (edges.size() - 1));
                 los.push_back(LOS_NONE);
                 array.push_back(py::array_t<FLOAT>(edges.attr("copy")()));
+                bin.push_back(BIN_CUSTOM);
             } else if (py::isinstance<py::tuple>(item.second)) {
                 auto tuple = py::cast<py::tuple>(item.second);
                 if ((tuple.size() == 3) && (!los_required)) {
@@ -147,6 +171,7 @@ struct BinAttrs_py {
                     for (FLOAT value = min.back(); value <= max.back(); value += step.back()) barray.push_back(value);
                     py::array_t<FLOAT> py_array(barray.size(), barray.data());
                     array.push_back(py_array);
+                    bin.push_back(BIN_LIN);
                 }
                 else if ((tuple.size() == 4) && (los_required)) {
                     // Case: {key: (FLOAT, FLOAT, FLOAT, string)}
@@ -158,6 +183,7 @@ struct BinAttrs_py {
                     for (FLOAT value = min.back(); value <= max.back(); value += step.back()) barray.push_back(value);
                     py::array_t<FLOAT> py_array(barray.size(), barray.data());
                     array.push_back(py_array);
+                    bin.push_back(BIN_LIN);
                 } else if ((tuple.size() == 2) && (los_required)) {
                     // Case: {key: (numpy array, string)}
                     auto edges = py::cast<py::array_t<FLOAT>>(tuple[0]);
@@ -168,6 +194,7 @@ struct BinAttrs_py {
                     else step.push_back((max.back() - min.back()) / (edges.size() - 1));
                     los.push_back(string_to_los_type(py::cast<std::string>(tuple[1])));
                     array.push_back(py::array_t<FLOAT>(edges.attr("copy")()));
+                    bin.push_back(BIN_CUSTOM);
                 } else {
                     throw std::invalid_argument("Invalid tuple format for key: " + var_name);
                 }
@@ -213,6 +240,7 @@ struct BinAttrs_py {
         reorder(max, indices);
         reorder(step, indices);
         reorder(los, indices);
+        reorder(bin, indices);
         reorder(array, indices);
     }
 
@@ -270,9 +298,11 @@ struct BinAttrs_py {
             battrs.asize[i] = array[i].shape(0);
             battrs.array[i] = array[i].mutable_data();
             battrs.step[i] = step[i];
+            battrs.bin[i] = BIN_CUSTOM;
             if (is_linear(battrs.array[i], sizes[i], step[i])) {
-                battrs.asize[i] = 0;
-                battrs.array[i] = NULL;
+                battrs.bin[i] = BIN_LIN;
+            } else if ((battrs.array[i][0] > (FLOAT)0.) && is_log(battrs.array[i], sizes[i], battrs.array[i][1] / battrs.array[i][0])) {
+                battrs.bin[i] = BIN_LOG;
             }
         }
         return battrs;
@@ -359,7 +389,7 @@ struct WeightAttrs_py {
 
     // Angular
     std::vector<py::array_t<FLOAT>> angular_sep;
-    std::vector<py::array_t<FLOAT>> angular_edges;
+    std::vector<bool> angular_sep_is_edges;
     py::array_t<FLOAT> angular_weight;
 
     WeightAttrs_py() {}
@@ -370,8 +400,7 @@ struct WeightAttrs_py {
 
             if (var_name == "spin") {
                 if (!py::isinstance<py::iterable>(item.second)) {
-                    throw std::invalid_argument(
-                        "Invalid type for 'spin' (expected iterable)");
+                    throw std::invalid_argument("Invalid type for 'spin' (expected iterable)");
                 }
                 for (auto v : py::cast<py::iterable>(item.second)) {
                     spin.push_back(py::cast<size_t>(v));
@@ -380,8 +409,7 @@ struct WeightAttrs_py {
 
             else if (var_name == "angular") {
                 if (!py::isinstance<py::dict>(item.second)) {
-                    throw std::invalid_argument(
-                        "Invalid type for 'angular' (expected dict)");
+                    throw std::invalid_argument("Invalid type for 'angular' (expected dict)");
                 }
 
                 py::dict d = py::cast<py::dict>(item.second);
@@ -391,8 +419,7 @@ struct WeightAttrs_py {
                 const bool has_weight = d.contains("weight");
 
                 if (!has_weight) {
-                    throw std::invalid_argument(
-                        "'angular' dict must contain key 'weight'");
+                    throw std::invalid_argument("'angular' dict must contain key 'weight'");
                 }
                 if (has_sep == has_edges) {
                     throw std::invalid_argument(
@@ -401,78 +428,59 @@ struct WeightAttrs_py {
 
                 angular_weight = py::array_t<FLOAT>(d["weight"].attr("copy")());
 
-                if (has_sep) {
-                    if (!py::isinstance<py::iterable>(d["sep"])) {
-                        throw std::invalid_argument(
-                            "'angular.sep' must be an iterable of 1D arrays");
-                    }
-                    for (auto obj : py::cast<py::iterable>(d["sep"])) {
-                        auto arr = py::array_t<FLOAT>(py::cast<py::object>(obj).attr("copy")());
-                        if (arr.ndim() != 1) {
-                            throw std::invalid_argument(
-                                "Each entry of 'angular.sep' must be a 1D array");
-                        }
-                        angular_sep.push_back(std::move(arr));
-                    }
-                }
-
-                if (has_edges) {
-                    if (!py::isinstance<py::iterable>(d["edges"])) {
-                        throw std::invalid_argument(
-                            "'angular.edges' must be an iterable of 1D arrays");
-                    }
-                    for (auto obj : py::cast<py::iterable>(d["edges"])) {
-                        auto arr = py::array_t<FLOAT>(py::cast<py::object>(obj).attr("copy")());
-                        if (arr.ndim() != 1) {
-                            throw std::invalid_argument(
-                                "Each entry of 'angular.edges' must be a 1D array");
-                        }
-                        angular_edges.push_back(std::move(arr));
-                    }
-                }
-
-                const bool use_sep = !angular_sep.empty();
-                const bool use_edges = !angular_edges.empty();
-
-                if (use_sep == use_edges) {
-                    throw std::invalid_argument(
-                        "'angular' must define exactly one of 'sep' or 'edges'");
-                }
-
                 if (!angular_weight.size()) {
                     throw std::invalid_argument(
                         "'angular.weight' must be provided and non-empty");
                 }
 
                 py::buffer_info winfo = angular_weight.request();
-                if (winfo.ndim < 1 || winfo.ndim > (int)MAX_NBIN) {
+                if (winfo.ndim < 1 || winfo.ndim > (int) MAX_NBIN) {
                     throw std::invalid_argument(
                         "'angular.weight' must have ndim between 1 and MAX_NBIN");
                 }
 
-                if (use_sep) {
-                    if ((ssize_t) angular_sep.size() != winfo.ndim) {
-                        throw std::invalid_argument(
-                            "'angular.sep' must contain one 1D array per weight dimension");
-                    }
-                    for (ssize_t i = 0; i < winfo.ndim; i++) {
-                        if ((ssize_t) angular_sep[i].size() != winfo.shape[i]) {
-                            throw std::invalid_argument(
-                                "Each 'angular.sep[i]' must have length weight.shape(i)");
-                        }
-                    }
+                py::object sep_obj = has_sep ? d["sep"] : d["edges"];
+                const bool sep_is_edges = has_edges;
+
+                if (!py::isinstance<py::iterable>(sep_obj)) {
+                    throw std::invalid_argument(
+                        has_sep
+                            ? "'angular.sep' must be an iterable of 1D arrays"
+                            : "'angular.edges' must be an iterable of 1D arrays");
                 }
 
-                if (use_edges) {
-                    if ((ssize_t) angular_edges.size() != winfo.ndim) {
+                for (auto obj : py::cast<py::iterable>(sep_obj)) {
+                    auto arr = py::array_t<FLOAT>(
+                        py::cast<py::object>(obj).attr("copy")()
+                    );
+
+                    if (arr.ndim() != 1) {
                         throw std::invalid_argument(
-                            "'angular.edges' must contain one 1D array per weight dimension");
+                            has_sep
+                                ? "Each entry of 'angular.sep' must be a 1D array"
+                                : "Each entry of 'angular.edges' must be a 1D array");
                     }
-                    for (ssize_t i = 0; i < winfo.ndim; i++) {
-                        if ((ssize_t) angular_edges[i].size() != winfo.shape[i] + 1) {
-                            throw std::invalid_argument(
-                                "Each 'angular.edges[i]' must have length weight.shape(i) + 1");
-                        }
+
+                    angular_sep.push_back(std::move(arr));
+                    angular_sep_is_edges.push_back(sep_is_edges);
+                }
+
+                if ((ssize_t) angular_sep.size() != winfo.ndim) {
+                    throw std::invalid_argument(
+                        has_sep
+                            ? "'angular.sep' must contain one 1D array per weight dimension"
+                            : "'angular.edges' must contain one 1D array per weight dimension");
+                }
+
+                for (ssize_t i = 0; i < winfo.ndim; i++) {
+                    const ssize_t expected =
+                        sep_is_edges ? winfo.shape[i] + 1 : winfo.shape[i];
+
+                    if ((ssize_t) angular_sep[i].size() != expected) {
+                        throw std::invalid_argument(
+                            sep_is_edges
+                                ? "Each 'angular.edges[i]' must have length weight.shape(i) + 1"
+                                : "Each 'angular.sep[i]' must have length weight.shape(i)");
                     }
                 }
             }
@@ -481,7 +489,8 @@ struct WeightAttrs_py {
                 if (!py::isinstance<py::dict>(item.second)) {
                     throw std::invalid_argument(
                         "'bitwise' must be provided as a dict with keys "
-                        "'default_value', 'nrealizations', 'noffset', 'p_correction_nbits'");
+                        "'default_value', 'nrealizations', 'noffset', "
+                        "'p_correction_nbits'");
                 }
 
                 py::dict d = py::cast<py::dict>(item.second);
@@ -496,7 +505,10 @@ struct WeightAttrs_py {
                     bitwise_noffset = py::cast<int>(d["noffset"]);
                 }
                 if (d.contains("p_correction_nbits")) {
-                    auto pcorr = py::cast<py::array_t<FLOAT>>(d["p_correction_nbits"]);
+                    auto pcorr = py::cast<py::array_t<FLOAT>>(
+                        d["p_correction_nbits"]
+                    );
+
                     if (pcorr.ndim() != 2) {
                         throw std::invalid_argument(
                             "'p_correction_nbits' must be a 2D array");
@@ -505,7 +517,9 @@ struct WeightAttrs_py {
                         throw std::invalid_argument(
                             "'p_correction_nbits' must be a square array");
                     }
-                    bitwise_p_correction_nbits = py::array_t<FLOAT>(pcorr.attr("copy")());
+
+                    bitwise_p_correction_nbits =
+                        py::array_t<FLOAT>(pcorr.attr("copy")());
                 }
             }
 
@@ -520,16 +534,17 @@ struct WeightAttrs_py {
         WeightAttrs wattrs = {0};
 
         for (size_t i = 0; i < MAX_NMESH; i++) {
-            wattrs.spin[i] = 0;
-            if (i < spin.size()) wattrs.spin[i] = spin[i];
+            wattrs.spin[i] = i < spin.size() ? spin[i] : 0;
         }
 
         // Angular
         for (size_t i = 0; i < MAX_NBIN; i++) {
             wattrs.angular.sep[i] = nullptr;
-            wattrs.angular.edges[i] = nullptr;
+            wattrs.angular.sep_is_edges[i] = false;
+            wattrs.angular.bin[i] = BIN_CUSTOM;
             wattrs.angular.shape[i] = 0;
         }
+
         wattrs.angular.weight = nullptr;
         wattrs.angular.size = 0;
         wattrs.angular.ndim = 0;
@@ -542,18 +557,21 @@ struct WeightAttrs_py {
             wattrs.angular.weight = angular_weight.mutable_data();
 
             for (ssize_t i = 0; i < winfo.ndim; i++) {
+                wattrs.angular.sep[i] = angular_sep[i].mutable_data();
+                wattrs.angular.sep_is_edges[i] = angular_sep_is_edges[i];
                 wattrs.angular.shape[i] = static_cast<size_t>(winfo.shape[i]);
-            }
+                wattrs.angular.bin[i] = BIN_CUSTOM;
 
-            if (!angular_sep.empty()) {
-                for (size_t i = 0; i < wattrs.angular.ndim; i++) {
-                    wattrs.angular.sep[i] = angular_sep[i].mutable_data();
-                }
-            }
+                const FLOAT *sep = wattrs.angular.sep[i];
+                const size_t shape = wattrs.angular.shape[i];
+                const size_t nbins = wattrs.angular.sep_is_edges[i] ? shape : shape - 1;
 
-            if (!angular_edges.empty()) {
-                for (size_t i = 0; i < wattrs.angular.ndim; i++) {
-                    wattrs.angular.edges[i] = angular_edges[i].mutable_data();
+                if (sep && nbins >= 1) {
+                    if (is_linear(sep, nbins, sep[1] - sep[0])) {
+                        wattrs.angular.bin[i] = BIN_LIN;
+                    } else if ((sep[0] > (FLOAT)0.) && (is_log(sep, nbins, sep[1] / sep[0]))) {
+                        wattrs.angular.bin[i] = BIN_LOG;
+                    }
                 }
             }
         }

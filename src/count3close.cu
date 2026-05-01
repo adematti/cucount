@@ -1,143 +1,11 @@
+// Drop-in replacement: count3close.cu
+// Periodic handling: pair-specific MeshAttrs
+// LOS handling: build_los_frame for LOS_X / LOS_Y / LOS_Z
+
 #include "common.h"
 #include "count2.h"
 #include "count3.h"
 #include "count3close.h"
-
-
-// ============================================================================
-// Explicit pair selection
-// ============================================================================
-
-__device__ bool is_selected_pair_with_sattrs(
-    FLOAT *sposition1,
-    FLOAT *sposition2,
-    FLOAT *position1,
-    FLOAT *position2,
-    const SelectionAttrs &sattrs)
-{
-    bool selected = 1;
-    for (size_t i = 0; i < sattrs.ndim; i++) {
-        int var = sattrs.var[i];
-        if (var == VAR_THETA) {
-            FLOAT costheta = dot(sposition1, sposition2);
-            selected &= (costheta >= sattrs.smin[i]) && (costheta <= sattrs.smax[i]);
-        }
-        if (var == VAR_S) {
-            FLOAT diff[NDIM];
-            difference(diff, position2, position1);
-            const FLOAT s2 = dot(diff, diff);
-            selected &= (s2 >= sattrs.smin[i] * sattrs.smin[i]) &&
-                        (s2 <= sattrs.smax[i] * sattrs.smax[i]);
-        }
-    }
-    return selected;
-}
-
-
-// ============================================================================
-// Search bounds helpers with explicit MeshAttrs
-// ============================================================================
-
-__device__ void set_angular_bounds_from_attrs(
-    const FLOAT *sposition,
-    const MeshAttrs &mattrs,
-    int *bounds)
-{
-    FLOAT cth = sposition[2];
-    FLOAT phi = atan2(sposition[1], sposition[0]);
-    if (phi < 0) phi += 2 * M_PI;
-
-    int icth = (cth >= 1)
-        ? ((int)mattrs.meshsize[0] - 1)
-        : (int)(0.5 * (1 + cth) * mattrs.meshsize[0]);
-    int iphi = (int)(0.5 * phi / M_PI * mattrs.meshsize[1]);
-
-    FLOAT theta  = acos(-1.0 + 2.0 * ((FLOAT)(icth + 0.5)) / mattrs.meshsize[0]);
-    FLOAT th_hi  = acos(-1.0 + 2.0 * ((FLOAT)(icth + 0.0)) / mattrs.meshsize[0]);
-    FLOAT th_lo  = acos(-1.0 + 2.0 * ((FLOAT)(icth + 1.0)) / mattrs.meshsize[0]);
-    FLOAT phi_hi = 2 * M_PI * ((FLOAT)(iphi + 1.0) / mattrs.meshsize[1]);
-    FLOAT phi_lo = 2 * M_PI * ((FLOAT)(iphi + 0.0) / mattrs.meshsize[1]);
-    FLOAT smax   = acos(mattrs.smax);
-
-    FLOAT cth_max, cth_min;
-
-    if (th_hi > M_PI - smax) {
-        cth_min = -1;
-        cth_max = cos(th_lo - smax);
-        bounds[2] = 0;
-        bounds[3] = (int)mattrs.meshsize[1] - 1;
-    }
-    else if (th_lo < smax) {
-        cth_min = cos(th_hi + smax);
-        cth_max = 1;
-        bounds[2] = 0;
-        bounds[3] = (int)mattrs.meshsize[1] - 1;
-    }
-    else {
-        FLOAT dphi;
-        FLOAT calpha = cos(smax);
-        cth_min = cos(th_hi + smax);
-        cth_max = cos(th_lo - smax);
-
-        if (theta < 0.5 * M_PI) {
-            FLOAT cth_lo = cos(th_lo);
-            dphi = acos(sqrt((calpha * calpha - cth_lo * cth_lo) /
-                             (1 - cth_lo * cth_lo)));
-        }
-        else {
-            FLOAT cth_hi2 = cos(th_hi);
-            dphi = acos(sqrt((calpha * calpha - cth_hi2 * cth_hi2) /
-                             (1 - cth_hi2 * cth_hi2)));
-        }
-
-        if (dphi < M_PI) {
-            FLOAT phi_min = phi_lo - dphi;
-            FLOAT phi_max = phi_hi + dphi;
-            bounds[2] = (int)floor(0.5 * phi_min / M_PI * mattrs.meshsize[1]);
-            bounds[3] = (int)floor(0.5 * phi_max / M_PI * mattrs.meshsize[1]);
-        }
-        else {
-            bounds[2] = 0;
-            bounds[3] = (int)mattrs.meshsize[1] - 1;
-        }
-    }
-
-    cth_min = MAX(cth_min, mattrs.boxcenter[0] - mattrs.boxsize[0] / 2.);
-    cth_max = MIN(cth_max, mattrs.boxcenter[0] + mattrs.boxsize[0] / 2.);
-
-    bounds[0] = (int)(0.5 * (1 + cth_min) * mattrs.meshsize[0]);
-    bounds[1] = (int)(0.5 * (1 + cth_max) * mattrs.meshsize[0]);
-
-    if (bounds[0] < 0) bounds[0] = 0;
-    if (bounds[1] >= (int)mattrs.meshsize[0]) bounds[1] = (int)mattrs.meshsize[0] - 1;
-}
-
-
-__device__ void set_cartesian_bounds_from_attrs(
-    const FLOAT *position,
-    const MeshAttrs &mattrs,
-    int *bounds)
-{
-    for (int axis = 0; axis < NDIM; axis++) {
-        int meshsize = (int)mattrs.meshsize[axis];
-        FLOAT offset = mattrs.boxcenter[axis] - mattrs.boxsize[axis] / 2;
-        int index = (int)floor((position[axis] - offset) * meshsize / mattrs.boxsize[axis]);
-        index = wrap_periodic_int(index, meshsize);
-        int delta = (int)ceil(mattrs.smax / mattrs.boxsize[axis] * meshsize);
-
-        bounds[2 * axis]     = index - delta;
-        bounds[2 * axis + 1] = index + delta;
-
-        if (mattrs.periodic == 0) {
-            bounds[2 * axis]     = MAX(bounds[2 * axis], 0);
-            bounds[2 * axis + 1] = MIN(bounds[2 * axis + 1], meshsize - 1);
-        }
-        else if (2 * delta + 1 >= meshsize) {
-            bounds[2 * axis]     = 0;
-            bounds[2 * axis + 1] = meshsize - 1;
-        }
-    }
-}
 
 
 __device__ inline FLOAT clamp1(FLOAT x)
@@ -150,24 +18,20 @@ __device__ inline void normalize(FLOAT *out, const FLOAT *x)
 {
     FLOAT norm = 0.;
     #pragma unroll
-    for (int icoord = 0; icoord < NDIM; icoord++) {
-        norm += x[icoord] * x[icoord];
-    }
+    for (int icoord = 0; icoord < NDIM; icoord++) norm += x[icoord] * x[icoord];
+
     norm = sqrt(norm);
 
     if (norm > 0.) {
         #pragma unroll
-        for (int icoord = 0; icoord < NDIM; icoord++) {
-            out[icoord] = x[icoord] / norm;
-        }
+        for (int icoord = 0; icoord < NDIM; icoord++) out[icoord] = x[icoord] / norm;
     }
     else {
         #pragma unroll
-        for (int icoord = 0; icoord < NDIM; icoord++) {
-            out[icoord] = 0.;
-        }
+        for (int icoord = 0; icoord < NDIM; icoord++) out[icoord] = 0.;
     }
 }
+
 
 __device__ inline void cross3(FLOAT *out, const FLOAT *a, const FLOAT *b)
 {
@@ -180,15 +44,12 @@ __device__ inline void cross3(FLOAT *out, const FLOAT *a, const FLOAT *b)
 __device__ void build_local_frame(const FLOAT *ez_in, FLOAT local_frame[3][NDIM])
 {
     FLOAT ref[NDIM];
+
     if (fabs((double)ez_in[2]) < 0.9) {
-        ref[0] = (FLOAT)0.;
-        ref[1] = (FLOAT)0.;
-        ref[2] = (FLOAT)1.;
+        ref[0] = 0.; ref[1] = 0.; ref[2] = 1.;
     }
     else {
-        ref[0] = (FLOAT)1.;
-        ref[1] = (FLOAT)0.;
-        ref[2] = (FLOAT)0.;
+        ref[0] = 1.; ref[1] = 0.; ref[2] = 0.;
     }
 
     #pragma unroll
@@ -213,6 +74,55 @@ __device__ void build_local_frame(const FLOAT *ez_in, FLOAT local_frame[3][NDIM]
 }
 
 
+__device__ void build_los_frame(
+    FLOAT *sposition1,
+    LOS_TYPE los,
+    FLOAT local_frame[3][NDIM])
+{
+    #pragma unroll
+    for (int i = 0; i < 3; i++) {
+        #pragma unroll
+        for (int j = 0; j < NDIM; j++) {
+            local_frame[i][j] = (FLOAT)0.;
+        }
+    }
+
+    if (los == LOS_X) {
+        local_frame[0][0] = 1.;
+        local_frame[1][1] = 1.;
+        local_frame[2][2] = 1.;
+    }
+    else if (los == LOS_Y) {
+        local_frame[0][1] = 1.;
+        local_frame[1][2] = 1.;
+        local_frame[2][0] = 1.;
+    }
+    else if (los == LOS_Z) {
+        local_frame[0][2] = 1.;
+        local_frame[1][0] = 1.;
+        local_frame[2][1] = 1.;
+    }
+    else {
+        build_local_frame(sposition1, local_frame);
+    }
+}
+
+
+__device__ inline LOS_TYPE get_count3_los(BinAttrs battrs12, BinAttrs battrs13)
+{
+    LOS_TYPE los = LOS_FIRSTPOINT;
+
+    if (battrs12.ndim > 1 && battrs12.var[1] == VAR_POLE) {
+        los = battrs12.los[1];
+    }
+    else if (battrs13.ndim > 1 && battrs13.var[1] == VAR_POLE) {
+        los = battrs13.los[1];
+    }
+
+    return los;
+}
+
+
 // ============================================================================
 // Count3 layout + constant device state
 // ============================================================================
@@ -229,13 +139,16 @@ static inline size_t count3_nprojs_from_ells(
     size_t nells2, const size_t *ells2)
 {
     size_t nprojs = 0;
+
     for (size_t i1 = 0; i1 < nells1; i1++) {
         for (size_t i2 = 0; i2 < nells2; i2++) {
             nprojs += (size_t)(2 * MIN(ells1[i1], ells2[i2]) + 1);
         }
     }
+
     return nprojs;
 }
+
 
 DeviceCount3Layout make_device_count3_layout(
     const BinAttrs battrs12,
@@ -245,13 +158,9 @@ DeviceCount3Layout make_device_count3_layout(
     DeviceCount3Layout layout;
     memset(&layout, 0, sizeof(DeviceCount3Layout));
 
-    if (battrs12.ndim == 0 || battrs13.ndim == 0) {
-        return layout;
-    }
+    if (battrs12.ndim == 0 || battrs13.ndim == 0) return layout;
 
-    layout.nbins =
-        (size_t)battrs12.shape[0] *
-        (size_t)battrs13.shape[0];
+    layout.nbins = (size_t)battrs12.shape[0] * (size_t)battrs13.shape[0];
 
     if (battrs23.ndim > 0) {
         layout.nbins *= (size_t)battrs23.shape[0];
@@ -265,8 +174,7 @@ DeviceCount3Layout make_device_count3_layout(
         layout.nells2 = fill_ells(&battrs13, 1, layout.ells2);
         layout.nprojs = count3_nprojs_from_ells(
             layout.nells1, layout.ells1,
-            layout.nells2, layout.ells2
-        );
+            layout.nells2, layout.ells2);
         layout.csize = layout.nbins * layout.nprojs;
     }
     else {
@@ -279,22 +187,26 @@ DeviceCount3Layout make_device_count3_layout(
 
 
 // ============================================================================
-// add_weight3
+// Projection helpers
 // ============================================================================
 
 __device__ void compute_trig_up_to_m(
-    int mmax, FLOAT c1, FLOAT s1, FLOAT cm[MMAX_SIZE], FLOAT sm[MMAX_SIZE])
+    int mmax,
+    FLOAT c1,
+    FLOAT s1,
+    FLOAT cm[MMAX_SIZE],
+    FLOAT sm[MMAX_SIZE])
 {
     #pragma unroll
     for (int m = 0; m < MMAX_SIZE; m++) {
-        cm[m] = (FLOAT)0.;
-        sm[m] = (FLOAT)0.;
+        cm[m] = 0.;
+        sm[m] = 0.;
     }
 
     mmax = MIN(mmax, ELLMAX);
 
-    cm[0] = (FLOAT)1.;
-    sm[0] = (FLOAT)0.;
+    cm[0] = 1.;
+    sm[0] = 0.;
     if (mmax <= 0) return;
 
     cm[1] = c1;
@@ -310,7 +222,11 @@ __device__ void compute_trig_up_to_m(
 }
 
 
-__device__ void compute_pbar_row_lmax5(int ell, int mmax, FLOAT mu, FLOAT Prow[MMAX_SIZE])
+__device__ void compute_pbar_row_lmax5(
+    int ell,
+    int mmax,
+    FLOAT mu,
+    FLOAT Prow[MMAX_SIZE])
 {
     FLOAT x  = clamp1(mu);
     FLOAT x2 = x * x;
@@ -325,9 +241,7 @@ __device__ void compute_pbar_row_lmax5(int ell, int mmax, FLOAT mu, FLOAT Prow[M
     FLOAT s5 = s4 * s;
 
     #pragma unroll
-    for (int m = 0; m < MMAX_SIZE; m++) {
-        Prow[m] = (FLOAT)0.;
-    }
+    for (int m = 0; m < MMAX_SIZE; m++) Prow[m] = 0.;
 
     if (mmax > ell) mmax = ell;
     if (mmax > ELLMAX) mmax = ELLMAX;
@@ -335,7 +249,7 @@ __device__ void compute_pbar_row_lmax5(int ell, int mmax, FLOAT mu, FLOAT Prow[M
 
     switch (ell) {
         case 0:
-            Prow[0] = (FLOAT)1.;
+            Prow[0] = 1.;
             break;
 
         case 1:
@@ -379,6 +293,10 @@ __device__ void compute_pbar_row_lmax5(int ell, int mmax, FLOAT mu, FLOAT Prow[M
 }
 
 
+// ============================================================================
+// add_weight3
+// ============================================================================
+
 __device__ inline void add_weight3(
     FLOAT *counts,
     const FLOAT local_frame[3][NDIM],
@@ -397,12 +315,15 @@ __device__ inline void add_weight3(
     BinAttrs battrs12,
     BinAttrs battrs13,
     BinAttrs battrs23,
-    WeightAttrs wattrs)
+    WeightAttrs wattrs,
+    const MeshAttrs &mattrs12,
+    const MeshAttrs &mattrs13,
+    const MeshAttrs &mattrs23)
 {
     if (battrs12.ndim == 0 || battrs13.ndim == 0) return;
+
     const bool has_third = (bool)(battrs23.ndim > 0);
     const int ncoords = has_third ? 3 : 2;
-
     const bool need_pole = (bool)(device_layout.nprojs > 0);
 
     const FLOAT *spos1[3] = {sposition1, sposition1, sposition2};
@@ -411,11 +332,13 @@ __device__ inline void add_weight3(
     const FLOAT *pos1[3] = {position1, position1, position2};
     const FLOAT *pos2[3] = {position2, position3, position3};
 
+    const MeshAttrs *mattrs[3] = {&mattrs12, &mattrs13, &mattrs23};
+
     BinAttrs battrs[3] = {battrs12, battrs13, battrs23};
 
     FLOAT costheta[3];
     FLOAT diff[3][NDIM];
-    FLOAT r[3] = {(FLOAT)0., (FLOAT)0., (FLOAT)0.};
+    FLOAT r[3] = {0., 0., 0.};
 
     #pragma unroll
     for (int icoord = 0; icoord < 3; icoord++) {
@@ -433,7 +356,7 @@ __device__ inline void add_weight3(
         FLOAT value;
 
         if (var == VAR_S || var == VAR_POLE) {
-            difference(diff[icoord], (FLOAT*)pos2[icoord], (FLOAT*)pos1[icoord]);
+            difference(diff[icoord], (FLOAT*)pos2[icoord], (FLOAT*)pos1[icoord], *mattrs[icoord]);
             r[icoord] = sqrt(dot(diff[icoord], diff[icoord]));
             value = r[icoord];
         }
@@ -450,7 +373,7 @@ __device__ inline void add_weight3(
         ibin = ibin * (size_t)battr->shape[0] + (size_t)ib;
     }
 
-    FLOAT triplet_weight = (FLOAT)1.;
+    FLOAT triplet_weight = 1.;
 
     if (index_value1.size_individual_weight) triplet_weight *= value1[index_value1.start_individual_weight];
     if (index_value2.size_individual_weight) triplet_weight *= value2[index_value2.start_individual_weight];
@@ -458,13 +381,17 @@ __device__ inline void add_weight3(
 
     {
         AngularWeight angular = wattrs.angular;
-        if (angular.size) {
-            triplet_weight *= lookup_angular_weight<3>(costheta, angular);
-        }
+        if (angular.size) triplet_weight *= lookup_angular_weight<3>(costheta, angular);
     }
 
-    if (index_value1.size_negative_weight && index_value2.size_negative_weight && index_value3.size_negative_weight) {
-        FLOAT triplet_nweight = value1[index_value1.start_negative_weight] * value2[index_value2.start_negative_weight] * value3[index_value3.start_negative_weight];
+    if (index_value1.size_negative_weight &&
+        index_value2.size_negative_weight &&
+        index_value3.size_negative_weight) {
+        FLOAT triplet_nweight =
+            value1[index_value1.start_negative_weight] *
+            value2[index_value2.start_negative_weight] *
+            value3[index_value3.start_negative_weight];
+
         triplet_weight -= triplet_nweight;
     }
 
@@ -474,12 +401,10 @@ __device__ inline void add_weight3(
     }
 
     FLOAT rhat[2][NDIM];
+
     #pragma unroll
     for (int ivec = 0; ivec < 2; ivec++) {
-
         if (r[ivec] == (FLOAT)0.) {
-            // Define zero-separation pair direction as local z-axis
-            // (same as LOS axis = local_frame[0])
             #pragma unroll
             for (int icoord = 0; icoord < NDIM; icoord++) {
                 rhat[ivec][icoord] = local_frame[0][icoord];
@@ -497,7 +422,8 @@ __device__ inline void add_weight3(
     const FLOAT *ex = local_frame[1];
     const FLOAT *ey = local_frame[2];
 
-    FLOAT mu[2] = {(FLOAT)0., (FLOAT)0.};
+    FLOAT mu[2] = {0., 0.};
+
     #pragma unroll
     for (int ivec = 0; ivec < 2; ivec++) {
         #pragma unroll
@@ -507,10 +433,7 @@ __device__ inline void add_weight3(
         mu[ivec] = clamp1(mu[ivec]);
     }
 
-    FLOAT xy[2][2] = {
-        {(FLOAT)0., (FLOAT)0.},
-        {(FLOAT)0., (FLOAT)0.}
-    };
+    FLOAT xy[2][2] = {{0., 0.}, {0., 0.}};
 
     #pragma unroll
     for (int ivec = 0; ivec < 2; ivec++) {
@@ -522,18 +445,20 @@ __device__ inline void add_weight3(
     }
 
     FLOAT rho[2];
+
     #pragma unroll
     for (int ivec = 0; ivec < 2; ivec++) {
         rho[ivec] = sqrt(MAX((FLOAT)0., (FLOAT)1. - mu[ivec] * mu[ivec]));
     }
 
-    FLOAT cdphi = (FLOAT)1.;
-    FLOAT sdphi = (FLOAT)0.;
+    FLOAT cdphi = 1.;
+    FLOAT sdphi = 0.;
+
     if (rho[0] > (FLOAT)1e-12 && rho[1] > (FLOAT)1e-12) {
         FLOAT inv = (FLOAT)1. / (rho[0] * rho[1]);
+
         cdphi = clamp1((xy[0][0] * xy[1][0] + xy[0][1] * xy[1][1]) * inv);
-        sdphi = MIN((FLOAT)1., MAX((FLOAT)-1.,
-            (xy[0][0] * xy[1][1] - xy[0][1] * xy[1][0]) * inv));
+        sdphi = clamp1((xy[0][0] * xy[1][1] - xy[0][1] * xy[1][0]) * inv);
     }
 
     int global_mmax = 0;
@@ -542,9 +467,11 @@ __device__ inline void add_weight3(
 
     for (size_t i1 = 0; i1 < device_layout.nells1; i1++) {
         int ell1 = (int)device_layout.ells1[i1];
+
         for (size_t i2 = 0; i2 < device_layout.nells2; i2++) {
             int ell2 = (int)device_layout.ells2[i2];
             int mmax = MIN(ell1, ell2);
+
             global_mmax = MAX(global_mmax, mmax);
             row_mmax1[i1] = MAX(row_mmax1[i1], mmax);
             row_mmax2[i2] = MAX(row_mmax2[i2], mmax);
@@ -554,41 +481,35 @@ __device__ inline void add_weight3(
     FLOAT cm[MMAX_SIZE], sm[MMAX_SIZE];
     FLOAT P1[4][MMAX_SIZE];
     FLOAT P2[4][MMAX_SIZE];
+
     compute_trig_up_to_m(global_mmax, cdphi, sdphi, cm, sm);
 
     for (size_t i1 = 0; i1 < device_layout.nells1; i1++) {
-        compute_pbar_row_lmax5(
-            (int)device_layout.ells1[i1],
-            row_mmax1[i1],
-            mu[0],
-            P1[i1]
-        );
+        compute_pbar_row_lmax5((int)device_layout.ells1[i1], row_mmax1[i1], mu[0], P1[i1]);
     }
 
     for (size_t i2 = 0; i2 < device_layout.nells2; i2++) {
-        compute_pbar_row_lmax5(
-            (int)device_layout.ells2[i2],
-            row_mmax2[i2],
-            mu[1],
-            P2[i2]
-        );
+        compute_pbar_row_lmax5((int)device_layout.ells2[i2], row_mmax2[i2], mu[1], P2[i2]);
     }
 
     FLOAT *counts_bin = counts + ibin * device_layout.nprojs;
 
     size_t iproj = 0;
+
     for (size_t i1 = 0; i1 < device_layout.nells1; i1++) {
         int ell1 = (int)device_layout.ells1[i1];
+
         for (size_t i2 = 0; i2 < device_layout.nells2; i2++) {
             int ell2 = (int)device_layout.ells2[i2];
             int mmax = MIN(ell1, ell2);
 
-            //FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1))) / ((FLOAT)(4.0 * M_PI));
             FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1)));
 
             for (int m = 0; m <= mmax; m++) {
                 FLOAT amp = triplet_weight * ell_norm * P1[i1][m] * P2[i2][m];
+
                 atomicAdd(&counts_bin[iproj + (size_t)m], amp * cm[m]);
+
                 if (m > 0) {
                     atomicAdd(&counts_bin[iproj + (size_t)(mmax + m)], amp * sm[m]);
                 }
@@ -596,107 +517,6 @@ __device__ inline void add_weight3(
 
             iproj += (size_t)(2 * mmax + 1);
         }
-    }
-}
-
-
-// ============================================================================
-// Generic candidate traversal
-// ============================================================================
-
-template <typename Op>
-__device__ inline void for_each_candidate_angular(
-    FLOAT *center_sposition,
-    Mesh target_mesh,
-    const MeshAttrs &target_mattrs,
-    Op &op)
-{
-    int bounds[2 * NDIM];
-    set_angular_bounds_from_attrs(center_sposition, target_mattrs, bounds);
-
-    for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
-        int icth_n = icth * (int)target_mattrs.meshsize[1];
-
-        for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
-            int iphi_true = wrap_periodic_int(iphi, (int)target_mattrs.meshsize[1]);
-            int icell = iphi_true + icth_n;
-
-            int np = target_mesh.nparticles[icell];
-            size_t cum = target_mesh.cumnparticles[icell];
-
-            FLOAT *positions  = &(target_mesh.positions[NDIM * cum]);
-            FLOAT *spositions = &(target_mesh.spositions[NDIM * cum]);
-            FLOAT *values     = &(target_mesh.values[target_mesh.index_value.size * cum]);
-
-            for (int j = 0; j < np; j++) {
-                op(
-                    cum + (size_t)j,
-                    &(positions[NDIM * j]),
-                    &(spositions[NDIM * j]),
-                    &(values[target_mesh.index_value.size * j])
-                );
-            }
-        }
-    }
-}
-
-
-template <typename Op>
-__device__ inline void for_each_candidate_cartesian(
-    FLOAT *center_position,
-    Mesh target_mesh,
-    const MeshAttrs &target_mattrs,
-    Op &op)
-{
-    int bounds[2 * NDIM];
-    set_cartesian_bounds_from_attrs(center_position, target_mattrs, bounds);
-
-    for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
-        int ix_n = wrap_periodic_int(ix, (int)target_mattrs.meshsize[0])
-                 * (int)target_mattrs.meshsize[2] * (int)target_mattrs.meshsize[1];
-
-        for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
-            int iy_n = wrap_periodic_int(iy, (int)target_mattrs.meshsize[1])
-                     * (int)target_mattrs.meshsize[2];
-
-            for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
-                int iz_n = wrap_periodic_int(iz, (int)target_mattrs.meshsize[2]);
-                int icell = ix_n + iy_n + iz_n;
-
-                int np = target_mesh.nparticles[icell];
-                size_t cum = target_mesh.cumnparticles[icell];
-
-                FLOAT *positions  = &(target_mesh.positions[NDIM * cum]);
-                FLOAT *spositions = &(target_mesh.spositions[NDIM * cum]);
-                FLOAT *values     = &(target_mesh.values[target_mesh.index_value.size * cum]);
-
-                for (int j = 0; j < np; j++) {
-                    op(
-                        cum + (size_t)j,
-                        &(positions[NDIM * j]),
-                        &(spositions[NDIM * j]),
-                        &(values[target_mesh.index_value.size * j])
-                    );
-                }
-            }
-        }
-    }
-}
-
-
-template <MESH_TYPE TARGET_MESH_TYPE, typename Op>
-__device__ inline void for_each_candidate(
-    FLOAT *center_position,
-    FLOAT *center_sposition,
-    Mesh target_mesh,
-    const MeshAttrs &target_mattrs,
-    Op &op)
-{
-    if constexpr (TARGET_MESH_TYPE == MESH_ANGULAR) {
-        for_each_candidate_angular(center_sposition, target_mesh, target_mattrs, op);
-    }
-    else if constexpr (TARGET_MESH_TYPE == MESH_CARTESIAN) {
-        for_each_candidate_cartesian(center_position, target_mesh, target_mattrs, op);
     }
 }
 
@@ -722,6 +542,10 @@ struct Count3EmitOp {
     Mesh mesh2;
     Mesh mesh3;
 
+    MeshAttrs mattrs12;
+    MeshAttrs mattrs13;
+    MeshAttrs mattrs23;
+
     SelectionAttrs sattrs12;
     SelectionAttrs sattrs13;
     SelectionAttrs sattrs23;
@@ -743,30 +567,35 @@ struct Count3EmitOp {
     {
         (void)i3;
 
-        if (!is_selected_pair_with_sattrs(
+        if (!is_selected_pair(
                 sposition1, sposition3,
                 position1, position3,
-                sattrs13)) return;
+                sattrs13,
+                mattrs13)) return;
 
-        if (!is_selected_pair_with_sattrs(
+        if (!is_selected_pair(
                 sposition2, sposition3,
                 position2, position3,
-                sattrs23)) return;
+                sattrs23,
+                mattrs23)) return;
 
-        if (veto12.ndim && is_selected_pair_with_sattrs(
+        if (veto12.ndim && is_selected_pair(
                 sposition1, sposition2,
                 position1, position2,
-                veto12)) return;
+                veto12,
+                mattrs12)) return;
 
-        if (veto13.ndim && is_selected_pair_with_sattrs(
+        if (veto13.ndim && is_selected_pair(
                 sposition1, sposition3,
                 position1, position3,
-                veto13)) return;
+                veto13,
+                mattrs13)) return;
 
-        if (veto23.ndim && is_selected_pair_with_sattrs(
+        if (veto23.ndim && is_selected_pair(
                 sposition2, sposition3,
                 position2, position3,
-                veto23)) return;
+                veto23,
+                mattrs23)) return;
 
         add_weight3(
             local_counts,
@@ -776,8 +605,8 @@ struct Count3EmitOp {
             value1, value2, value3,
             mesh1.index_value, mesh2.index_value, mesh3.index_value,
             battrs12, battrs13, battrs23,
-            wattrs
-        );
+            wattrs,
+            mattrs12, mattrs13, mattrs23);
     }
 };
 
@@ -802,6 +631,10 @@ struct Count3Close12Op {
 
     MeshAttrs mattrs3;
 
+    MeshAttrs mattrs12;
+    MeshAttrs mattrs13;
+    MeshAttrs mattrs23;
+
     SelectionAttrs sattrs12;
     SelectionAttrs sattrs13;
     SelectionAttrs sattrs23;
@@ -823,15 +656,17 @@ struct Count3Close12Op {
     {
         (void)i2;
 
-        if (!is_selected_pair_with_sattrs(
+        if (!is_selected_pair(
                 sposition1, sposition2,
                 position1, position2,
-                sattrs12)) return;
+                sattrs12,
+                mattrs12)) return;
 
-        if (veto12.ndim && is_selected_pair_with_sattrs(
+        if (veto12.ndim && is_selected_pair(
                 sposition1, sposition2,
                 position1, position2,
-                veto12)) return;
+                veto12,
+                mattrs12)) return;
 
         Count3EmitOp op{
             local_counts,
@@ -843,6 +678,7 @@ struct Count3Close12Op {
                 {local_frame[2][0], local_frame[2][1], local_frame[2][2]}
             },
             mesh1, mesh2, mesh3,
+            mattrs12, mattrs13, mattrs23,
             sattrs12, sattrs13, sattrs23,
             veto12, veto13, veto23,
             battrs12, battrs13, battrs23,
@@ -852,8 +688,7 @@ struct Count3Close12Op {
         for_each_candidate<OTHER_MESH_TYPE>(
             position1, sposition1,
             mesh3, mattrs3,
-            op
-        );
+            op);
     }
 };
 
@@ -879,6 +714,10 @@ struct Count3EmitWithFixed3Op {
     Mesh mesh2;
     Mesh mesh3;
 
+    MeshAttrs mattrs12;
+    MeshAttrs mattrs13;
+    MeshAttrs mattrs23;
+
     SelectionAttrs sattrs12;
     SelectionAttrs sattrs13;
     SelectionAttrs sattrs23;
@@ -900,30 +739,35 @@ struct Count3EmitWithFixed3Op {
     {
         (void)i2;
 
-        if (!is_selected_pair_with_sattrs(
+        if (!is_selected_pair(
                 sposition1, sposition2,
                 position1, position2,
-                sattrs12)) return;
+                sattrs12,
+                mattrs12)) return;
 
-        if (!is_selected_pair_with_sattrs(
+        if (!is_selected_pair(
                 sposition2, sposition3,
                 position2, position3,
-                sattrs23)) return;
+                sattrs23,
+                mattrs23)) return;
 
-        if (veto12.ndim && is_selected_pair_with_sattrs(
+        if (veto12.ndim && is_selected_pair(
                 sposition1, sposition2,
                 position1, position2,
-                veto12)) return;
+                veto12,
+                mattrs12)) return;
 
-        if (veto13.ndim && is_selected_pair_with_sattrs(
+        if (veto13.ndim && is_selected_pair(
                 sposition1, sposition3,
                 position1, position3,
-                veto13)) return;
+                veto13,
+                mattrs13)) return;
 
-        if (veto23.ndim && is_selected_pair_with_sattrs(
+        if (veto23.ndim && is_selected_pair(
                 sposition2, sposition3,
                 position2, position3,
-                veto23)) return;
+                veto23,
+                mattrs23)) return;
 
         add_weight3(
             local_counts,
@@ -933,8 +777,8 @@ struct Count3EmitWithFixed3Op {
             value1, value2, value3,
             mesh1.index_value, mesh2.index_value, mesh3.index_value,
             battrs12, battrs13, battrs23,
-            wattrs
-        );
+            wattrs,
+            mattrs12, mattrs13, mattrs23);
     }
 };
 
@@ -954,6 +798,10 @@ struct Count3Close13Op {
     Mesh mesh3;
 
     MeshAttrs mattrs2;
+
+    MeshAttrs mattrs12;
+    MeshAttrs mattrs13;
+    MeshAttrs mattrs23;
 
     SelectionAttrs sattrs12;
     SelectionAttrs sattrs13;
@@ -976,15 +824,17 @@ struct Count3Close13Op {
     {
         (void)i3;
 
-        if (!is_selected_pair_with_sattrs(
+        if (!is_selected_pair(
                 sposition1, sposition3,
                 position1, position3,
-                sattrs13)) return;
+                sattrs13,
+                mattrs13)) return;
 
-        if (veto13.ndim && is_selected_pair_with_sattrs(
+        if (veto13.ndim && is_selected_pair(
                 sposition1, sposition3,
                 position1, position3,
-                veto13)) return;
+                veto13,
+                mattrs13)) return;
 
         Count3EmitWithFixed3Op op{
             local_counts,
@@ -996,6 +846,7 @@ struct Count3Close13Op {
                 {local_frame[2][0], local_frame[2][1], local_frame[2][2]}
             },
             mesh1, mesh2, mesh3,
+            mattrs12, mattrs13, mattrs23,
             sattrs12, sattrs13, sattrs23,
             veto12, veto13, veto23,
             battrs12, battrs13, battrs23,
@@ -1005,8 +856,7 @@ struct Count3Close13Op {
         for_each_candidate<OTHER_MESH_TYPE>(
             position1, sposition1,
             mesh2, mattrs2,
-            op
-        );
+            op);
     }
 };
 
@@ -1030,6 +880,10 @@ struct Count3EmitWithFixed23Op {
     Mesh mesh2;
     Mesh mesh3;
 
+    MeshAttrs mattrs12;
+    MeshAttrs mattrs13;
+    MeshAttrs mattrs23;
+
     SelectionAttrs sattrs12;
     SelectionAttrs sattrs13;
     SelectionAttrs sattrs23;
@@ -1051,33 +905,38 @@ struct Count3EmitWithFixed23Op {
     {
         (void)i1;
 
-        if (!is_selected_pair_with_sattrs(
+        if (!is_selected_pair(
                 sposition1, sposition2,
                 position1, position2,
-                sattrs12)) return;
+                sattrs12,
+                mattrs12)) return;
 
-        if (!is_selected_pair_with_sattrs(
+        if (!is_selected_pair(
                 sposition1, sposition3,
                 position1, position3,
-                sattrs13)) return;
+                sattrs13,
+                mattrs13)) return;
 
-        if (veto12.ndim && is_selected_pair_with_sattrs(
+        if (veto12.ndim && is_selected_pair(
                 sposition1, sposition2,
                 position1, position2,
-                veto12)) return;
+                veto12,
+                mattrs12)) return;
 
-        if (veto13.ndim && is_selected_pair_with_sattrs(
+        if (veto13.ndim && is_selected_pair(
                 sposition1, sposition3,
                 position1, position3,
-                veto13)) return;
+                veto13,
+                mattrs13)) return;
 
-        if (veto23.ndim && is_selected_pair_with_sattrs(
+        if (veto23.ndim && is_selected_pair(
                 sposition2, sposition3,
                 position2, position3,
-                veto23)) return;
+                veto23,
+                mattrs23)) return;
 
         FLOAT local_frame[3][NDIM];
-        build_local_frame(sposition1, local_frame);
+        build_los_frame(sposition1, get_count3_los(battrs12, battrs13), local_frame);
 
         add_weight3(
             local_counts,
@@ -1087,8 +946,8 @@ struct Count3EmitWithFixed23Op {
             value1, value2, value3,
             mesh1.index_value, mesh2.index_value, mesh3.index_value,
             battrs12, battrs13, battrs23,
-            wattrs
-        );
+            wattrs,
+            mattrs12, mattrs13, mattrs23);
     }
 };
 
@@ -1106,6 +965,10 @@ struct Count3Close23From2Op {
     Mesh mesh3;
 
     MeshAttrs mattrs1;
+
+    MeshAttrs mattrs12;
+    MeshAttrs mattrs13;
+    MeshAttrs mattrs23;
 
     SelectionAttrs sattrs12;
     SelectionAttrs sattrs13;
@@ -1128,21 +991,24 @@ struct Count3Close23From2Op {
     {
         (void)i3;
 
-        if (!is_selected_pair_with_sattrs(
+        if (!is_selected_pair(
                 sposition2, sposition3,
                 position2, position3,
-                sattrs23)) return;
+                sattrs23,
+                mattrs23)) return;
 
-        if (veto23.ndim && is_selected_pair_with_sattrs(
+        if (veto23.ndim && is_selected_pair(
                 sposition2, sposition3,
                 position2, position3,
-                veto23)) return;
+                veto23,
+                mattrs23)) return;
 
         Count3EmitWithFixed23Op op{
             local_counts,
             position2, sposition2, value2,
             position3, sposition3, value3,
             mesh1, mesh2, mesh3,
+            mattrs12, mattrs13, mattrs23,
             sattrs12, sattrs13, sattrs23,
             veto12, veto13, veto23,
             battrs12, battrs13, battrs23,
@@ -1152,8 +1018,7 @@ struct Count3Close23From2Op {
         for_each_candidate<OTHER_MESH_TYPE>(
             position2, sposition2,
             mesh1, mattrs1,
-            op
-        );
+            op);
     }
 };
 
@@ -1190,6 +1055,7 @@ __global__ void count3_close_kernel(
     for (size_t i = tid; i < csize; i += blockDim.x) {
         local_counts[i] = 0;
     }
+
     __syncthreads();
 
     size_t gid = blockIdx.x * blockDim.x + tid;
@@ -1202,7 +1068,7 @@ __global__ void count3_close_kernel(
             FLOAT *value1     = &(mesh1.values[mesh1.index_value.size * i1]);
 
             FLOAT local_frame[3][NDIM];
-            build_local_frame(sposition1, local_frame);
+            build_los_frame(sposition1, get_count3_los(battrs12, battrs13), local_frame);
 
             if (close_pair == CLOSE_PAIR_12) {
                 Count3Close12Op<OTHER_MESH_TYPE> op{
@@ -1215,6 +1081,7 @@ __global__ void count3_close_kernel(
                     },
                     mesh1, mesh2, mesh3,
                     mattrs3,
+                    mattrs1, mattrs2, mattrs3,
                     sattrs12, sattrs13, sattrs23,
                     veto12, veto13, veto23,
                     battrs12, battrs13, battrs23,
@@ -1224,8 +1091,7 @@ __global__ void count3_close_kernel(
                 for_each_candidate<MESH_ANGULAR>(
                     position1, sposition1,
                     mesh2, mattrs2,
-                    op
-                );
+                    op);
             }
             else {
                 Count3Close13Op<OTHER_MESH_TYPE> op{
@@ -1238,6 +1104,7 @@ __global__ void count3_close_kernel(
                     },
                     mesh1, mesh2, mesh3,
                     mattrs2,
+                    mattrs1, mattrs2, mattrs3,
                     sattrs12, sattrs13, sattrs23,
                     veto12, veto13, veto23,
                     battrs12, battrs13, battrs23,
@@ -1247,8 +1114,7 @@ __global__ void count3_close_kernel(
                 for_each_candidate<MESH_ANGULAR>(
                     position1, sposition1,
                     mesh3, mattrs3,
-                    op
-                );
+                    op);
             }
         }
     }
@@ -1263,6 +1129,7 @@ __global__ void count3_close_kernel(
                 position2, sposition2, value2,
                 mesh1, mesh2, mesh3,
                 mattrs1,
+                mattrs1, mattrs2, mattrs3,
                 sattrs12, sattrs13, sattrs23,
                 veto12, veto13, veto23,
                 battrs12, battrs13, battrs23,
@@ -1272,8 +1139,7 @@ __global__ void count3_close_kernel(
             for_each_candidate<MESH_ANGULAR>(
                 position2, sposition2,
                 mesh3, mattrs3,
-                op
-            );
+                op);
         }
     }
 }
@@ -1349,6 +1215,7 @@ void count3_close(
 
     DeviceCount3Layout layout = make_device_count3_layout(
         battrs12, battrs13, battrs23);
+
     size_t csize = layout.csize;
 
     BinAttrs device_battrs12 = battrs12;
@@ -1363,13 +1230,22 @@ void count3_close(
     copy_weight_attrs_to_device(&device_wattrs, &wattrs, buffer);
 
     int nblocks, nthreads_per_block;
-    CONFIGURE_KERNEL_LAUNCH((count3_close_kernel<MESH_ANGULAR>), nblocks, nthreads_per_block, buffer);
+    CONFIGURE_KERNEL_LAUNCH(
+        (count3_close_kernel<MESH_ANGULAR>),
+        nblocks,
+        nthreads_per_block,
+        buffer);
 
-    FLOAT *block_counts = (FLOAT *) my_device_malloc(
-        nblocks * csize * sizeof(FLOAT), buffer);
+    FLOAT *block_counts = (FLOAT *)my_device_malloc(
+        nblocks * csize * sizeof(FLOAT),
+        buffer);
 
     CUDA_CHECK(cudaMemsetAsync(counts, 0, csize * sizeof(FLOAT), stream));
-    CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(DeviceCount3Layout)));
+
+    CUDA_CHECK(cudaMemcpyToSymbol(
+        device_layout,
+        &layout,
+        sizeof(DeviceCount3Layout)));
 
     if (other_mattrs->type == MESH_ANGULAR) {
         LAUNCH_COUNT3_CLOSE_KERNEL(MESH_ANGULAR);
@@ -1384,7 +1260,11 @@ void count3_close(
 
     CUDA_CHECK(cudaGetLastError());
 
-    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(block_counts, nblocks, counts, csize);
+    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(
+        block_counts,
+        nblocks,
+        counts,
+        csize);
 
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -1397,5 +1277,6 @@ void count3_close(
 
     free_device_weight_attrs(&device_wattrs, buffer);
 }
+
 
 #undef LAUNCH_COUNT3_CLOSE_KERNEL

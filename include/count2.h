@@ -19,7 +19,7 @@ __device__ int wrap_periodic_int(int idx, int meshsize);
 
 __device__ void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2);
 
-__device__ void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2);
+__device__ void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2, const MeshAttrs &mattrs);
 
 __device__ FLOAT dot(const FLOAT *position1, const FLOAT *position2);
 
@@ -48,77 +48,264 @@ typedef struct DeviceCount2Layout {
 
 size_t fill_ells(const BinAttrs *battrs, int index, size_t *ells);
 
+
 size_t get_count2_weight_names(IndexValue index_value1, IndexValue index_value2,
                         char names[][SIZE_NAME]);
 
 
-template <int ND> __device__ FLOAT lookup_angular_weight(const FLOAT (&costheta)[ND], const AngularWeight& angular)
+__device__ int get_sep_bin_index(FLOAT value, const FLOAT *sep, int shape, BIN_TYPE bin, bool sep_is_edges);
+
+
+__device__ inline int get_interp_sep_index(
+    FLOAT x,
+    const FLOAT *sep,
+    int nsep,
+    BIN_TYPE bin,
+    FLOAT *frac)
+{
+    *frac = (FLOAT)0.;
+
+    if (!sep || nsep < 2) return -1;
+
+    // Preserve old interpolation convention:
+    // valid range is [sep[0], sep[nsep - 1]]
+    if (x < sep[0] || x > sep[nsep - 1]) return -1;
+
+    // Explicitly include the upper endpoint.
+    if (x == sep[nsep - 1]) {
+        *frac = (FLOAT)1.;
+        return nsep - 2;
+    }
+
+    int ibin = get_sep_bin_index(x, sep, nsep, bin, false);
+
+    if (ibin < 0) return -1;
+
+    FLOAT dx = sep[ibin + 1] - sep[ibin];
+    *frac = (dx != (FLOAT)0.) ? (x - sep[ibin]) / dx : (FLOAT)0.;
+
+    return ibin;
+}
+
+
+template <int ND> __device__ FLOAT lookup_angular_weight(
+    const FLOAT (&costheta)[ND],
+    const AngularWeight& angular)
 {
     if (!angular.weight) return (FLOAT)1.;
 
+    int i0[ND];
+    FLOAT frac[ND];
+
+    #pragma unroll
+    for (int idim = 0; idim < ND; idim++) {
+        if (angular.sep_is_edges[idim]) {
+            i0[idim] = get_sep_bin_index(
+                costheta[idim],
+                angular.sep[idim],
+                (int) angular.shape[idim],
+                angular.bin[idim],
+                true
+            );
+            frac[idim] = (FLOAT)0.;
+        } else {
+            i0[idim] = get_interp_sep_index(
+                costheta[idim],
+                angular.sep[idim],
+                (int) angular.shape[idim],
+                angular.bin[idim],
+                &frac[idim]
+            );
+        }
+
+        if (i0[idim] < 0) return (FLOAT)1.;
+    }
+
     // ------------------------------------------------------------
-    // Interpolation mode: sep[] is provided
+    // Check if any interpolation is needed
     // ------------------------------------------------------------
-    if (angular.sep[0] != NULL) {
-        int i0[ND];
-        FLOAT frac[ND];
+    bool any_interp = false;
+
+    #pragma unroll
+    for (int idim = 0; idim < ND; idim++) {
+        any_interp = any_interp || !angular.sep_is_edges[idim];
+    }
+
+    // ------------------------------------------------------------
+    // Pure binned lookup
+    // ------------------------------------------------------------
+    if (!any_interp) {
+        size_t idx = 0;
 
         #pragma unroll
         for (int idim = 0; idim < ND; idim++) {
-            const int nsep = (int)angular.shape[idim];
-            if (nsep < 2) return (FLOAT)1.;
-            if (!angular.sep[idim]) return (FLOAT)1.;
-
-            i0[idim] = get_interp_bin_index(costheta[idim], angular.sep[idim], nsep, &frac[idim]);
-
-            if (i0[idim] < 0) return (FLOAT)1.;
+            idx = idx * (size_t) angular.shape[idim] + (size_t) i0[idim];
         }
 
-        FLOAT result = (FLOAT)0.;
-        const int ncorners = 1 << ND;
+        return angular.weight[idx];
+    }
 
-        for (int icorner = 0; icorner < ncorners; icorner++) {
-            size_t idx = 0;
-            FLOAT wcorner = (FLOAT)1.;
+    // ------------------------------------------------------------
+    // Mixed / interpolation lookup
+    // ------------------------------------------------------------
+    FLOAT result = (FLOAT)0.;
+    const int ncorners = 1 << ND;
 
-            #pragma unroll
-            for (int idim = 0; idim < ND; idim++) {
+    for (int icorner = 0; icorner < ncorners; icorner++) {
+        size_t idx = 0;
+        FLOAT wcorner = (FLOAT)1.;
+
+        #pragma unroll
+        for (int idim = 0; idim < ND; idim++) {
+            int ibin = i0[idim];
+
+            if (!angular.sep_is_edges[idim]) {
                 const int upper = (icorner >> idim) & 1;
-                const int ibin = i0[idim] + upper;
-
-                idx = idx * (size_t)angular.shape[idim] + (size_t)ibin;
+                ibin += upper;
                 wcorner *= upper ? frac[idim] : ((FLOAT)1. - frac[idim]);
             }
 
-            result += wcorner * angular.weight[idx];
+            idx = idx * (size_t) angular.shape[idim] + (size_t) ibin;
         }
 
-        return result;
+        result += wcorner * angular.weight[idx];
     }
 
-    // ------------------------------------------------------------
-    // Binned lookup mode: edges[] is provided
-    // ------------------------------------------------------------
-    int ibin[ND];
+    return result;
+}
 
-    #pragma unroll
-    for (int idim = 0; idim < ND; idim++) {
-        const int nbins = (int)angular.shape[idim];
-        if (nbins <= 0) return (FLOAT)1.;
-        if (!angular.edges[idim]) return (FLOAT)1.;
 
-        ibin[idim] = get_edge_bin_index(costheta[idim], angular.edges[idim], nbins);
+__device__ bool is_selected_pair(
+    FLOAT *sposition1,
+    FLOAT *sposition2,
+    FLOAT *position1,
+    FLOAT *position2,
+    const SelectionAttrs &sattrs,
+    const MeshAttrs &mattrs);
 
-        if (ibin[idim] < 0) return (FLOAT)1.;
+
+__device__ void set_angular_bounds(
+    const FLOAT *sposition,
+    const MeshAttrs &mattrs,
+    int *bounds);
+
+
+__device__ void set_cartesian_bounds(
+    const FLOAT *position,
+    const MeshAttrs &mattrs,
+    int *bounds);
+
+
+// ============================================================================
+// Candidate iteration
+// ============================================================================
+
+template <typename Op>
+__device__ void for_each_candidate_angular(
+    FLOAT *center_sposition,
+    Mesh target_mesh,
+    const MeshAttrs &target_mattrs,
+    Op &op)
+{
+    int bounds[2 * NDIM];
+    set_angular_bounds(center_sposition, target_mattrs, bounds);
+
+    for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
+        int icth_n = icth * (int)target_mattrs.meshsize[1];
+
+        for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
+            int iphi_true = wrap_periodic_int(
+                iphi,
+                (int)target_mattrs.meshsize[1]);
+
+            int icell = iphi_true + icth_n;
+
+            int np = target_mesh.nparticles[icell];
+            size_t cum = target_mesh.cumnparticles[icell];
+
+            FLOAT *positions  = &(target_mesh.positions[NDIM * cum]);
+            FLOAT *spositions = &(target_mesh.spositions[NDIM * cum]);
+            FLOAT *values     = &(target_mesh.values[target_mesh.index_value.size * cum]);
+
+            for (int j = 0; j < np; j++) {
+                op(
+                    cum + (size_t)j,
+                    &(positions[NDIM * j]),
+                    &(spositions[NDIM * j]),
+                    &(values[target_mesh.index_value.size * j])
+                );
+            }
+        }
     }
+}
 
-    size_t idx = 0;
-    #pragma unroll
-    for (int idim = 0; idim < ND; idim++) {
-        idx = idx * (size_t)angular.shape[idim] + (size_t)ibin[idim];
+
+template <typename Op>
+__device__ void for_each_candidate_cartesian(
+    FLOAT *center_position,
+    Mesh target_mesh,
+    const MeshAttrs &target_mattrs,
+    Op &op)
+{
+    int bounds[2 * NDIM];
+    set_cartesian_bounds(center_position, target_mattrs, bounds);
+
+    for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
+        int ix_n = wrap_periodic_int(ix, (int)target_mattrs.meshsize[0])
+                 * (int)target_mattrs.meshsize[2]
+                 * (int)target_mattrs.meshsize[1];
+
+        for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
+            int iy_n = wrap_periodic_int(iy, (int)target_mattrs.meshsize[1])
+                     * (int)target_mattrs.meshsize[2];
+
+            for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
+                int iz_n = wrap_periodic_int(iz, (int)target_mattrs.meshsize[2]);
+                int icell = ix_n + iy_n + iz_n;
+
+                int np = target_mesh.nparticles[icell];
+                size_t cum = target_mesh.cumnparticles[icell];
+
+                FLOAT *positions  = &(target_mesh.positions[NDIM * cum]);
+                FLOAT *spositions = &(target_mesh.spositions[NDIM * cum]);
+                FLOAT *values     = &(target_mesh.values[target_mesh.index_value.size * cum]);
+
+                for (int j = 0; j < np; j++) {
+                    op(
+                        cum + (size_t)j,
+                        &(positions[NDIM * j]),
+                        &(spositions[NDIM * j]),
+                        &(values[target_mesh.index_value.size * j])
+                    );
+                }
+            }
+        }
     }
+}
 
-    return angular.weight[idx];
+
+template <MESH_TYPE TARGET_MESH_TYPE, typename Op>
+__device__ void for_each_candidate(
+    FLOAT *center_position,
+    FLOAT *center_sposition,
+    Mesh target_mesh,
+    const MeshAttrs &target_mattrs,
+    Op &op)
+{
+    if constexpr (TARGET_MESH_TYPE == MESH_ANGULAR) {
+        for_each_candidate_angular(
+            center_sposition,
+            target_mesh,
+            target_mattrs,
+            op);
+    }
+    else if constexpr (TARGET_MESH_TYPE == MESH_CARTESIAN) {
+        for_each_candidate_cartesian(
+            center_position,
+            target_mesh,
+            target_mattrs,
+            op);
+    }
 }
 
 

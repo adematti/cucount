@@ -18,99 +18,6 @@
 static __device__ __constant__ DeviceCount3Layout device_layout;
 
 
-template <typename Op>
-__device__ inline void for_each_candidate_angular(
-    FLOAT *center_sposition,
-    Mesh target_mesh,
-    const MeshAttrs &target_mattrs,
-    Op &op)
-{
-    int bounds[2 * NDIM];
-    set_angular_bounds_from_attrs(center_sposition, target_mattrs, bounds);
-
-    for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
-        int icth_n = icth * (int)target_mattrs.meshsize[1];
-
-        for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
-            int iphi_true = wrap_periodic_int(iphi, (int)target_mattrs.meshsize[1]);
-            int icell = iphi_true + icth_n;
-
-            int np = target_mesh.nparticles[icell];
-            size_t cum = target_mesh.cumnparticles[icell];
-
-            FLOAT *positions = &(target_mesh.positions[NDIM * cum]);
-            FLOAT *spositions = &(target_mesh.spositions[NDIM * cum]);
-            FLOAT *values = &(target_mesh.values[target_mesh.index_value.size * cum]);
-
-            for (int j = 0; j < np; j++) {
-                op(cum + (size_t)j,
-                   &(positions[NDIM * j]),
-                   &(spositions[NDIM * j]),
-                   &(values[target_mesh.index_value.size * j]));
-            }
-        }
-    }
-}
-
-
-template <typename Op>
-__device__ inline void for_each_candidate_cartesian(
-    FLOAT *center_position,
-    Mesh target_mesh,
-    const MeshAttrs &target_mattrs,
-    Op &op)
-{
-    int bounds[2 * NDIM];
-    set_cartesian_bounds_from_attrs(center_position, target_mattrs, bounds);
-
-    for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
-        int ix_n = wrap_periodic_int(ix, (int)target_mattrs.meshsize[0])
-                 * (int)target_mattrs.meshsize[2]
-                 * (int)target_mattrs.meshsize[1];
-
-        for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
-            int iy_n = wrap_periodic_int(iy, (int)target_mattrs.meshsize[1])
-                     * (int)target_mattrs.meshsize[2];
-
-            for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
-                int iz_n = wrap_periodic_int(iz, (int)target_mattrs.meshsize[2]);
-                int icell = ix_n + iy_n + iz_n;
-
-                int np = target_mesh.nparticles[icell];
-                size_t cum = target_mesh.cumnparticles[icell];
-
-                FLOAT *positions = &(target_mesh.positions[NDIM * cum]);
-                FLOAT *spositions = &(target_mesh.spositions[NDIM * cum]);
-                FLOAT *values = &(target_mesh.values[target_mesh.index_value.size * cum]);
-
-                for (int j = 0; j < np; j++) {
-                    op(cum + (size_t)j,
-                       &(positions[NDIM * j]),
-                       &(spositions[NDIM * j]),
-                       &(values[target_mesh.index_value.size * j]));
-                }
-            }
-        }
-    }
-}
-
-
-template <MESH_TYPE TARGET_MESH_TYPE, typename Op>
-__device__ inline void for_each_candidate(
-    FLOAT *center_position,
-    FLOAT *center_sposition,
-    Mesh target_mesh,
-    const MeshAttrs &target_mattrs,
-    Op &op)
-{
-    if constexpr (TARGET_MESH_TYPE == MESH_ANGULAR) {
-        for_each_candidate_angular(center_sposition, target_mesh, target_mattrs, op);
-    } else if constexpr (TARGET_MESH_TYPE == MESH_CARTESIAN) {
-        for_each_candidate_cartesian(center_position, target_mesh, target_mattrs, op);
-    }
-}
-
-
 __device__ inline FLOAT clamp1(FLOAT x)
 {
     return MIN((FLOAT)1., MAX((FLOAT)-1., x));
@@ -134,8 +41,8 @@ __device__ inline void add_pair_weight(
     FLOAT *value2,
     IndexValue index_value2,
     BinAttrs battrs,
-    Count3Leg leg
-)
+    Count3Leg leg,
+    const MeshAttrs &mattrs)
 {
     if (battrs.ndim == 0) return;
 
@@ -150,7 +57,7 @@ __device__ inline void add_pair_weight(
     const VAR_TYPE var = battrs.var[0];
 
     if (var == VAR_S || var == VAR_POLE) {
-        difference(diff, position2, position1);
+        difference(diff, position2, position1, mattrs);
         r = sqrt(dot(diff, diff));
         value = r;
     }
@@ -203,8 +110,8 @@ __device__ inline void add_pair_weight(
     #pragma unroll
     for (int icoord = 0; icoord < NDIM; icoord++) {
         mu += rhat[icoord] * ez[icoord];
-        x += rhat[icoord] * ex[icoord];
-        y += rhat[icoord] * ey[icoord];
+        x  += rhat[icoord] * ex[icoord];
+        y  += rhat[icoord] * ey[icoord];
     }
 
     mu = clamp1(mu);
@@ -249,7 +156,9 @@ __device__ inline void add_pair_weight(
                 atomicAdd(&hist_bin[iproj + (size_t)m], weight * P[m] * cm[m]);
 
                 if (m > 0) {
-                    atomicAdd(&hist_bin[iproj + (size_t)(mmax + m)], weight * P[m] * sm[m]);
+                    atomicAdd(
+                        &hist_bin[iproj + (size_t)(mmax + m)],
+                        weight * P[m] * sm[m]);
                 }
             }
 
@@ -266,6 +175,7 @@ struct Count3PairOp {
     FLOAT *sposition1;
     FLOAT *position1;
 
+    MeshAttrs mattrs;
     SelectionAttrs sattrs;
     SelectionAttrs veto;
     BinAttrs battrs;
@@ -281,11 +191,17 @@ struct Count3PairOp {
     {
         (void)i;
 
-        if (!is_selected_pair_with_sattrs(
-                sposition1, sposition, position1, position, sattrs)) return;
+        if (!is_selected_pair(
+                sposition1, sposition,
+                position1, position,
+                sattrs,
+                mattrs)) return;
 
-        if (veto.ndim && is_selected_pair_with_sattrs(
-                sposition1, sposition, position1, position, veto)) return;
+        if (veto.ndim && is_selected_pair(
+                sposition1, sposition,
+                position1, position,
+                veto,
+                mattrs)) return;
 
         add_pair_weight(
             hist,
@@ -297,8 +213,8 @@ struct Count3PairOp {
             value,
             index_value,
             battrs,
-            leg
-        );
+            leg,
+            mattrs);
     }
 };
 
@@ -351,13 +267,21 @@ __global__ void count3_kernel(
         }
 
         FLOAT local_frame[3][NDIM];
-        build_local_frame(sposition1, local_frame);
+        LOS_TYPE los = LOS_FIRSTPOINT;
+        if (battrs12.ndim > 0 && battrs12.var[0] == VAR_POLE) {
+            los = battrs12.los[0];
+        }
+        else if (battrs13.ndim > 0 && battrs13.var[0] == VAR_POLE) {
+            los = battrs13.los[0];
+        }
+        build_los_frame(sposition1, los, local_frame);
 
         Count3PairOp op2{
             hist2,
             local_frame,
             sposition1,
             position1,
+            mattrs2,
             sattrs12,
             veto12,
             battrs12,
@@ -378,6 +302,7 @@ __global__ void count3_kernel(
             local_frame,
             sposition1,
             position1,
+            mattrs3,
             sattrs13,
             veto13,
             battrs13,

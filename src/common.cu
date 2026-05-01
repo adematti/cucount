@@ -273,7 +273,10 @@ void free_device_bin_attrs(BinAttrs *device_battrs, DeviceMemoryBuffer *buffer)
 }
 
 
-void copy_weight_attrs_to_device(WeightAttrs *device_attrs, const WeightAttrs *host_attrs, DeviceMemoryBuffer *buffer)
+void copy_weight_attrs_to_device(
+    WeightAttrs *device_attrs,
+    const WeightAttrs *host_attrs,
+    DeviceMemoryBuffer *buffer)
 {
     *device_attrs = *host_attrs;
 
@@ -282,7 +285,8 @@ void copy_weight_attrs_to_device(WeightAttrs *device_attrs, const WeightAttrs *h
     // -----------------
     device_attrs->bitwise.p_correction_nbits = NULL;
 
-    if (host_attrs->bitwise.p_nbits > 0) {
+    if (host_attrs->bitwise.p_nbits > 0 &&
+        host_attrs->bitwise.p_correction_nbits) {
         const size_t size =
             host_attrs->bitwise.p_nbits * host_attrs->bitwise.p_nbits;
 
@@ -303,48 +307,34 @@ void copy_weight_attrs_to_device(WeightAttrs *device_attrs, const WeightAttrs *h
     // -----------------
     for (size_t idim = 0; idim < MAX_NBIN; idim++) {
         device_attrs->angular.sep[idim] = NULL;
-        device_attrs->angular.edges[idim] = NULL;
     }
+
     device_attrs->angular.weight = NULL;
 
     if (host_attrs->angular.ndim == 0) return;
 
     for (size_t idim = 0; idim < host_attrs->angular.ndim; idim++) {
-        if (host_attrs->angular.sep[idim] && host_attrs->angular.edges[idim]) {
-            log_message(
-                LOG_LEVEL_ERROR,
-                "AngularWeight axis %zu has both sep and edges.\n",
-                idim);
-            exit(EXIT_FAILURE);
-        }
+        const size_t nsep =
+            host_attrs->angular.sep_is_edges
+                ? host_attrs->angular.shape[idim] + 1
+                : host_attrs->angular.shape[idim];
 
         if (host_attrs->angular.sep[idim]) {
             FLOAT *device_sep = (FLOAT*) my_device_malloc(
-                host_attrs->angular.shape[idim] * sizeof(FLOAT), buffer);
+                nsep * sizeof(FLOAT), buffer);
 
             CUDA_CHECK(cudaMemcpy(
                 device_sep,
                 host_attrs->angular.sep[idim],
-                host_attrs->angular.shape[idim] * sizeof(FLOAT),
+                nsep * sizeof(FLOAT),
                 cudaMemcpyHostToDevice));
 
             device_attrs->angular.sep[idim] = device_sep;
         }
-        else if (host_attrs->angular.edges[idim]) {
-            FLOAT *device_edges = (FLOAT*) my_device_malloc(
-                (host_attrs->angular.shape[idim] + 1) * sizeof(FLOAT), buffer);
-
-            CUDA_CHECK(cudaMemcpy(
-                device_edges,
-                host_attrs->angular.edges[idim],
-                (host_attrs->angular.shape[idim] + 1) * sizeof(FLOAT),
-                cudaMemcpyHostToDevice));
-
-            device_attrs->angular.edges[idim] = device_edges;
-        }
     }
 
-    if (host_attrs->angular.size > 0) {
+    if (host_attrs->angular.size > 0 &&
+        host_attrs->angular.weight) {
         FLOAT *device_weight = (FLOAT*) my_device_malloc(
             host_attrs->angular.size * sizeof(FLOAT), buffer);
 
@@ -358,7 +348,6 @@ void copy_weight_attrs_to_device(WeightAttrs *device_attrs, const WeightAttrs *h
     }
 }
 
-
 void free_device_weight_attrs(WeightAttrs *device_attrs, DeviceMemoryBuffer *buffer)
 {
     // -----------------
@@ -369,16 +358,19 @@ void free_device_weight_attrs(WeightAttrs *device_attrs, DeviceMemoryBuffer *buf
             my_device_free(device_attrs->angular.sep[idim], buffer);
             device_attrs->angular.sep[idim] = NULL;
         }
-        if (device_attrs->angular.edges[idim]) {
-            my_device_free(device_attrs->angular.edges[idim], buffer);
-            device_attrs->angular.edges[idim] = NULL;
-        }
+
+        device_attrs->angular.sep_is_edges[idim] = false;
+        device_attrs->angular.bin[idim] = BIN_CUSTOM;
+        device_attrs->angular.shape[idim] = 0;
     }
 
     if (device_attrs->angular.weight) {
         my_device_free(device_attrs->angular.weight, buffer);
         device_attrs->angular.weight = NULL;
     }
+
+    device_attrs->angular.size = 0;
+    device_attrs->angular.ndim = 0;
 
     // -----------------
     // BitwiseWeight
@@ -387,6 +379,8 @@ void free_device_weight_attrs(WeightAttrs *device_attrs, DeviceMemoryBuffer *buf
         my_device_free(device_attrs->bitwise.p_correction_nbits, buffer);
         device_attrs->bitwise.p_correction_nbits = NULL;
     }
+
+    device_attrs->bitwise.p_nbits = 0;
 }
 
 

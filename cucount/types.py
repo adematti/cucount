@@ -84,7 +84,7 @@ def count2(*particles: Particles, battrs: BinAttrs=None, wattrs: WeightAttrs=Non
 
     # Preparation to remove self pairs (in a jax and numpy-friendly way)
     coord_names, zero_masks = [], []
-    for name, edges in battrs.edges():
+    for name, edges in battrs.edges().items():
         if name == 'pole':
             mask = np.array([(2 * ell + 1) * special.legendre(ell)(0.) for ell in edges])
             zero_masks.append(mask)

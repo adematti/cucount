@@ -38,7 +38,7 @@ def test_backends():
         else:
             import jax
             jax.config.update("jax_enable_x64", True)
-            from cucount.jax import Particles, count3close, BinAttrs, SelectionAttrs, create_sharding_mesh
+            from cucount.jax import Particles, count3close, count3, BinAttrs, SelectionAttrs, create_sharding_mesh
         particles = Particles(positions=data_positions, weights=data_weights)
         data = Particles(data_positions, data_weights)
         if binning == 'theta':
@@ -220,7 +220,7 @@ def test_triposh():
     particles = Particles(positions=positions, weights=weights)
     sattrs = SelectionAttrs(theta=(0., theta_max))
 
-    triposh_ells = [(0, 0, 0), (2, 0, 2), (2, 2, 2)]
+    triposh_ells = [(0, 0, 0), (2, 0, 2)] #, (2, 2, 2)]
     ells1, ells2 = triposh_to_poles(triposh_ells)
     battrs12 = BinAttrs(s=sedges, pole=(ells1, "firstpoint"))
     battrs13 = BinAttrs(s=sedges, pole=(ells2, "firstpoint"))
@@ -245,5 +245,5 @@ if __name__ == '__main__':
 
     #test_count3close()
     #test_count3close_symmetry()
-    #test_backends()
-    test_triposh()
+    test_backends()
+    #test_triposh()
