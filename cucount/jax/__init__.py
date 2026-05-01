@@ -142,6 +142,10 @@ class Particles(numpy.Particles):
         new.positions = jnp.concatenate([other.positions for other in others], axis=0)
         return new
 
+
+symmetrize_poles = partial(numpy.symmetrize_poles, np=jnp)
+
+
 jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 

@@ -5,7 +5,7 @@ from functools import partial
 import numpy as np
 from scipy import special
 
-from cucount.numpy import Particles, BinAttrs, WeightAttrs, MeshAttrs, symmetrize_poles
+from cucount.numpy import Particles, BinAttrs, WeightAttrs, MeshAttrs
 
 
 prod = partial(functools.reduce, operator.mul)
@@ -232,9 +232,9 @@ def count3close(*particles: Particles,
 
     use_jax = _use_jax(particles[0])
     if use_jax:
-        from cucount.jax import count3close
+        from cucount.jax import count3close, symmetrize_poles
     else:
-        from cucount.numpy import count3close
+        from cucount.numpy import count3close, symmetrize_poles
 
     raw_counts = count3close(
         *(particles + (particles[-1],) * (3 - len(particles))),
@@ -333,9 +333,9 @@ def count3(*particles: Particles,
 
     use_jax = _use_jax(particles[0])
     if use_jax:
-        from cucount.jax import count3
+        from cucount.jax import count3, symmetrize_poles
     else:
-        from cucount.numpy import count3
+        from cucount.numpy import count3, symmetrize_poles
 
     raw_counts = count3(
         *(particles + (particles[-1],) * (3 - len(particles))),
