@@ -142,7 +142,8 @@ def test_triposh():
             mu = xhat[2]
             phi = np.arctan2(xhat[1], xhat[0])
             fac = special.factorial(ell - abs(mm), exact=False) / special.factorial(ell + abs(mm), exact=False)
-            amp = np.sqrt((2 * ell + 1) / (4. * np.pi)) * np.sqrt(fac)
+            #amp = np.sqrt((2 * ell + 1) / (4. * np.pi)) * np.sqrt(fac)
+            amp = np.sqrt((2 * ell + 1)) * np.sqrt(fac)
             return amp * special.lpmv(abs(mm), ell, mu) * np.exp(1j * mm * phi)
 
         for i in range(n):
@@ -219,7 +220,7 @@ def test_triposh():
     particles = Particles(positions=positions, weights=weights)
     sattrs = SelectionAttrs(theta=(0., theta_max))
 
-    triposh_ells = [(0, 0, 0), (2, 0, 2)]
+    triposh_ells = [(0, 0, 0), (2, 0, 2), (2, 2, 2)]
     ells1, ells2 = triposh_to_poles(triposh_ells)
     battrs12 = BinAttrs(s=sedges, pole=(ells1, "firstpoint"))
     battrs13 = BinAttrs(s=sedges, pole=(ells2, "firstpoint"))

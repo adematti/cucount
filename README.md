@@ -1,6 +1,6 @@
 # cucount: CUDA-Powered Pair Counts
 
-**cucount** is a high-performance CUDA implementation for computing pair counts (positions - spins), optimized for GPUs. It provides both NumPy and JAX interfaces depending on your workflow.
+**cucount** is a high-performance CUDA implementation for computing pair counts (positions - spins), and triplet counts, optimized for GPUs. It provides both NumPy and JAX interfaces depending on your workflow.
 
 > ⚠️ A CUDA-capable GPU is required.
 
@@ -124,7 +124,7 @@ with create_sharding_mesh():
 
 ## 🙏 Acknowledgment
 
-Special thanks to **François Lanusse** for valuable advice on Python–JAX bindings.
+Special thanks to **François Lanusse** for valuable advice on Python-JAX bindings.
 
 ---
 

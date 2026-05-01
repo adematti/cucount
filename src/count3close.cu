@@ -283,13 +283,15 @@ DeviceCount3Layout make_device_count3_layout(
 // ============================================================================
 
 __device__ void compute_trig_up_to_m(
-    int mmax, FLOAT c1, FLOAT s1, FLOAT cm[5], FLOAT sm[5])
+    int mmax, FLOAT c1, FLOAT s1, FLOAT cm[MMAX_SIZE], FLOAT sm[MMAX_SIZE])
 {
     #pragma unroll
-    for (int m = 0; m < 5; m++) {
+    for (int m = 0; m < MMAX_SIZE; m++) {
         cm[m] = (FLOAT)0.;
         sm[m] = (FLOAT)0.;
     }
+
+    mmax = MIN(mmax, ELLMAX);
 
     cm[0] = (FLOAT)1.;
     sm[0] = (FLOAT)0.;
@@ -300,7 +302,7 @@ __device__ void compute_trig_up_to_m(
     if (mmax <= 1) return;
 
     #pragma unroll
-    for (int m = 2; m <= 4; m++) {
+    for (int m = 2; m < MMAX_SIZE; m++) {
         if (m > mmax) break;
         cm[m] = c1 * cm[m - 1] - s1 * sm[m - 1];
         sm[m] = s1 * cm[m - 1] + c1 * sm[m - 1];
@@ -308,25 +310,27 @@ __device__ void compute_trig_up_to_m(
 }
 
 
-__device__ void compute_pbar_row_lmax4(
-    int ell, int mmax, FLOAT mu, FLOAT Prow[5])
+__device__ void compute_pbar_row_lmax5(int ell, int mmax, FLOAT mu, FLOAT Prow[MMAX_SIZE])
 {
     FLOAT x  = clamp1(mu);
     FLOAT x2 = x * x;
     FLOAT x3 = x2 * x;
     FLOAT x4 = x2 * x2;
+    FLOAT x5 = x4 * x;
 
     FLOAT s2 = MAX((FLOAT)0., (FLOAT)1. - x2);
     FLOAT s  = sqrt(s2);
     FLOAT s3 = s2 * s;
     FLOAT s4 = s2 * s2;
+    FLOAT s5 = s4 * s;
 
     #pragma unroll
-    for (int m = 0; m < 5; m++) {
+    for (int m = 0; m < MMAX_SIZE; m++) {
         Prow[m] = (FLOAT)0.;
     }
 
     if (mmax > ell) mmax = ell;
+    if (mmax > ELLMAX) mmax = ELLMAX;
     if (mmax < 0) return;
 
     switch (ell) {
@@ -358,6 +362,15 @@ __device__ void compute_pbar_row_lmax4(
             if (mmax >= 2) Prow[2] =  (FLOAT)0.39528470752104741743 * ((((FLOAT)7.) * x2) - (FLOAT)1.) * s2;
             if (mmax >= 3) Prow[3] = -(FLOAT)0.93541434669348534640 * x * s3;
             if (mmax >= 4) Prow[4] =  (FLOAT)0.52291251658379721705 * s4;
+            break;
+
+        case 5:
+            if (mmax >= 0) Prow[0] = ((FLOAT)0.125) * (((FLOAT)63.) * x5 - ((FLOAT)70.) * x3 + ((FLOAT)15.) * x);
+            if (mmax >= 1) Prow[1] = -(FLOAT)0.19882122822827110675 * ((((FLOAT)21.) * x4) - ((FLOAT)14.) * x2 + (FLOAT)1.) * s;
+            if (mmax >= 2) Prow[2] =  (FLOAT)0.48412291827592711065 * x * ((((FLOAT)3.) * x2) - (FLOAT)1.) * s2;
+            if (mmax >= 3) Prow[3] = -(FLOAT)0.52291251658379721705 * ((((FLOAT)9.) * x2) - (FLOAT)1.) * s3;
+            if (mmax >= 4) Prow[4] =  (FLOAT)1.16926793336685668103 * x * s4;
+            if (mmax >= 5) Prow[5] = -(FLOAT)0.70156076002011400980 * s5;
             break;
 
         default:
@@ -538,14 +551,13 @@ __device__ inline void add_weight3(
         }
     }
 
-    FLOAT cm[5], sm[5];
+    FLOAT cm[MMAX_SIZE], sm[MMAX_SIZE];
+    FLOAT P1[4][MMAX_SIZE];
+    FLOAT P2[4][MMAX_SIZE];
     compute_trig_up_to_m(global_mmax, cdphi, sdphi, cm, sm);
 
-    FLOAT P1[4][5];
-    FLOAT P2[4][5];
-
     for (size_t i1 = 0; i1 < device_layout.nells1; i1++) {
-        compute_pbar_row_lmax4(
+        compute_pbar_row_lmax5(
             (int)device_layout.ells1[i1],
             row_mmax1[i1],
             mu[0],
@@ -554,7 +566,7 @@ __device__ inline void add_weight3(
     }
 
     for (size_t i2 = 0; i2 < device_layout.nells2; i2++) {
-        compute_pbar_row_lmax4(
+        compute_pbar_row_lmax5(
             (int)device_layout.ells2[i2],
             row_mmax2[i2],
             mu[1],
@@ -571,7 +583,8 @@ __device__ inline void add_weight3(
             int ell2 = (int)device_layout.ells2[i2];
             int mmax = MIN(ell1, ell2);
 
-            FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1))) / ((FLOAT)(4.0 * M_PI));
+            //FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1))) / ((FLOAT)(4.0 * M_PI));
+            FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1)));
 
             for (int m = 0; m <= mmax; m++) {
                 FLOAT amp = triplet_weight * ell_norm * P1[i1][m] * P2[i2][m];

@@ -226,7 +226,7 @@ __device__ inline void add_pair_weight(
         global_mmax = MAX(global_mmax, (int)device_layout.ells2[iell2]);
     }
 
-    FLOAT cm[5], sm[5];
+    FLOAT cm[MMAX_SIZE], sm[MMAX_SIZE];
     compute_trig_up_to_m(global_mmax, cphi, sphi, cm, sm);
 
     FLOAT *hist_bin = hist + (size_t)ibin * device_layout.nprojs;
@@ -242,8 +242,8 @@ __device__ inline void add_pair_weight(
             int mmax = MIN(ell1, ell2);
             int ell = (leg == COUNT3_LEG_12) ? ell1 : ell2;
 
-            FLOAT P[5];
-            compute_pbar_row_lmax4(ell, mmax, mu, P);
+            FLOAT P[MMAX_SIZE];
+            compute_pbar_row_lmax5(ell, mmax, mu, P);
 
             for (int m = 0; m <= mmax; m++) {
                 atomicAdd(&hist_bin[iproj + (size_t)m], weight * P[m] * cm[m]);
@@ -424,7 +424,8 @@ __global__ void count3_kernel(
                 for (size_t iell2 = 0; iell2 < device_layout.nells2; iell2++) {
                     int ell2 = (int)device_layout.ells2[iell2];
                     int mmax = MIN(ell1, ell2);
-                    FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1))) / ((FLOAT)(4.0 * M_PI));
+                    //FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1))) / ((FLOAT)(4.0 * M_PI));
+                    FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1)));
 
                     for (size_t ibin12 = 0; ibin12 < (size_t)battrs12.shape[0]; ibin12++) {
                         FLOAT *hist2_bin = hist2 + ibin12 * device_layout.nprojs;

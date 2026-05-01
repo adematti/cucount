@@ -591,6 +591,11 @@ class IndexValue(object):
             sizes[name] = size
         self._sizes = sizes
 
+    def copy(self):
+        new = self.__class__.__new__(self.__class__)
+        new._sizes = dict(self._sizes)
+        return new
+
     def clone(self, **kwargs):
         """Copy and update."""
         return self.__class__(**(self._sizes | kwargs))
@@ -745,11 +750,18 @@ class Particles(object):
     def size(self):
         return self.positions.shape[0]
 
+    def copy(self):
+        new = self.__class__.__new__(self.__class__)
+        new.index_value = self.index_value.copy()
+        new.values = list(self.values)
+        new.positions = self.positions
+        return new
+
     @classmethod
     def concatenate(cls, others):
         """Concatenate particles."""
-        new = cls.__new__(cls)
-        new.index_value = others[0].index_value.clone()
+        others = list(others)
+        new = others[0].copy()
         new.values = [np.concatenate(values, axis=0) for values in zip(*[other.values for other in others])]
         new.positions = np.concatenate([other.positions for other in others], axis=0)
         return new
@@ -774,6 +786,16 @@ class Particles(object):
                 if name not in ['split', 'spin']: weights += self.values[sl]
             return weights
         return self.values[self.index_value(name, return_type=slice)]
+
+    def __getitem__(self, name):
+        if isinstance(name, str):
+            return self.get(name)
+        mask = name
+        new = self.copy()
+        new.index_value = self.index_value.clone()
+        new.values = [value[mask] for value in self.values]
+        new.positions = self.positions[mask]
+        return new
 
     def tree_flatten(self):
         # Only used by JAX; kept here for API consistency
@@ -897,7 +919,7 @@ def _get_ells(battrs):
     if isinstance(battrs, BinAttrs):
         try:
             ells = battrs.coords('pole')
-        except (AttributeError, IndexError):
+        except (ValueError, IndexError):
             ells = []
     else:
         ells = battrs
@@ -932,7 +954,6 @@ def symmetrize_poles(poles, ells1, ells2, axis=-1, np=np):
         Output labels ``(ell1, ell2, m)``.
     """
     labels = poles_to_ells(ells1, ells2)
-    print(labels)
 
     keep = []
     factors = []

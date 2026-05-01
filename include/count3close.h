@@ -8,33 +8,8 @@
 #include "common.h"
 
 
-#ifndef SQRT1_2
-#define SQRT1_2 0.70710678118654752440
-#endif
-
-#ifndef SQRT3_8
-#define SQRT3_8 0.61237243569579452455
-#endif
-
-#ifndef SQRT3_2
-#define SQRT3_2 1.22474487139158904910
-#endif
-
-#ifndef SQRT15_8
-#define SQRT15_8 1.36930639376291527536
-#endif
-
-#ifndef SQRT5_4
-#define SQRT5_4 1.11803398874989484820
-#endif
-
-#ifndef SQRT10_8
-#define SQRT10_8 1.11803398874989484820
-#endif
-
-#ifndef SQRT70_16
-#define SQRT70_16 2.09165006633518886818
-#endif
+#define ELLMAX 5
+#define MMAX_SIZE 6
 
 
 typedef enum {
@@ -68,11 +43,11 @@ __device__ void build_local_frame(const FLOAT *ez_in, FLOAT local_frame[3][NDIM]
 
 
 __device__ void compute_trig_up_to_m(
-    int mmax, FLOAT c1, FLOAT s1, FLOAT cm[5], FLOAT sm[5]);
+    int mmax, FLOAT c1, FLOAT s1, FLOAT cm[ELLMAX], FLOAT sm[ELLMAX]);
 
 
-__device__ void compute_pbar_row_lmax4(
-    int ell, int mmax, FLOAT mu, FLOAT Prow[5]);
+__device__ void compute_pbar_row_lmax5(
+    int ell, int mmax, FLOAT mu, FLOAT Prow[ELLMAX]);
 
 
 
