@@ -17,6 +17,10 @@ from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weigh
 from cucount import numpy
 
 
+MAX_NBLOCKS = 256
+MAX_NTHREADS_PER_BLOCK = 512
+
+
 jax.ffi.register_ffi_target('count2', ffi_cucount.count2())
 
 
@@ -166,7 +170,7 @@ def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs,
     res_type = jax.ShapeDtypeStruct((len(names) * size,), dtype)
 
     # Max values
-    nblocks = 256
+    nblocks = MAX_NBLOCKS
 
     # Two meshes
     meshsize = mattrs.meshsize.prod()
@@ -331,7 +335,7 @@ def _count3close_no_shard(
 
     res_type = jax.ShapeDtypeStruct((len(names) * size,), dtype)
 
-    nblocks = 256
+    nblocks = MAX_NBLOCKS
 
     meshsize1 = int(np.prod(mattrs1.meshsize))
     meshsize2 = int(np.prod(mattrs2.meshsize))
@@ -523,8 +527,8 @@ def _count3_no_shard(
 
     res_type = jax.ShapeDtypeStruct((len(names) * size,), dtype)
 
-    nblocks = 256
-    nthreads_per_block = 256
+    nblocks = MAX_NBLOCKS
+    nthreads_per_block = MAX_NTHREADS_PER_BLOCK
 
     meshsize1 = int(np.prod(mattrs1.meshsize))
     meshsize2 = int(np.prod(mattrs2.meshsize))

@@ -22,6 +22,9 @@
 namespace py = pybind11;
 namespace ffi = xla::ffi;
 
+#define MAX_NBLOCKS 256
+#define MAX_NTHREADS_PER_BLOCK 512
+
 // -----------------------------------------------------------------------------
 // Static state for count2
 // -----------------------------------------------------------------------------
@@ -360,8 +363,8 @@ ffi::Error count2Impl(
 
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
-    membuffer.nblocks = 256;
-    membuffer.nthreads_per_block = 256;
+    membuffer.nblocks = MAX_NBLOCKS;
+    membuffer.nthreads_per_block = MAX_NTHREADS_PER_BLOCK * 16;  // not used in memory allocation
 
     set_mesh(list_particles, list_mesh, mattrs2, &membuffer, stream);
     count2(counts->typed_data(), list_mesh, mattrs2, sattrs2, battrs2, wattrs2, spattrs2, &membuffer, stream);
@@ -413,8 +416,8 @@ ffi::Error count3closeImpl(
 
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
-    membuffer.nblocks = 256;
-    membuffer.nthreads_per_block = 256;
+    membuffer.nblocks = MAX_NBLOCKS;
+    membuffer.nthreads_per_block = MAX_NTHREADS_PER_BLOCK * 16;  // not used in memory allocation
 
     Mesh mesh1{};
     Mesh mesh2{};
@@ -496,8 +499,8 @@ ffi::Error count3Impl(
 
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
-    membuffer.nblocks = 256;
-    membuffer.nthreads_per_block = 256;
+    membuffer.nblocks = MAX_NBLOCKS;
+    membuffer.nthreads_per_block = MAX_NTHREADS_PER_BLOCK;
 
     Mesh mesh1{};
     Mesh mesh2{};

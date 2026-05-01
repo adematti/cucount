@@ -301,7 +301,7 @@ struct BinAttrs_py {
             battrs.bin[i] = BIN_CUSTOM;
             if (is_linear(battrs.array[i], sizes[i], step[i])) {
                 battrs.bin[i] = BIN_LIN;
-            } else if ((battrs.array[i][0] > (FLOAT)0.) && is_log(battrs.array[i], sizes[i], battrs.array[i][1] / battrs.array[i][0])) {
+            } else if ((sizes[i] > 1000) && (battrs.array[i][0] > (FLOAT)0.) && is_log(battrs.array[i], sizes[i], battrs.array[i][1] / battrs.array[i][0])) {
                 battrs.bin[i] = BIN_LOG;
             }
         }
@@ -569,7 +569,7 @@ struct WeightAttrs_py {
                 if (sep && nbins >= 1) {
                     if (is_linear(sep, nbins, sep[1] - sep[0])) {
                         wattrs.angular.bin[i] = BIN_LIN;
-                    } else if ((sep[0] > (FLOAT)0.) && (is_log(sep, nbins, sep[1] / sep[0]))) {
+                    } else if ((nbins > 1000) && (sep[0] > (FLOAT)0.) && (is_log(sep, nbins, sep[1] / sep[0]))) {
                         wattrs.angular.bin[i] = BIN_LOG;
                     }
                 }

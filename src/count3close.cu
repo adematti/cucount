@@ -1242,6 +1242,7 @@ void count3_close(
         nblocks,
         nthreads_per_block,
         buffer);
+    //printf("NBLOCKS %d, %d\n", nblocks, nthreads_per_block);
 
     FLOAT *block_counts = (FLOAT *)my_device_malloc(
         nblocks * csize * sizeof(FLOAT),
