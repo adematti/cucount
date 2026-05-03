@@ -9,32 +9,7 @@
 
 // count2.h helpers
 
-__device__ void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2);
-
-__global__ void reduce_add_kernel(const FLOAT *in, size_t size, FLOAT *out, size_t stride);
-
-__device__ FLOAT wrap_periodic_float(FLOAT dxyz, FLOAT boxsize);
-
-__device__ int wrap_periodic_int(int idx, int meshsize);
-
-__device__ void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2);
-
-__device__ void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2, const MeshAttrs &mattrs);
-
-__device__ FLOAT dot(const FLOAT *position1, const FLOAT *position2);
-
-
 #define BESSEL_XMIN 0.1
-
-__device__ FLOAT get_bessel(int ell, FLOAT x);
-
-__global__ void reduce_add_kernel(const FLOAT *block_counts, size_t nblocks, FLOAT *counts, size_t csize);
-
-__device__ int get_edge_bin_index(FLOAT value, const FLOAT *edges, int nbins);
-
-__device__ int get_bin_index(const BinAttrs *battrs, int index, FLOAT value);
-
-__device__ int get_interp_bin_index(FLOAT x, const FLOAT *sep, int nsep, FLOAT *frac);
 
 
 typedef struct DeviceCount2Layout {
@@ -53,7 +28,56 @@ size_t get_count2_weight_names(IndexValue index_value1, IndexValue index_value2,
                         char names[][SIZE_NAME]);
 
 
-__device__ int get_sep_bin_index(FLOAT value, const FLOAT *sep, int shape, BIN_TYPE bin, bool sep_is_edges);
+__global__ void reduce_add_kernel(
+    const FLOAT *block_counts,
+    size_t nblocks,
+    FLOAT *counts,
+    size_t csize);
+
+
+__device__ FLOAT wrap_periodic_float(FLOAT dxyz, FLOAT boxsize);
+
+
+__device__ int wrap_periodic_int(int idx, int meshsize);
+
+
+__device__ void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2);
+
+
+__device__ FLOAT dot(const FLOAT *position1, const FLOAT *position2);
+
+
+__device__ void set_angular_bounds(
+    const FLOAT *sposition,
+    const MeshAttrs &mattrs,
+    int *bounds);
+
+
+__device__ void set_cartesian_bounds(
+    const FLOAT *position,
+    const MeshAttrs &mattrs,
+    int *bounds);
+
+
+__device__ void difference(
+    FLOAT *diff,
+    const FLOAT *position1,
+    const FLOAT *position2,
+    const MeshAttrs &mattrs);
+
+
+__device__ bool is_selected_pair(const FLOAT *sposition1, const FLOAT *sposition2, const FLOAT *position1, const FLOAT *position2, const SelectionAttrs &sattrs, const MeshAttrs &mattrs);
+
+
+__device__ int get_bin_index(const BinAttrs *battrs, int idim, FLOAT value);
+
+
+__device__ int get_sep_bin_index(
+    FLOAT value,
+    const FLOAT *sep,
+    int shape,
+    BIN_TYPE bin,
+    bool sep_is_edges);
 
 
 __device__ inline int get_interp_sep_index(
@@ -175,30 +199,14 @@ template <int ND> __device__ FLOAT lookup_angular_weight(
 }
 
 
-__device__ bool is_selected_pair(
-    FLOAT *sposition1,
-    FLOAT *sposition2,
-    FLOAT *position1,
-    FLOAT *position2,
-    const SelectionAttrs &sattrs,
-    const MeshAttrs &mattrs);
+
+void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
+    const SelectionAttrs sattrs, BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs,
+    DeviceMemoryBuffer *buffer, cudaStream_t stream);
 
 
-__device__ void set_angular_bounds(
-    const FLOAT *sposition,
-    const MeshAttrs &mattrs,
-    int *bounds);
 
 
-__device__ void set_cartesian_bounds(
-    const FLOAT *position,
-    const MeshAttrs &mattrs,
-    int *bounds);
-
-
-// ============================================================================
-// Candidate iteration
-// ============================================================================
 
 template <typename Op>
 __device__ void for_each_candidate_angular(
@@ -227,9 +235,9 @@ __device__ void for_each_candidate_angular(
             FLOAT *spositions = &(target_mesh.spositions[NDIM * cum]);
             FLOAT *values     = &(target_mesh.values[target_mesh.index_value.size * cum]);
 
-            for (int j = 0; j < np; j++) {
+            for (size_t j = 0; j < np; j++) {
                 op(
-                    cum + (size_t)j,
+                    cum + j,
                     &(positions[NDIM * j]),
                     &(spositions[NDIM * j]),
                     &(values[target_mesh.index_value.size * j])
@@ -238,6 +246,7 @@ __device__ void for_each_candidate_angular(
         }
     }
 }
+
 
 
 template <typename Op>
@@ -270,9 +279,9 @@ __device__ void for_each_candidate_cartesian(
                 FLOAT *spositions = &(target_mesh.spositions[NDIM * cum]);
                 FLOAT *values     = &(target_mesh.values[target_mesh.index_value.size * cum]);
 
-                for (int j = 0; j < np; j++) {
+                for (size_t j = 0; j < np; j++) {
                     op(
-                        cum + (size_t)j,
+                        cum + j,
                         &(positions[NDIM * j]),
                         &(spositions[NDIM * j]),
                         &(values[target_mesh.index_value.size * j])
@@ -282,6 +291,7 @@ __device__ void for_each_candidate_cartesian(
         }
     }
 }
+
 
 
 template <MESH_TYPE TARGET_MESH_TYPE, typename Op>
@@ -309,9 +319,7 @@ __device__ void for_each_candidate(
 }
 
 
-void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
-    const SelectionAttrs sattrs, BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs,
-    DeviceMemoryBuffer *buffer, cudaStream_t stream);
+
 
 
 #endif

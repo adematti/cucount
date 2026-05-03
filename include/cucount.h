@@ -301,8 +301,12 @@ struct BinAttrs_py {
             battrs.bin[i] = BIN_CUSTOM;
             if (is_linear(battrs.array[i], sizes[i], step[i])) {
                 battrs.bin[i] = BIN_LIN;
+                //battrs.array[i] = nullptr;
+                //battrs.asize[i] = 0;
             } else if ((sizes[i] > 1000) && (battrs.array[i][0] > (FLOAT)0.) && is_log(battrs.array[i], sizes[i], battrs.array[i][1] / battrs.array[i][0])) {
                 battrs.bin[i] = BIN_LOG;
+                //battrs.array[i] = nullptr;
+                //battrs.asize[i] = 0;
             }
         }
         return battrs;

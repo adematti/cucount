@@ -1505,7 +1505,7 @@ def joint_occurences(nrealizations=128, max_occurences=None, noffset=1, default_
 
 def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
     """
-    Perform two-point pair counts analytically for periodic boxes.
+    Perform pair counts analytically for periodic boxes.
 
     Parameters
     ----------
@@ -1544,3 +1544,47 @@ def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
     else:
         raise NotImplementedError('No analytic pair counter provided for binning {}'.format(mode))
     return np.squeeze(dv).reshape(shape) / boxsize.prod()
+
+
+
+prod = functools.partial(functools.reduce, operator.mul)
+
+
+def count3_analytic(battrs12: BinAttrs, battrs13: BinAttrs, mattrs: MeshAttrs=None):
+    """
+    Perform triplet counts analytically for periodic boxes.
+
+    Parameters
+    ----------
+    battrs12, battrs13 : BinAttrs
+        Binning specification (edges/shape) for the pair counts.
+    mattrs : MeshAttrs or array, optional
+        Mesh attributes (boxsize).
+
+    Returns
+    -------
+    counts : array
+        Normalized analytical triplet counts in each bin.
+    """
+    boxsize = getattr(mattrs, 'boxsize', mattrs) * np.ones(3, dtype=np.float64)
+    dvs = []
+    for battrs in [battrs12, battrs13]:
+        edges = battrs.edges()
+        mode = tuple(edges)
+        shape = battrs.shape
+        if mode == ('s',) or mode == ('s', 'pole'):
+            v = 4. / 3. * np.pi * edges['s']**3
+            dv = np.diff(v, axis=-1)
+        else:
+            raise NotImplementedError('No analytic pair counter provided for binning {}'.format(mode))
+        dv /= boxsize.prod()
+        dvs.append(dv)
+    dv = prod(np.meshgrid(dvs, indexing='ij', sparse=True))
+    ells = poles_to_ells(battrs12, battrs13)
+    if ells:
+        factor = np.zeros(len(ells))
+        ell0 = (0, 0, 0)
+        if ell0 in ells:
+            factor[ells.index(ell0)] = 1.
+        dv = dv[..., None] * factor
+    return dv

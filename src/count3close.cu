@@ -8,7 +8,8 @@
 #include "count3close.h"
 
 
-__device__ inline FLOAT clamp1(FLOAT x)
+
+__device__ FLOAT clamp1(FLOAT x)
 {
     return MIN((FLOAT)1., MAX((FLOAT)-1., x));
 }
@@ -165,18 +166,18 @@ DeviceCount3Layout make_device_count3_layout(
         layout.nprojs1 = 0;
         layout.nprojs2 = 0;
 
-        for (size_t iell1 = 0; iell1 < layout.nells1; iell1++) {
-            int ell1 = (int)layout.ells1[iell1];
+        for (size_t ill1 = 0; ill1 < layout.nells1; ill1++) {
+            int ell1 = (int)layout.ells1[ill1];
             layout.nprojs1 += (size_t)(2 * ell1 + 1);
 
-            for (size_t iell2 = 0; iell2 < layout.nells2; iell2++) {
-                int ell2 = (int)layout.ells2[iell2];
+            for (size_t ill2 = 0; ill2 < layout.nells2; ill2++) {
+                int ell2 = (int)layout.ells2[ill2];
                 layout.nprojs += (size_t)(2 * MIN(ell1, ell2) + 1);
             }
         }
 
-        for (size_t iell2 = 0; iell2 < layout.nells2; iell2++) {
-            int ell2 = (int)layout.ells2[iell2];
+        for (size_t ill2 = 0; ill2 < layout.nells2; ill2++) {
+            int ell2 = (int)layout.ells2[ill2];
             layout.nprojs2 += (size_t)(2 * ell2 + 1);
         }
 

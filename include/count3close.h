@@ -47,6 +47,9 @@ typedef struct DeviceCount3Layout {
 DeviceCount3Layout make_device_count3_layout(const BinAttrs battrs12, const BinAttrs battrs13, const BinAttrs battrs23);
 
 
+__device__ FLOAT clamp1(FLOAT x);
+
+
 void count3_close(
     FLOAT *counts,
     Mesh mesh1,

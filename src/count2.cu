@@ -5,9 +5,18 @@
 #include "common.h"
 #include "count2.h"
 
-
+__device__ __constant__ MeshAttrs device_mattrs;
+__device__ __constant__ SelectionAttrs device_sattrs;
 __device__ __constant__ SplitAttrs device_spattrs;
 static __device__ __constant__ DeviceCount2Layout device_layout;
+//__device__ __constant__ BinAttrs device_battrs;
+
+
+
+__device__ int wrap_periodic_int(int idx, int meshsize) {
+    int r = idx % meshsize;
+    return (r < 0) ? r + meshsize : r;
+}
 
 
 __device__ FLOAT wrap_periodic_float(FLOAT dxyz, FLOAT boxsize) {
@@ -18,49 +27,6 @@ __device__ FLOAT wrap_periodic_float(FLOAT dxyz, FLOAT boxsize) {
     return x - half;
 }
 
-
-__device__ int wrap_periodic_int(int idx, int meshsize) {
-    int r = idx % meshsize;
-    return (r < 0) ? r + meshsize : r;
-}
-
-
-__device__ void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        add[axis] = position1[axis] + position2[axis];
-    }
-}
-
-
-__device__ void difference(
-    FLOAT *diff,
-    const FLOAT *position1,
-    const FLOAT *position2,
-    const MeshAttrs &mattrs)
-{
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        diff[axis] = position1[axis] - position2[axis];
-
-        if (mattrs.periodic) {
-            diff[axis] = wrap_periodic_float(diff[axis], mattrs.boxsize[axis]);
-        }
-    }
-}
-
-
-__device__ FLOAT dot(const FLOAT *position1, const FLOAT *position2) {
-    FLOAT d = 0.;
-    for (size_t axis = 0; axis < NDIM; axis++) {
-        d += position1[axis] * position2[axis];
-    }
-    return d;
-}
-
-
-
-// ============================================================================
-// Search bounds helpers with explicit MeshAttrs
-// ============================================================================
 
 __device__ void set_angular_bounds(
     const FLOAT *sposition,
@@ -164,31 +130,44 @@ __device__ void set_cartesian_bounds(
 }
 
 
-__device__ bool is_selected_pair(
-    FLOAT *sposition1,
-    FLOAT *sposition2,
-    FLOAT *position1,
-    FLOAT *position2,
-    const SelectionAttrs &sattrs,
-    const MeshAttrs &mattrs)
-{
-    bool selected = true;
+__device__ FLOAT dot(const FLOAT *position1, const FLOAT *position2) {
+    FLOAT d = 0.;
+    for (size_t axis = 0; axis < NDIM; axis++) d += position1[axis] * position2[axis];
+    return d;
+}
+
+
+__device__ void addition(FLOAT *add, const FLOAT *position1, const FLOAT *position2) {
+    for (size_t axis = 0; axis < NDIM; axis++) {
+        add[axis] = position1[axis] + position2[axis];
+    }
+}
+
+
+__device__ void difference(FLOAT *diff, const FLOAT *position1, const FLOAT *position2, const MeshAttrs &mattrs) {
+    for (size_t axis = 0; axis < NDIM; axis++) {
+        diff[axis] = position1[axis] - position2[axis];
+        if (mattrs.periodic) diff[axis] = wrap_periodic_float(diff[axis], mattrs.boxsize[axis]);
+    }
+}
+
+
+
+__device__ bool is_selected_pair(const FLOAT *sposition1, const FLOAT *sposition2, const FLOAT *position1, const FLOAT *position2, const SelectionAttrs &sattrs, const MeshAttrs &mattrs) {
+    bool selected = 1;
 
     for (size_t i = 0; i < sattrs.ndim; i++) {
         int var = sattrs.var[i];
 
         if (var == VAR_THETA) {
             FLOAT costheta = dot(sposition1, sposition2);
-            selected &= (costheta >= sattrs.smin[i]) &&
-                        (costheta <= sattrs.smax[i]);
+            selected &= (costheta >= sattrs.smin[i]) && (costheta <= sattrs.smax[i]);
         }
 
         if (var == VAR_S) {
             FLOAT diff[NDIM];
             difference(diff, position2, position1, mattrs);
-
             const FLOAT s2 = dot(diff, diff);
-
             selected &= (s2 >= sattrs.smin[i] * sattrs.smin[i]) &&
                         (s2 <= sattrs.smax[i] * sattrs.smax[i]);
         }
@@ -197,18 +176,61 @@ __device__ bool is_selected_pair(
     return selected;
 }
 
-// ============================================================================
-// Math helpers
-// ============================================================================
 
-__device__ void set_legendre(
-    FLOAT *legendre_cache,
-    int ellmin,
-    int ellmax,
-    int ellstep,
-    FLOAT mu,
-    FLOAT mu2)
+__device__ inline void compute_spin_projection_cartesian(
+    const FLOAT *r1,
+    const FLOAT *r2,
+    const FLOAT *s,
+    int spin,
+    FLOAT *splus_out,
+    FLOAT *scross_out)
 {
+    if (spin != 0) {
+        const FLOAT zhat[3] = {0.0, 0.0, 1.0};
+
+        FLOAT east[3] = {
+            zhat[1] * r1[2] - zhat[2] * r1[1],
+            zhat[2] * r1[0] - zhat[0] * r1[2],
+            zhat[0] * r1[1] - zhat[1] * r1[0]
+        };
+
+        FLOAT east_norm = rsqrtf(east[0] * east[0] + east[1] * east[1] + east[2] * east[2]);
+        east[0] *= east_norm;
+        east[1] *= east_norm;
+        east[2] *= east_norm;
+
+        FLOAT north[3] = {
+            r1[1] * east[2] - r1[2] * east[1],
+            r1[2] * east[0] - r1[0] * east[2],
+            r1[0] * east[1] - r1[1] * east[0]
+        };
+
+        FLOAT dot12 = r1[0] * r2[0] + r1[1] * r2[1] + r1[2] * r2[2];
+
+        FLOAT p[3] = {
+            r2[0] - dot12 * r1[0],
+            r2[1] - dot12 * r1[1],
+            r2[2] - dot12 * r1[2]
+        };
+
+        FLOAT pe = p[0] * east[0] + p[1] * east[1] + p[2] * east[2];
+        FLOAT pn = p[0] * north[0] + p[1] * north[1] + p[2] * north[2];
+        FLOAT phi = atan2(pe, pn);
+
+        FLOAT sphi = sin(spin * phi);
+        FLOAT cphi = cos(spin * phi);
+
+        *splus_out  = -(s[0] * cphi + s[1] * sphi);
+        *scross_out =  (s[0] * sphi - s[1] * cphi);
+    }
+    else {
+        *splus_out = -s[0];
+        *scross_out = -s[1];
+    }
+}
+
+
+__device__ inline void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2) {
     if ((ellmin % 2 == 0) && (ellstep % 2 == 0)) {
         for (int ell = ellmin; ell <= ellmax; ell += ellstep) {
             if (ell == 0) {
@@ -219,22 +241,18 @@ __device__ void set_legendre(
             }
             else if (ell == 4) {
                 FLOAT mu4 = mu2 * mu2;
-                legendre_cache[ell] =
-                    (35.0 * mu4 - 30.0 * mu2 + 3.0) / 8.0;
+                legendre_cache[ell] = (35.0 * mu4 - 30.0 * mu2 + 3.0) / 8.0;
             }
             else if (ell == 6) {
                 FLOAT mu4 = mu2 * mu2;
                 FLOAT mu6 = mu4 * mu2;
-                legendre_cache[ell] =
-                    (231.0 * mu6 - 315.0 * mu4 + 105.0 * mu2 - 5.0) / 16.0;
+                legendre_cache[ell] = (231.0 * mu6 - 315.0 * mu4 + 105.0 * mu2 - 5.0) / 16.0;
             }
             else if (ell == 8) {
                 FLOAT mu4 = mu2 * mu2;
                 FLOAT mu6 = mu4 * mu2;
                 FLOAT mu8 = mu4 * mu4;
-                legendre_cache[ell] =
-                    (6435.0 * mu8 - 12012.0 * mu6 +
-                     6930.0 * mu4 - 1260.0 * mu2 + 35.0) / 128.0;
+                legendre_cache[ell] = (6435.0 * mu8 - 12012.0 * mu6 + 6930.0 * mu4 - 1260.0 * mu2 + 35.0) / 128.0;
             }
             else {
                 legendre_cache[ell] = 0.;
@@ -257,7 +275,7 @@ __device__ void set_legendre(
 #define BESSEL_XMIN 0.1
 
 
-__device__ FLOAT get_bessel(int ell, FLOAT x) {
+__device__ inline FLOAT get_bessel(int ell, FLOAT x) {
     if (x < BESSEL_XMIN) {
         FLOAT x2 = x * x;
 
@@ -280,104 +298,17 @@ __device__ FLOAT get_bessel(int ell, FLOAT x) {
         switch (ell) {
             case 0:
                 return sin(x) * invx;
-
             case 2:
-                return (3.0 * invx2 - 1.0) * sin(x) * invx
-                     - 3.0 * cos(x) * invx2;
-
+                return (3.0 * invx2 - 1.0) * sin(x) * invx - 3.0 * cos(x) * invx2;
             case 4:
                 invx3 = invx2 * invx;
                 invx4 = invx2 * invx2;
-                return 5 * (2 * invx2 - 21 * invx4) * cos(x)
-                     + (invx - 45 * invx3 + 105 * invx2 * invx3) * sin(x);
-
+                return 5 * (2 * invx2 - 21 * invx4) * cos(x) +
+                       (invx - 45 * invx3 + 105 * invx2 * invx3) * sin(x);
             default:
                 return 0.0;
         }
     }
-}
-
-
-// ============================================================================
-// Bin helpers
-// ============================================================================
-
-__device__ int search_bin_index(FLOAT value, const FLOAT *edges, int nbins)
-{
-    if (!edges || nbins <= 0) return -1;
-    if (value < edges[0] || value >= edges[nbins]) return -1;
-
-    int lo = 0;
-    int hi = nbins;
-
-    while (lo + 1 < hi) {
-        int mid = lo + (hi - lo) / 2;
-
-        if (value >= edges[mid]) {
-            lo = mid;
-        }
-        else {
-            hi = mid;
-        }
-    }
-
-    return lo;
-}
-
-
-__device__ int get_sep_bin_index(
-    FLOAT value,
-    const FLOAT *sep,
-    int shape,
-    BIN_TYPE bin,
-    bool sep_is_edges)
-{
-    if (!sep || shape <= 0) return -1;
-
-    const int nbins = sep_is_edges ? shape : shape - 1;
-    if (nbins <= 0) return -1;
-
-    if (bin == BIN_CUSTOM) {
-        return search_bin_index(value, sep, nbins);
-    }
-
-    const FLOAT min = sep[0];
-    const FLOAT max = sep[nbins];
-
-    if (value < min || value >= max) return -1;
-
-    if (bin == BIN_LIN) {
-        const FLOAT step = sep[1] - sep[0];
-        if (step == (FLOAT)0.) return -1;
-
-        int ibin = (int)floor((value - min) / step);
-        return (ibin >= 0 && ibin < nbins) ? ibin : -1;
-    }
-
-    if (bin == BIN_LOG) {
-        if (value <= (FLOAT)0. || min <= (FLOAT)0.) return -1;
-
-        const FLOAT step = sep[1] / sep[0];
-        const FLOAT logstep = log(step);
-
-        if (step <= (FLOAT)0. || logstep == (FLOAT)0.) return -1;
-
-        int ibin = (int)floor(log(value / min) / logstep);
-        return (ibin >= 0 && ibin < nbins) ? ibin : -1;
-    }
-
-    return -1;
-}
-
-
-__device__ int get_bin_index(const BinAttrs *battrs, int idim, FLOAT value)
-{
-    return get_sep_bin_index(
-        value,
-        battrs->array[idim],
-        (int)battrs->shape[idim],
-        battrs->bin[idim],
-        true);
 }
 
 
@@ -423,15 +354,11 @@ size_t fill_ells(const BinAttrs *battrs, int index, size_t *ells)
 {
     size_t ellmin = (size_t)battrs->min[index];
     size_t ellmax = (size_t)battrs->max[index];
-
-    size_t ellstep =
-        (battrs->bin[index] == BIN_LIN)
-        ? (size_t)battrs->step[index]
-        : (size_t)1;
+    size_t ellstep = (battrs->bin[index] == BIN_LIN) ? (size_t)battrs->step[index] : (size_t)1;
 
     if (ellstep == 0) return 0;
-
     size_t nells = 0;
+
     for (size_t ell = ellmin; ell <= ellmax; ell += ellstep) {
         ells[nells++] = ell;
     }
@@ -477,8 +404,7 @@ static inline DeviceCount2Layout make_device_count2_layout(
                     ellstep = 1;
                 }
 
-                layout.ells_even =
-                    ((layout.ells[0] % 2 == 0) && (ellstep % 2 == 0));
+                layout.ells_even = ((layout.ells[0] % 2 == 0) && (ellstep % 2 == 0));
             }
         }
     }
@@ -488,69 +414,8 @@ static inline DeviceCount2Layout make_device_count2_layout(
 
 
 // ============================================================================
-// Weight helpers
+// Accumulation
 // ============================================================================
-
-__device__ inline void compute_spin_projection_cartesian(
-    const FLOAT *r1,
-    const FLOAT *r2,
-    FLOAT *s,
-    int spin,
-    FLOAT *splus_out,
-    FLOAT *scross_out)
-{
-    if (spin != 0) {
-        const FLOAT zhat[3] = {0.0, 0.0, 1.0};
-
-        FLOAT east[3] = {
-            zhat[1] * r1[2] - zhat[2] * r1[1],
-            zhat[2] * r1[0] - zhat[0] * r1[2],
-            zhat[0] * r1[1] - zhat[1] * r1[0]
-        };
-
-        FLOAT east_norm = rsqrtf(
-            east[0] * east[0] +
-            east[1] * east[1] +
-            east[2] * east[2]);
-
-        east[0] *= east_norm;
-        east[1] *= east_norm;
-        east[2] *= east_norm;
-
-        FLOAT north[3] = {
-            r1[1] * east[2] - r1[2] * east[1],
-            r1[2] * east[0] - r1[0] * east[2],
-            r1[0] * east[1] - r1[1] * east[0]
-        };
-
-        FLOAT dot12 =
-            r1[0] * r2[0] +
-            r1[1] * r2[1] +
-            r1[2] * r2[2];
-
-        FLOAT p[3] = {
-            r2[0] - dot12 * r1[0],
-            r2[1] - dot12 * r1[1],
-            r2[2] - dot12 * r1[2]
-        };
-
-        FLOAT pe = p[0] * east[0]  + p[1] * east[1]  + p[2] * east[2];
-        FLOAT pn = p[0] * north[0] + p[1] * north[1] + p[2] * north[2];
-
-        FLOAT phi = atan2(pe, pn);
-
-        FLOAT sphi = sin(spin * phi);
-        FLOAT cphi = cos(spin * phi);
-
-        *splus_out  = -(s[0] * cphi + s[1] * sphi);
-        *scross_out =  (s[0] * sphi - s[1] * cphi);
-    }
-    else {
-        *splus_out  = -s[0];
-        *scross_out = -s[1];
-    }
-}
-
 
 template <int NSPLIT_TARGETS>
 __device__ inline void accumulate_weight2(
@@ -601,19 +466,93 @@ __device__ inline void accumulate_weight2(
 }
 
 
+
+// ============================================================================
+// Bin helpers
+// ============================================================================
+
+__device__ int search_bin_index(FLOAT value, const FLOAT *edges, int nbins)
+{
+    if (!edges || nbins <= 0) return -1;
+    if (value < edges[0] || value >= edges[nbins]) return -1;
+
+    int lo = 0;
+    int hi = nbins;
+
+    while (lo + 1 < hi) {
+        int mid = lo + (hi - lo) / 2;
+
+        if (value >= edges[mid]) {
+            lo = mid;
+        }
+        else {
+            hi = mid;
+        }
+    }
+
+    return lo;
+}
+
+
+__device__ int get_sep_bin_index(
+    FLOAT value,
+    const FLOAT *sep,
+    int shape,
+    BIN_TYPE bin,
+    bool sep_is_edges)
+{
+    const int nbins = sep_is_edges ? shape : shape - 1;
+
+    if (bin == BIN_CUSTOM) {
+        return search_bin_index(value, sep, nbins);
+    }
+
+    const FLOAT min = sep[0];
+    const FLOAT max = sep[nbins];
+
+    if (value < min || value >= max) return -1;
+
+    if (bin == BIN_LIN) {
+        const FLOAT step = sep[1] - sep[0];
+        int ibin = (int)floor((value - min) / step);
+        return (ibin >= 0 && ibin < nbins) ? ibin : -1;
+    }
+
+    if (bin == BIN_LOG) {
+        if (value <= (FLOAT)0.) return -1;
+        const FLOAT logstep = log(sep[1] / sep[0]);
+        int ibin = (int)floor(log(value / min) / logstep);
+        return (ibin >= 0 && ibin < nbins) ? ibin : -1;
+    }
+
+    return -1;
+}
+
+
+
+__device__ int get_bin_index(const BinAttrs *battrs, int idim, FLOAT value)
+{
+    return get_sep_bin_index(
+        value,
+        battrs->array[idim],
+        (int)battrs->shape[idim],
+        battrs->bin[idim],
+        true);
+}
+
+
 __device__ inline void add_weight2(
     FLOAT *counts,
-    FLOAT *sposition1,
-    FLOAT *sposition2,
-    FLOAT *position1,
-    FLOAT *position2,
-    FLOAT *value1,
-    FLOAT *value2,
-    IndexValue index_value1,
-    IndexValue index_value2,
-    BinAttrs battrs,
-    WeightAttrs wattrs,
-    const MeshAttrs &mattrs)
+    const FLOAT *sposition1,
+    const FLOAT *sposition2,
+    const FLOAT *position1,
+    const FLOAT *position2,
+    const FLOAT *value1,
+    const FLOAT *value2,
+    const IndexValue index_value1,
+    const IndexValue index_value2,
+    const BinAttrs &battrs,
+    const WeightAttrs &wattrs)
 {
     int nsplit_targets = 0;
     size_t split_targets[2] = {0, 0};
@@ -642,7 +581,7 @@ __device__ inline void add_weight2(
     }
 
     FLOAT diff[NDIM];
-    difference(diff, position2, position1, mattrs);
+    difference(diff, position2, position1, device_mattrs);
 
     const FLOAT s2 = dot(diff, diff);
     const FLOAT DEFAULT_VALUE = -1000.;
@@ -1033,9 +972,12 @@ __device__ inline void add_weight2(
 }
 
 
+
 // ============================================================================
 // Pair counting op
 // ============================================================================
+
+/*
 
 struct Count2Op {
     FLOAT *local_counts;
@@ -1049,8 +991,6 @@ struct Count2Op {
 
     BinAttrs battrs;
     WeightAttrs wattrs;
-    SelectionAttrs sattrs;
-    MeshAttrs mattrs;
 
     __device__ inline void operator()(
         size_t jj,
@@ -1065,8 +1005,8 @@ struct Count2Op {
                 sposition2,
                 position1,
                 position2,
-                sattrs,
-                mattrs)) {
+                device_sattrs,
+                device_mattrs)) {
             return;
         }
 
@@ -1081,48 +1021,23 @@ struct Count2Op {
             index_value1,
             index_value2,
             battrs,
-            wattrs,
-            mattrs);
+            wattrs);
     }
 };
 
 
-// ============================================================================
-// Kernels
-// ============================================================================
 
-__global__ void reduce_add_kernel(
-    const FLOAT *block_counts,
-    size_t nblocks,
-    FLOAT *counts,
-    size_t csize)
-{
-    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = gridDim.x * blockDim.x;
-
-    for (; i < csize; i += stride) {
-        FLOAT sum = 0.;
-
-        for (size_t iblock = 0; iblock < nblocks; iblock++) {
-            sum += block_counts[iblock * csize + i];
-        }
-
-        counts[i] += sum;
-    }
-}
-
-
-template <MESH_TYPE TARGET_MESH_TYPE>
-__global__ void count2_kernel(
+__global__ void count2_kernel_cartesian(
     FLOAT *block_counts,
     size_t csize,
     Mesh mesh1,
     Mesh mesh2,
-    MeshAttrs mattrs,
-    SelectionAttrs sattrs,
     BinAttrs battrs,
     WeightAttrs wattrs)
 {
+    // mattrs is still used by for_each_candidate.
+    // sattrs is copied to device_sattrs and no longer used directly here.
+
     size_t tid = threadIdx.x;
 
     FLOAT *local_counts = &block_counts[blockIdx.x * csize];
@@ -1149,17 +1064,182 @@ __global__ void count2_kernel(
             mesh1.index_value,
             mesh2.index_value,
             battrs,
-            wattrs,
-            sattrs,
-            mattrs
+            wattrs
         };
 
-        for_each_candidate<TARGET_MESH_TYPE>(
+        for_each_candidate_cartesian(
+            position1,
+            mesh2,
+            device_mattrs,
+            op);
+    }
+}
+
+
+
+__global__ void count2_kernel_angular(
+    FLOAT *block_counts,
+    size_t csize,
+    Mesh mesh1,
+    Mesh mesh2,
+    BinAttrs battrs,
+    WeightAttrs wattrs)
+{
+    // mattrs is still used by for_each_candidate.
+    // sattrs is copied to device_sattrs and no longer used directly here.
+
+    size_t tid = threadIdx.x;
+
+    FLOAT *local_counts = &block_counts[blockIdx.x * csize];
+
+    for (int i = tid; i < csize; i += blockDim.x) {
+        local_counts[i] = 0;
+    }
+
+    __syncthreads();
+
+    size_t stride = gridDim.x * blockDim.x;
+    size_t gid = tid + blockIdx.x * blockDim.x;
+
+    for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
+        FLOAT *position1  = &(mesh1.positions[NDIM * ii]);
+        FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
+        FLOAT *value1     = &(mesh1.values[mesh1.index_value.size * ii]);
+
+        Count2Op op{
+            local_counts,
             position1,
             sposition1,
+            value1,
+            mesh1.index_value,
+            mesh2.index_value,
+            battrs,
+            wattrs
+        };
+
+        for_each_candidate_angular(
+            sposition1,
             mesh2,
-            mattrs,
+            device_mattrs,
             op);
+    }
+}
+
+
+*/
+
+
+// It is slighly faster to unpack the kernels
+
+
+__global__ void count2_kernel_angular(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs) {
+
+    size_t tid = threadIdx.x;
+
+    // Initialize local histogram
+    FLOAT *local_counts = &block_counts[blockIdx.x * csize];
+    // Zero initialize histogram for this block
+    for (int i = tid; i < csize; i += blockDim.x) local_counts[i] = 0;
+
+    __syncthreads();
+    // Global thread index
+    size_t stride = gridDim.x * blockDim.x;
+    size_t gid = tid + blockIdx.x * blockDim.x;
+
+    // Process particles
+    for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
+        FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
+        FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
+        FLOAT *value1 = &(mesh1.values[mesh1.index_value.size * ii]);
+        int bounds[2 * NDIM];
+        set_angular_bounds(sposition1, device_mattrs, bounds);
+        for (int icth = bounds[0]; icth <= bounds[1]; icth++) {
+            int icth_n = icth * device_mattrs.meshsize[1];
+            for (int iphi = bounds[2]; iphi <= bounds[3]; iphi++) {
+                int iphi_true = wrap_periodic_int(iphi, device_mattrs.meshsize[1]);
+                int icell = iphi_true + icth_n;
+                int np2 = mesh2.nparticles[icell];
+                size_t cum2 = mesh2.cumnparticles[icell];
+                FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);
+                FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
+                FLOAT *values2 = &(mesh2.values[mesh2.index_value.size * cum2]);
+                for (size_t jj = 0; jj < np2; jj++) {
+                    if (!is_selected_pair(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), device_sattrs, device_mattrs)) {
+                        continue;
+                    }
+                    add_weight2(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
+                               value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs);
+                }
+            }
+        }
+    }
+}
+
+
+__global__ void count2_kernel_cartesian(FLOAT *block_counts, size_t csize, Mesh mesh1, Mesh mesh2, BinAttrs battrs, WeightAttrs wattrs) {
+
+    size_t tid = threadIdx.x;
+
+    // Initialize local histogram
+    FLOAT *local_counts = &block_counts[blockIdx.x * csize];
+    // Zero initialize histogram for this block
+    for (int i = tid; i < csize; i += blockDim.x) local_counts[i] = 0;
+
+    __syncthreads();
+    // Global thread index
+    size_t stride = gridDim.x * blockDim.x;
+    size_t gid = tid + blockIdx.x * blockDim.x;
+
+    // Process particles
+    for (size_t ii = gid; ii < mesh1.total_nparticles; ii += stride) {
+        FLOAT *position1 = &(mesh1.positions[NDIM * ii]);
+        FLOAT *sposition1 = &(mesh1.spositions[NDIM * ii]);
+        FLOAT *value1 = &(mesh1.values[mesh1.index_value.size * ii]);
+        int bounds[2 * NDIM];
+        set_cartesian_bounds(position1, device_mattrs, bounds);
+        //printf("%d %d %d %d %d %d\n", bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]);
+        for (int ix = bounds[0]; ix <= bounds[1]; ix++) {
+            int ix_n = wrap_periodic_int(ix, (int) device_mattrs.meshsize[0]) * device_mattrs.meshsize[2] * device_mattrs.meshsize[1];
+            for (int iy = bounds[2]; iy <= bounds[3]; iy++) {
+                int iy_n = wrap_periodic_int(iy, (int) device_mattrs.meshsize[1]) *  device_mattrs.meshsize[2];
+                for (int iz = bounds[4]; iz <= bounds[5]; iz++) {
+                    int iz_n = wrap_periodic_int(iz, (int) device_mattrs.meshsize[2]);
+                    int icell = ix_n + iy_n + iz_n;
+                    int np2 = mesh2.nparticles[icell];
+                    size_t cum2 = mesh2.cumnparticles[icell];
+                    FLOAT *positions2 = &(mesh2.positions[NDIM * cum2]);
+                    FLOAT *spositions2 = &(mesh2.spositions[NDIM * cum2]);
+                    FLOAT *values2 = &(mesh2.values[mesh2.index_value.size * cum2]);
+                    for (size_t jj = 0; jj < np2; jj++) {
+                        if (!is_selected_pair(sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]), device_sattrs, device_mattrs)) {
+                            continue;
+                        }
+                        add_weight2(local_counts, sposition1, &(spositions2[NDIM * jj]), position1, &(positions2[NDIM * jj]),
+                                   value1, &(values2[mesh2.index_value.size * jj]), mesh1.index_value, mesh2.index_value, battrs, wattrs);
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+__global__ void reduce_add_kernel(
+    const FLOAT *block_counts,
+    size_t nblocks,
+    FLOAT *counts,
+    size_t csize)
+{
+    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = gridDim.x * blockDim.x;
+
+    for (; i < csize; i += stride) {
+        FLOAT sum = 0;
+        for (size_t iblock = 0; iblock < nblocks; iblock++) {
+            sum += block_counts[iblock * csize + i];
+        }
+        counts[i] += sum;
     }
 }
 
@@ -1183,14 +1263,14 @@ void count2(
 
     if (mattrs.type == MESH_ANGULAR) {
         CONFIGURE_KERNEL_LAUNCH(
-            count2_kernel<MESH_ANGULAR>,
+            count2_kernel_angular,
             nblocks,
             nthreads_per_block,
             buffer);
     }
     else {
         CONFIGURE_KERNEL_LAUNCH(
-            count2_kernel<MESH_CARTESIAN>,
+            count2_kernel_cartesian,
             nblocks,
             nthreads_per_block,
             buffer);
@@ -1210,6 +1290,16 @@ void count2(
     CUDA_CHECK(cudaMemset(counts, 0, csize * sizeof(FLOAT)));
 
     CUDA_CHECK(cudaMemcpyToSymbol(
+        device_mattrs,
+        &mattrs,
+        sizeof(MeshAttrs)));
+
+    CUDA_CHECK(cudaMemcpyToSymbol(
+        device_sattrs,
+        &sattrs,
+        sizeof(SelectionAttrs)));
+
+    CUDA_CHECK(cudaMemcpyToSymbol(
         device_spattrs,
         &spattrs,
         sizeof(SplitAttrs)));
@@ -1219,15 +1309,54 @@ void count2(
         &layout,
         sizeof(DeviceCount2Layout)));
 
-    BinAttrs device_battrs;
-    copy_bin_attrs_to_device(&device_battrs, &battrs, buffer);
+    BinAttrs device_battrs = battrs;
+
+    for (size_t i = 0; i < battrs.ndim; i++) {
+        if (battrs.asize[i] > 0) {
+            FLOAT *device_array =
+                (FLOAT *) my_device_malloc(
+                    battrs.asize[i] * sizeof(FLOAT),
+                    buffer);
+
+            CUDA_CHECK(cudaMemcpy(
+                device_array,
+                battrs.array[i],
+                battrs.asize[i] * sizeof(FLOAT),
+                cudaMemcpyHostToDevice));
+
+            device_battrs.array[i] = device_array;
+        }
+    }
 
     WeightAttrs device_wattrs = wattrs;
-    copy_weight_attrs_to_device(&device_wattrs, &wattrs, buffer);
 
-    FLOAT *block_counts = (FLOAT *)my_device_malloc(
-        nblocks * csize * sizeof(FLOAT),
-        buffer);
+    if (wattrs.bitwise.p_nbits) {
+        FLOAT *device_p_correction_nbits =
+            (FLOAT *) my_device_malloc(
+                wattrs.bitwise.p_nbits *
+                wattrs.bitwise.p_nbits *
+                sizeof(FLOAT),
+                buffer);
+
+        CUDA_CHECK(cudaMemcpy(
+            device_p_correction_nbits,
+            wattrs.bitwise.p_correction_nbits,
+            wattrs.bitwise.p_nbits *
+            wattrs.bitwise.p_nbits *
+            sizeof(FLOAT),
+            cudaMemcpyHostToDevice));
+
+        device_wattrs.bitwise.p_correction_nbits =
+            device_p_correction_nbits;
+    }
+    else {
+        device_wattrs.bitwise.p_correction_nbits = NULL;
+    }
+
+    FLOAT *block_counts =
+        (FLOAT *) my_device_malloc(
+            nblocks * csize * sizeof(FLOAT),
+            buffer);
 
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
@@ -1236,7 +1365,7 @@ void count2(
     CUDA_CHECK(cudaDeviceSynchronize());
 
     if (mattrs.type == MESH_ANGULAR) {
-        count2_kernel<MESH_ANGULAR><<<
+        count2_kernel_angular<<<
             nblocks,
             nthreads_per_block,
             0,
@@ -1245,13 +1374,11 @@ void count2(
                 csize,
                 list_mesh[0],
                 list_mesh[1],
-                mattrs,
-                sattrs,
                 device_battrs,
                 device_wattrs);
     }
     else {
-        count2_kernel<MESH_CARTESIAN><<<
+        count2_kernel_cartesian<<<
             nblocks,
             nthreads_per_block,
             0,
@@ -1260,19 +1387,21 @@ void count2(
                 csize,
                 list_mesh[0],
                 list_mesh[1],
-                mattrs,
-                sattrs,
                 device_battrs,
                 device_wattrs);
     }
 
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    reduce_add_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(
-        block_counts,
+    reduce_add_kernel<<<
         nblocks,
-        counts,
-        csize);
+        nthreads_per_block,
+        0,
+        stream>>>(
+            block_counts,
+            nblocks,
+            counts,
+            csize);
 
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -1280,12 +1409,24 @@ void count2(
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaEventElapsedTime(&elapsed_time, start, stop));
 
-    log_message(LOG_LEVEL_DEBUG, "Time elapsed: %3.1f ms.\n", elapsed_time);
+    log_message(
+        LOG_LEVEL_DEBUG,
+        "Time elapsed: %3.1f ms.\n",
+        elapsed_time);
 
     my_device_free(block_counts, buffer);
 
-    free_device_bin_attrs(&device_battrs, buffer);
-    free_device_weight_attrs(&device_wattrs, buffer);
+    for (size_t i = 0; i < battrs.ndim; i++) {
+        if (battrs.asize[i] > 0) {
+            my_device_free(device_battrs.array[i], buffer);
+        }
+    }
+
+    if (wattrs.bitwise.p_nbits) {
+        my_device_free(
+            device_wattrs.bitwise.p_correction_nbits,
+            buffer);
+    }
 
     CUDA_CHECK(cudaEventDestroy(start));
     CUDA_CHECK(cudaEventDestroy(stop));

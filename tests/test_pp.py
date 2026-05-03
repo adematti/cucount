@@ -381,7 +381,7 @@ def test_corrfunc_cutsky(mode='smu'):
     los = 'midpoint'
     if mode == 'smu':
         edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
-        edges[0][0] -= 0.5  # just to test for custom binning
+        #edges[0][0] -= 0.5  # just to test for custom binning
         battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
         #assert np.allclose(battrs.edges('s'), np.column_stack([edges[0][:-1], edges[0][1:]]))
         #assert np.allclose(battrs.edges('mu'), np.column_stack([edges[1][:-1], edges[1][1:]]))

@@ -12,6 +12,7 @@
 static __device__ __constant__ DeviceCount3Layout device_layout;
 
 
+
 __device__ inline FLOAT clamp1(FLOAT x)
 {
     return MIN((FLOAT)1., MAX((FLOAT)-1., x));
