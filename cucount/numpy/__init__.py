@@ -867,7 +867,7 @@ def _get_ells(battrs):
     return [int(ell) for ell in ells]
 
 
-def poles_to_ells(ells1, ells2):
+def poles_to_ells(ells1, ells2, with_prefactor: bool=True):
     """Return (factor, ell1, ell2, m) for the stored pole axis."""
     ells1, ells2 = _get_ells(ells1), _get_ells(ells2)
     ells = []
@@ -878,6 +878,8 @@ def poles_to_ells(ells1, ells2):
                 ells.append((1, ell1, ell2, m))   # Re
             for m in range(1, mmax + 1):
                 ells.append((1j, ell1, ell2, m))  # Im
+    if not with_prefactor:
+        ells = [ell[1:] for ell in ells]
     return ells
 
 
@@ -1401,8 +1403,8 @@ def count3_analytic(battrs12: BinAttrs, battrs13: BinAttrs, mattrs: MeshAttrs=No
             raise NotImplementedError('No analytic pair counter provided for binning {}'.format(mode))
         dv /= boxsize.prod()
         dvs.append(dv)
-    dv = prod(np.meshgrid(dvs, indexing='ij', sparse=True))
-    ells = poles_to_ells(battrs12, battrs13)
+    dv = prod(np.meshgrid(*dvs, indexing='ij', sparse=True))
+    ells = poles_to_ells(battrs12, battrs13, with_prefactor=False)
     if ells:
         factor = np.zeros(len(ells))
         ell0 = (0, 0, 0)
