@@ -856,66 +856,6 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=nthreads)
 
 
-def wigner_3j(*ells):
-    from sympy.physics.wigner import wigner_3j
-    ells = map(int, ells)
-    return float(wigner_3j(*ells))
-
-
-def _triposh_transform_matrix_sub(ell1, ell2, ell3, tol=1e-12):
-    """
-    Matrix M such that, for fixed (ell1, ell2, ell3),
-
-        c_triposh = M @ c_ylm
-
-    with Eq. 30 of arXiv:1803.02132:
-
-        zeta_{ell1 ell2 ell3}
-        = (2 ell3 + 1) H_{ell1 ell2 ell3}
-          sum_m (-1)^m
-          ( ell1 ell2 ell3 ; m -m 0 )
-          zeta^m_{ell1 ell2} sqrt((2 ell1 + 1) (2 ell2 + 1))
-
-    where c_ylm is stored as
-
-        [Re(m=0), Re(m=1), ..., Re(mmax),
-         Im(m=1), ..., Im(mmax)].
-    """
-    ell1, ell2, ell3 = int(ell1), int(ell2), int(ell3)
-    mmax = min(ell1, ell2)
-
-    M = np.zeros((2 * mmax + 1,), dtype=float)
-
-    H = float(wigner_3j(ell1, ell2, ell3, 0, 0, 0))
-    if abs(H) < tol:
-        return M
-
-    prefactor = (2 * ell3 + 1) * H
-    # m = 0
-    W0 = float(wigner_3j(ell1, ell2, ell3, 0, 0, 0))
-    M[0] = prefactor * W0
-    # m > 0: fold ±m into real/imag stored coefficients.
-    # For Eq. 30, H != 0 implies even parity, so only Re/cos contributes.
-    for m in range(1, mmax + 1):
-        Wm = float(wigner_3j(ell1, ell2, ell3, m, -m, 0))
-        if abs(Wm) < tol:
-            continue
-        coeff = prefactor * ((-1) ** m) * Wm
-        # contribution from +m and -m gives 2 Re[zeta^m]
-        M[m] = 2.0 * coeff * np.sqrt((2 * ell1 + 1) * (2 * ell2 + 1))
-        # sine block remains zero for Eq. 30 allowed rows
-    return M
-
-
-def triposh_to_poles(ells):
-    """Return ells1, ells2 sufficient to cover input ells."""
-    ells1, ells2 = [], []
-    for ell1, ell2, ell3 in ells:
-        ells1.append(ell1)
-        ells2.append(ell2)
-    return np.unique(ells1).tolist(), np.unique(sorted(ells2)).tolist()
-
-
 def _get_ells(battrs):
     if isinstance(battrs, BinAttrs):
         try:
@@ -944,7 +884,7 @@ def poles_to_ells(ells1, ells2):
 def symmetrize_poles(poles, ells1, ells2, axis=-1, np=np):
     """
     Symmetrize pole coefficients following Eq. 9 of https://arxiv.org/pdf/1709.10150
-    2017, retaining only real-valued positive-m coefficients.
+    retaining only real-valued positive-m coefficients.
 
     Returns
     -------
@@ -976,124 +916,6 @@ def symmetrize_poles(poles, ells1, ells2, axis=-1, np=np):
     sym = sym * factors.reshape(shape)
 
     return sym, out_labels
-
-
-def triposh_transform_matrix(ells1, ells2, ells=None):
-    """
-    Build the linear transform from the CUDA Ylm-product basis to the
-    tripoSH basis.
-
-    This constructs a matrix ``M`` such that
-
-    ``c_triposh = M @ counts``
-
-    where ``c_cuda`` contains the coefficients produced by the GPU
-    ``count3close`` kernel in its native packed basis, i.e. concatenated
-    blocks of
-
-    ``[cos(m=0), cos(1), ..., cos(mmax), sin(1), ..., sin(mmax)]``
-
-    for each ``(ell1, ell2)`` pair in the CUDA projection layout.
-
-    In the triplet counts, the line-of-sight direction was fixed to the z-axis.
-
-    Parameters
-    ----------
-    ells1 : BinAttrs, list
-        Bin attributes for the first leg.
-        The ``'pole'`` coordinate determines the ordered list of ``ell1`` values.
-    ells2 : BinAttrs, list
-        Bin attributes for the second leg.
-        The ``'pole'`` coordinate determines the ordered list of ``ell2`` values.
-    ells : list[tuple], optional
-        Explicit list of requested ``(ell1, ell2, ell3)`` modes.
-
-        Each entry should be a tuple ``(ell1, ell2, ell3)``.
-        If ``ell3`` is ``None``, all valid triangle-compatible values are
-        included for that ``(ell1, ell2)`` pair.
-
-        If None, all ``(ell1, ell2)`` pairs from
-        ``itertools.product(battrs12.coords('pole'), battrs23.coords('pole'))``
-        are included with all allowed ``ell3``.
-
-    Returns
-    -------
-    out_ells : list[tuple]
-        Flattened list of output ``(ell1, ell2, ell3)`` modes, one per row
-        of the returned matrix.
-    matrix : ndarray
-        Dense transformation matrix of shape
-        ``(n_triposh_modes, len(counts))``.
-        Left-multiplying this matrix by the obtained counts yields the corresponding tripoSH coefficients.
-
-    Notes
-    -----
-    The projection layout is assumed to match the native kernel packing
-    order:
-
-    ``for ell1 in battrs12.coords('pole'):``
-    ``    for ell2 in battrs13.coords('pole'):``
-
-    with each pair block occupying
-    ``2 * min(ell1, ell2) + 1`` consecutive coefficients.
-    """
-    def pad(M, ell1, ell2, ells1, ells2):
-        """
-        Pad a local (ell1, ell2) tripoSH transform block into the full CUDA
-        projection layout.
-
-        Parameters
-        ----------
-        M : ndarray, shape (nrow, 2*min(ell1, ell2)+1)
-            Local transform matrix for one (ell1, ell2) block.
-        ell1, ell2 : int
-            The multipole pair corresponding to M.
-        bells1, bells2 : sequence[int]
-            Full ordered multipole lists used in CUDA packing.
-
-        Returns
-        -------
-        Mpad : ndarray, shape (nrow, nproj_total)
-            Matrix padded into the full concatenated CUDA basis.
-        """
-        def block_size(l1, l2):
-            return 2 * min(l1, l2) + 1
-
-        # Total number of CUDA projections
-        total = sum(block_size(l1, l2) for l1 in ells1 for l2 in ells2)
-
-        # Find start offset of this block in CUDA ordering
-        offset = 0
-        found = False
-        for l1 in ells1:
-            for l2 in ells2:
-                if l1 == ell1 and l2 == ell2:
-                    found = True
-                    break
-                offset += block_size(l1, l2)
-            if found:
-                break
-
-        if not found:
-            raise ValueError(f"(ell1, ell2)=({ell1}, {ell2}) not found in provided pole coordinates")
-
-        out = np.zeros(total, dtype=M.dtype)
-        out[offset:offset + M.shape[0]] = M
-        return out
-
-    ells1, ells2 = _get_ells(ells1), _get_ells(ells2)
-    if ells is None:
-        ells = list(itertools.product(ells1, ells2))
-        ells = [tuple(ell) + (None,) for ell in ells]
-    matrix = []
-    out_ells = []
-    for ell1, ell2, ell3 in ells:
-        ells3 = [ell3] if ell3 is not None else list(range(abs(ell1 - ell2), ell1 + ell2 + 1))
-        for ell3 in ells3:
-            M = _triposh_transform_matrix_sub(ell1, ell2, ell3)
-            matrix.append(pad(M, ell1, ell2, ells1, ells2)[None, :])
-            out_ells.append((ell1, ell2, ell3))
-    return out_ells, np.concatenate(matrix, axis=0)
 
 
 def count3close(*particles: Particles,
@@ -1572,7 +1394,6 @@ def count3_analytic(battrs12: BinAttrs, battrs13: BinAttrs, mattrs: MeshAttrs=No
     for battrs in [battrs12, battrs13]:
         edges = battrs.edges()
         mode = tuple(edges)
-        shape = battrs.shape
         if mode == ('s',) or mode == ('s', 'pole'):
             v = 4. / 3. * np.pi * edges['s']**3
             dv = np.diff(v, axis=-1)

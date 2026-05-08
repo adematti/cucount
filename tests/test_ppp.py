@@ -90,7 +90,7 @@ def test_count3close_symmetry():
 
 def test_triposh():
     from scipy import special
-    from cucount.numpy import Particles, count3, count3close, BinAttrs, SelectionAttrs, triposh_to_poles, triposh_transform_matrix
+    from cucount.numpy import Particles, count3, count3close, BinAttrs, SelectionAttrs
 
     def normalize(x):
         n = np.linalg.norm(x, axis=-1, keepdims=True)
@@ -223,11 +223,9 @@ def test_triposh():
     particles = Particles(positions=positions, weights=weights)
     sattrs = SelectionAttrs(theta=(0., theta_max))
 
-    triposh_ells = [(0, 0, 0), (2, 0, 2)] #, (2, 2, 2)]
-    ells1, ells2 = triposh_to_poles(triposh_ells)
+    ells1, ells2 = [0], [0, 2]
     battrs12 = BinAttrs(s=sedges, pole=(ells1, "firstpoint"))
     battrs13 = BinAttrs(s=sedges, pole=(ells2, "firstpoint"))
-    out_ells, matrix = triposh_transform_matrix(battrs12, battrs13, ells=triposh_ells)
 
     ref, labels = brute_count3close(positions, weights, sedges, ells1=tuple(ells1), ells2=tuple(ells2), theta_max=theta_max)
 
@@ -235,7 +233,6 @@ def test_triposh():
     assert np.allclose(counts_close, ref, rtol=5e-5, atol=5e-5)
 
     counts = count3(particles, particles, particles, battrs12=battrs12, battrs13=battrs13, sattrs12=sattrs, sattrs13=sattrs)["weight"]
-    counts.dot(matrix.T)
     assert np.allclose(counts, ref, rtol=5e-5, atol=5e-5)
 
     from cucount.types import count3, count3close
