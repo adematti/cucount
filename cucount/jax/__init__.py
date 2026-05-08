@@ -119,6 +119,19 @@ class IndexValue(numpy.IndexValue):
 
 
 
+@default_sharding_mesh
+@partial(jax.jit, static_argnames=['axis', 'sharding_mesh'])
+def _local_concatenate(arrays, axis=0, sharding_mesh: jax.sharding.Mesh=None):
+
+    def f(arrays):
+        return jnp.concatenate(arrays, axis=axis)
+
+    if sharding_mesh.axis_names:
+        f = shard_map(f, mesh=sharding_mesh, in_specs=P(sharding_mesh.axis_names), out_specs=P(sharding_mesh.axis_names))
+
+    return f(arrays)
+
+
 @tree_util.register_pytree_node_class
 class Particles(numpy.Particles):
 
@@ -138,12 +151,18 @@ class Particles(numpy.Particles):
             self.values = [make_array_from_process_local_data(value, pad=0, sharding_mesh=sharding_mesh) for value in self.values]
 
     @classmethod
-    def concatenate(cls, others):
+    def concatenate(cls, others, local=True):
         """Concatenate particles."""
         new = cls.__new__(cls)
         new.index_value = others[0].index_value.clone()
-        new.values = [jnp.concatenate(values, axis=0) for values in zip(*[other.values for other in others])]
-        new.positions = jnp.concatenate([other.positions for other in others], axis=0)
+
+        def _concatenate(values):
+            if local: value = _local_concatenate(values, axis=0)
+            else: value = jnp.concatenate(values, axis=0)
+            return value
+
+        new.values = [_concatenate(values) for values in zip(*[other.values for other in others])]
+        new.positions = _concatenate([other.positions for other in others])
         return new
 
 

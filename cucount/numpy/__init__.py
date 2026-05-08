@@ -873,7 +873,7 @@ def _triposh_transform_matrix_sub(ell1, ell2, ell3, tol=1e-12):
         = (2 ell3 + 1) H_{ell1 ell2 ell3}
           sum_m (-1)^m
           ( ell1 ell2 ell3 ; m -m 0 )
-          zeta^m_{ell1 ell2}
+          zeta^m_{ell1 ell2} sqrt((2 ell1 + 1) (2 ell2 + 1))
 
     where c_ylm is stored as
 
@@ -901,7 +901,7 @@ def _triposh_transform_matrix_sub(ell1, ell2, ell3, tol=1e-12):
             continue
         coeff = prefactor * ((-1) ** m) * Wm
         # contribution from +m and -m gives 2 Re[zeta^m]
-        M[m] = 2.0 * coeff
+        M[m] = 2.0 * coeff * np.sqrt((2 * ell1 + 1) * (2 * ell2 + 1))
         # sine block remains zero for Eq. 30 allowed rows
     return M
 

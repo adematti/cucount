@@ -9,14 +9,20 @@
  * Triplet counts around each primary D1.
  */
 
+
+DEFINE_COMPUTE_UTILS
+DEFINE_ANGULAR_WEIGHT
+DEFINE_BUILD_LOS_FRAME
+DEFINE_COMPUTE_SPHERICAL_HARMONICS
+
+DEFINE_FOR_EACH_CANDIDATE_ANGULAR
+DEFINE_FOR_EACH_CANDIDATE_CARTESIAN
+DEFINE_FOR_EACH_CANDIDATE
+
+
+
+
 static __device__ __constant__ DeviceCount3Layout device_layout;
-
-
-
-__device__ inline FLOAT clamp1(FLOAT x)
-{
-    return MIN((FLOAT)1., MAX((FLOAT)-1., x));
-}
 
 
 enum Count3Leg {
@@ -259,16 +265,7 @@ __global__ void count3_kernel(
         }
 
         FLOAT local_frame[3][NDIM];
-        LOS_TYPE los = LOS_FIRSTPOINT;
-
-        if (battrs12.ndim > 0 && battrs12.var[0] == VAR_POLE) {
-            los = battrs12.los[0];
-        }
-        else if (battrs13.ndim > 0 && battrs13.var[0] == VAR_POLE) {
-            los = battrs13.los[0];
-        }
-
-        build_los_frame(sposition1, los, local_frame);
+        build_los_frame(sposition1, get_count3_los(battrs12, battrs13), local_frame);
 
         Count3PairOp op2{
             hist2,
