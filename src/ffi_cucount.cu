@@ -15,11 +15,15 @@
 #include "mesh.h"
 #include "count2.h"
 #include "count3close.h"
+#include "count3.h"
 #include "common.h"
 #include "cucount.h"
 
 namespace py = pybind11;
 namespace ffi = xla::ffi;
+
+#define MAX_NBLOCKS 256
+#define MAX_NTHREADS_PER_BLOCK 512
 
 // -----------------------------------------------------------------------------
 // Static state for count2
@@ -79,13 +83,18 @@ static void own_bin_attrs_arrays(BinAttrs *battrs) {
     }
 }
 
+
 static void own_weight_attrs_arrays(WeightAttrs *wattrs) {
     // Bitwise
-    if (wattrs->bitwise.p_nbits > 0 && wattrs->bitwise.p_correction_nbits != nullptr) {
+    if (wattrs->bitwise.p_nbits > 0 &&
+        wattrs->bitwise.p_correction_nbits != nullptr) {
         size_t size = wattrs->bitwise.p_nbits * wattrs->bitwise.p_nbits;
+
         FLOAT *buf = (FLOAT*) std::malloc(size * sizeof(FLOAT));
         if (!buf) throw std::bad_alloc();
+
         std::memcpy(buf, wattrs->bitwise.p_correction_nbits, size * sizeof(FLOAT));
+
         wattrs->bitwise.p_correction_nbits = buf;
         owned_host_ptrs.push_back(buf);
     }
@@ -93,28 +102,27 @@ static void own_weight_attrs_arrays(WeightAttrs *wattrs) {
     // Angular axis arrays
     for (size_t idim = 0; idim < wattrs->angular.ndim; ++idim) {
         if (wattrs->angular.sep[idim] != nullptr) {
-            const size_t n = wattrs->angular.shape[idim];
+            const size_t n = wattrs->angular.sep_is_edges ? wattrs->angular.shape[idim] + 1 : wattrs->angular.shape[idim];
+
             FLOAT *buf = (FLOAT*) std::malloc(n * sizeof(FLOAT));
             if (!buf) throw std::bad_alloc();
+
             std::memcpy(buf, wattrs->angular.sep[idim], n * sizeof(FLOAT));
+
             wattrs->angular.sep[idim] = buf;
-            owned_host_ptrs.push_back(buf);
-        }
-        if (wattrs->angular.edges[idim] != nullptr) {
-            const size_t n = wattrs->angular.shape[idim] + 1;
-            FLOAT *buf = (FLOAT*) std::malloc(n * sizeof(FLOAT));
-            if (!buf) throw std::bad_alloc();
-            std::memcpy(buf, wattrs->angular.edges[idim], n * sizeof(FLOAT));
-            wattrs->angular.edges[idim] = buf;
             owned_host_ptrs.push_back(buf);
         }
     }
 
     // Angular weight table
-    if (wattrs->angular.size > 0 && wattrs->angular.weight != nullptr) {
+    if (wattrs->angular.size > 0 &&
+        wattrs->angular.weight != nullptr) {
         FLOAT *buf = (FLOAT*) std::malloc(wattrs->angular.size * sizeof(FLOAT));
+
         if (!buf) throw std::bad_alloc();
+
         std::memcpy(buf, wattrs->angular.weight, wattrs->angular.size * sizeof(FLOAT));
+
         wattrs->angular.weight = buf;
         owned_host_ptrs.push_back(buf);
     }
@@ -197,6 +205,36 @@ void set_count3close_attrs_py(
     own_weight_attrs_arrays(&wattrs3);
 }
 
+
+void set_count3_attrs_py(
+    MeshAttrs_py mattrs1_py,
+    MeshAttrs_py mattrs2_py,
+    MeshAttrs_py mattrs3_py,
+    BinAttrs_py battrs12_py,
+    BinAttrs_py battrs13_py,
+    WeightAttrs_py wattrs_py = WeightAttrs_py(),
+    const SelectionAttrs_py sattrs12_py = SelectionAttrs_py(),
+    const SelectionAttrs_py sattrs13_py = SelectionAttrs_py(),
+    const SelectionAttrs_py veto12_py = SelectionAttrs_py(),
+    const SelectionAttrs_py veto13_py = SelectionAttrs_py())
+{
+    set_count3close_attrs_py(
+        mattrs1_py,
+        mattrs2_py,
+        mattrs3_py,
+        battrs12_py,
+        battrs13_py,
+        py::none(),
+        wattrs_py,
+        sattrs12_py,
+        sattrs13_py,
+        SelectionAttrs_py(),
+        veto12_py,
+        veto13_py,
+        SelectionAttrs_py(),
+        py::make_tuple(1, 2));
+}
+
 // -----------------------------------------------------------------------------
 // Index-value setters
 // -----------------------------------------------------------------------------
@@ -260,6 +298,22 @@ py::tuple get_count3close_layout_py()
     return py::make_tuple(layout.names, shape);
 }
 
+
+py::tuple get_count3_layout_py()
+{
+    Count3CloseLayout layout = get_count3_layout(
+        battrs3_12,
+        battrs3_13);
+
+    py::tuple shape(layout.shape.size());
+    for (size_t i = 0; i < layout.shape.size(); ++i) {
+        shape[i] = py::int_(layout.shape[i]);
+    }
+
+    return py::make_tuple(layout.names, shape);
+}
+
+
 // -----------------------------------------------------------------------------
 // FFI helpers
 // -----------------------------------------------------------------------------
@@ -309,7 +363,8 @@ ffi::Error count2Impl(
 
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
-    membuffer.nblocks = 256;
+    membuffer.nblocks = MAX_NBLOCKS;
+    membuffer.nthreads_per_block = MAX_NTHREADS_PER_BLOCK * 16;  // not used in memory allocation
 
     set_mesh(list_particles, list_mesh, mattrs2, &membuffer, stream);
     count2(counts->typed_data(), list_mesh, mattrs2, sattrs2, battrs2, wattrs2, spattrs2, &membuffer, stream);
@@ -361,7 +416,8 @@ ffi::Error count3closeImpl(
 
     DeviceMemoryBuffer membuffer;
     set_mem_buffer(&membuffer, buffer);
-    membuffer.nblocks = 256;
+    membuffer.nblocks = MAX_NBLOCKS;
+    membuffer.nthreads_per_block = MAX_NTHREADS_PER_BLOCK * 16;  // not used in memory allocation
 
     Mesh mesh1{};
     Mesh mesh2{};
@@ -403,8 +459,102 @@ ffi::Error count3closeImpl(
     return ffi::Error::Success();
 }
 
+
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
     count3closeffi, count3closeImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+);
+
+
+
+ffi::Error count3Impl(
+    cudaStream_t stream,
+    ffi::Buffer<ffi::F64> positions1,
+    ffi::Buffer<ffi::F64> values1,
+    ffi::Buffer<ffi::F64> positions2,
+    ffi::Buffer<ffi::F64> values2,
+    ffi::Buffer<ffi::F64> positions3,
+    ffi::Buffer<ffi::F64> values3,
+    ffi::ResultBuffer<ffi::F64> counts,
+    ffi::ResultBuffer<ffi::F64> buffer)
+{
+    Particles list_particles[MAX_NMESH];
+
+    for (size_t imesh = 0; imesh < MAX_NMESH; imesh++) {
+        list_particles[imesh].size = 0;
+    }
+
+    list_particles[0] = get_ffi_particles(positions1, values1, index_value3[0]);
+    list_particles[1] = get_ffi_particles(positions2, values2, index_value3[1]);
+    list_particles[2] = get_ffi_particles(positions3, values3, index_value3[2]);
+
+    DeviceMemoryBuffer membuffer;
+    set_mem_buffer(&membuffer, buffer);
+    membuffer.nblocks = MAX_NBLOCKS;
+    membuffer.nthreads_per_block = MAX_NTHREADS_PER_BLOCK;
+
+    Mesh mesh1{};
+    Mesh mesh2{};
+    Mesh mesh3{};
+
+    Particles plist[MAX_NMESH];
+    Mesh mlist[MAX_NMESH];
+
+    for (size_t i = 0; i < MAX_NMESH; ++i) {
+        plist[i].size = 0;
+        mlist[i].total_nparticles = 0;
+    }
+
+    plist[0] = list_particles[0];
+    set_mesh(plist, mlist, mattrs3_1, &membuffer, stream);
+    mesh1 = mlist[0];
+
+    plist[0] = list_particles[1];
+    set_mesh(plist, mlist, mattrs3_2, &membuffer, stream);
+    mesh2 = mlist[0];
+
+    plist[0] = list_particles[2];
+    set_mesh(plist, mlist, mattrs3_3, &membuffer, stream);
+    mesh3 = mlist[0];
+
+    count3(
+        counts->typed_data(),
+        mesh1,
+        mesh2,
+        mesh3,
+        mattrs3_2,
+        mattrs3_3,
+        sattrs3_12,
+        sattrs3_13,
+        veto3_12,
+        veto3_13,
+        battrs3_12,
+        battrs3_13,
+        wattrs3,
+        &membuffer,
+        stream);
+
+    cudaError_t last_error = cudaGetLastError();
+    if (last_error != cudaSuccess) {
+        return ffi::Error::Internal(
+            std::string("CUDA error: ") + cudaGetErrorString(last_error));
+    }
+
+    return ffi::Error::Success();
+}
+
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    count3ffi, count3Impl,
     ffi::Ffi::Bind()
         .Ctx<ffi::PlatformStream<cudaStream_t>>()
         .Arg<ffi::Buffer<ffi::F64>>()
@@ -544,4 +694,34 @@ PYBIND11_MODULE(ffi_cucount, m) {
     );
 
     m.def("count3close", []() { return EncapsulateFfiCall(count3closeffi); });
+
+    m.def("set_count3_attrs", &set_count3_attrs_py,
+        py::arg("mattrs1"),
+        py::arg("mattrs2"),
+        py::arg("mattrs3"),
+        py::arg("battrs12"),
+        py::arg("battrs13"),
+        py::arg("wattrs") = WeightAttrs_py(),
+        py::arg("sattrs12") = SelectionAttrs_py(),
+        py::arg("sattrs13") = SelectionAttrs_py(),
+        py::arg("veto12") = SelectionAttrs_py(),
+        py::arg("veto13") = SelectionAttrs_py());
+
+    m.def("set_count3_index_value", &set_count3close_index_value_py,
+        "Set count3 value indices",
+        py::arg("iparticle"),
+        py::arg("size_split") = 0,
+        py::arg("size_spin") = 0,
+        py::arg("size_individual_weight") = 0,
+        py::arg("size_bitwise_weight") = 0,
+        py::arg("size_negative_weight") = 0);
+
+    m.def(
+        "get_count3_layout",
+        &get_count3_layout_py,
+        "Return (names, shape) for count3 outputs."
+    );
+
+    m.def("count3", []() { return EncapsulateFfiCall(count3ffi); });
+
 }

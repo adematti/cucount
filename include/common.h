@@ -30,6 +30,7 @@ typedef enum {MESH_NONE, MESH_CARTESIAN, MESH_ANGULAR} MESH_TYPE;
 typedef enum {VAR_NONE, VAR_S, VAR_MU, VAR_RP, VAR_PI, VAR_THETA, VAR_POLE, VAR_K} VAR_TYPE;
 typedef enum {LOS_NONE, LOS_FIRSTPOINT, LOS_ENDPOINT, LOS_MIDPOINT, LOS_X, LOS_Y, LOS_Z} LOS_TYPE;
 typedef enum {SPLIT_NONE, SPLIT_JACKKNIFE} SPLIT_TYPE;
+typedef enum {BIN_CUSTOM, BIN_LIN, BIN_LOG} BIN_TYPE;
 
 
 #define atomicAddSizet(address, val)                            \
@@ -52,7 +53,7 @@ typedef enum {SPLIT_NONE, SPLIT_JACKKNIFE} SPLIT_TYPE;
 #define CONFIGURE_KERNEL_LAUNCH(kernel, nblocks_var, nthreads_var, buffer) \
     do { \
         cudaOccupancyMaxPotentialBlockSize(&(nblocks_var), &(nthreads_var), kernel, 0, 0); \
-        if (buffer) nblocks_var = MIN(buffer->nblocks, nblocks_var); \
+        if (buffer) {nblocks_var = MIN(buffer->nblocks, nblocks_var); nthreads_var = MIN(buffer->nthreads_per_block, nthreads_var);}; \
         log_message(LOG_LEVEL_DEBUG, "Configured kernel with %d blocks and %d threads per block.\n", (nblocks_var), (nthreads_var)); \
     } while (0)
 
@@ -92,6 +93,7 @@ typedef struct {
 typedef struct {
     VAR_TYPE var[MAX_NBIN];
     LOS_TYPE los[MAX_NBIN];
+    BIN_TYPE bin[MAX_NBIN];
     FLOAT min[MAX_NBIN], max[MAX_NBIN], step[MAX_NBIN];
     FLOAT *array[MAX_NBIN];
     size_t shape[MAX_NBIN], asize[MAX_NBIN];
@@ -135,12 +137,13 @@ typedef struct {
 
 
 typedef struct {
-    FLOAT *sep[MAX_NBIN];    // if provided, separations; length of shape[i]
-    FLOAT *edges[MAX_NBIN];  // if provided, lower-bound edges; length of shape[i] + 1
+    FLOAT *sep[MAX_NBIN];        // points if !sep_is_edges; edges if sep_is_edges
+    bool sep_is_edges[MAX_NBIN]; // false: length shape[i]; true: length shape[i] + 1
+    BIN_TYPE bin[MAX_NBIN];
     FLOAT *weight;
-    size_t shape[MAX_NBIN];  // length of sep and weight along each dimension
-    size_t size;  // total size, product of shape
-    size_t ndim;  // number of dimensions
+    size_t shape[MAX_NBIN];      // interpolation: nsep; binned: nbins
+    size_t size;
+    size_t ndim;
 } AngularWeight;
 
 
@@ -158,6 +161,7 @@ struct DeviceMemoryBuffer {
     size_t size;
     size_t offset;
     size_t nblocks;
+    size_t nthreads_per_block;
 };
 
 

@@ -407,6 +407,8 @@ class BinAttrs(cucountlib.cucount.BinAttrs):
             return np.column_stack([array[:-1], array[1:]])
         if name is None:
             return {coord: edge(self.array[icoord], coord) for icoord, coord in enumerate(self.varnames)}
+        if isinstance(name, list):
+            return [self.edges(name) for name in name]
         index = self.varnames.index(name)
         return edge(self.array[index], name)
 
@@ -417,6 +419,8 @@ class BinAttrs(cucountlib.cucount.BinAttrs):
             return (array[:-1] + array[1:]) / 2.
         if name is None:
             return {coord: mid(self.array[icoord], coord) for icoord, coord in enumerate(self.varnames)}
+        if isinstance(name, list):
+            return [self.coords(name) for name in name]
         index = self.varnames.index(name)
         return mid(self.array[index], name)
 
@@ -587,6 +591,11 @@ class IndexValue(object):
             sizes[name] = size
         self._sizes = sizes
 
+    def copy(self):
+        new = self.__class__.__new__(self.__class__)
+        new._sizes = dict(self._sizes)
+        return new
+
     def clone(self, **kwargs):
         """Copy and update."""
         return self.__class__(**(self._sizes | kwargs))
@@ -742,11 +751,18 @@ class Particles(object):
     def size(self):
         return self.positions.shape[0]
 
+    def copy(self):
+        new = self.__class__.__new__(self.__class__)
+        new.index_value = self.index_value.copy()
+        new.values = list(self.values)
+        new.positions = self.positions
+        return new
+
     @classmethod
     def concatenate(cls, others):
         """Concatenate particles."""
-        new = cls.__new__(cls)
-        new.index_value = others[0].index_value.clone()
+        others = list(others)
+        new = others[0].copy()
         new.values = [np.concatenate(values, axis=0) for values in zip(*[other.values for other in others])]
         new.positions = np.concatenate([other.positions for other in others], axis=0)
         return new
@@ -771,6 +787,16 @@ class Particles(object):
                 if name not in ['split', 'spin']: weights += self.values[sl]
             return weights
         return self.values[self.index_value(name, return_type=slice)]
+
+    def __getitem__(self, name):
+        if isinstance(name, str):
+            return self.get(name)
+        mask = name
+        new = self.copy()
+        new.index_value = self.index_value.clone()
+        new.values = [value[mask] for value in self.values]
+        new.positions = self.positions[mask]
+        return new
 
     def tree_flatten(self):
         # Only used by JAX; kept here for API consistency
@@ -848,7 +874,7 @@ def _triposh_transform_matrix_sub(ell1, ell2, ell3, tol=1e-12):
         = (2 ell3 + 1) H_{ell1 ell2 ell3}
           sum_m (-1)^m
           ( ell1 ell2 ell3 ; m -m 0 )
-          zeta^m_{ell1 ell2}
+          zeta^m_{ell1 ell2} sqrt((2 ell1 + 1) (2 ell2 + 1))
 
     where c_ylm is stored as
 
@@ -876,7 +902,7 @@ def _triposh_transform_matrix_sub(ell1, ell2, ell3, tol=1e-12):
             continue
         coeff = prefactor * ((-1) ** m) * Wm
         # contribution from +m and -m gives 2 Re[zeta^m]
-        M[m] = 2.0 * coeff
+        M[m] = 2.0 * coeff * np.sqrt((2 * ell1 + 1) * (2 * ell2 + 1))
         # sine block remains zero for Eq. 30 allowed rows
     return M
 
@@ -890,7 +916,69 @@ def triposh_to_poles(ells):
     return np.unique(ells1).tolist(), np.unique(sorted(ells2)).tolist()
 
 
-def triposh_transform_matrix(battrs12, battrs13, ells=None):
+def _get_ells(battrs):
+    if isinstance(battrs, BinAttrs):
+        try:
+            ells = battrs.coords('pole')
+        except (ValueError, IndexError):
+            ells = []
+    else:
+        ells = battrs
+    return [int(ell) for ell in ells]
+
+
+def poles_to_ells(ells1, ells2):
+    """Return (factor, ell1, ell2, m) for the stored pole axis."""
+    ells1, ells2 = _get_ells(ells1), _get_ells(ells2)
+    ells = []
+    for ell1 in ells1:
+        for ell2 in ells2:
+            mmax = min(ell1, ell2)
+            for m in range(mmax + 1):
+                ells.append((1, ell1, ell2, m))   # Re
+            for m in range(1, mmax + 1):
+                ells.append((1j, ell1, ell2, m))  # Im
+    return ells
+
+
+def symmetrize_poles(poles, ells1, ells2, axis=-1, np=np):
+    """
+    Symmetrize pole coefficients following Eq. 9 of https://arxiv.org/pdf/1709.10150
+    2017, retaining only real-valued positive-m coefficients.
+
+    Returns
+    -------
+    sym : array
+        Array with the pole axis replaced by the real-only symmetrized
+        coefficients.
+    ells : list
+        Output labels ``(ell1, ell2, m)``.
+    """
+    labels = poles_to_ells(ells1, ells2)
+
+    keep = []
+    factors = []
+    out_labels = []
+
+    for ipole, (part, ell1, ell2, m) in enumerate(labels):
+        if part == 1:
+            keep.append(ipole)
+            factors.append(1 if m == 0 else 2)
+            out_labels.append((ell1, ell2, m))
+
+    keep = np.asarray(keep)
+    factors = np.asarray(factors, dtype=poles.dtype)
+
+    sym = np.take(poles, keep, axis=axis)
+
+    shape = [1] * sym.ndim
+    shape[axis % sym.ndim] = factors.size
+    sym = sym * factors.reshape(shape)
+
+    return sym, out_labels
+
+
+def triposh_transform_matrix(ells1, ells2, ells=None):
     """
     Build the linear transform from the CUDA Ylm-product basis to the
     tripoSH basis.
@@ -911,10 +999,10 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
 
     Parameters
     ----------
-    battrs12 : BinAttrs
+    ells1 : BinAttrs, list
         Bin attributes for the first leg.
         The ``'pole'`` coordinate determines the ordered list of ``ell1`` values.
-    battrs13 : BinAttrs
+    ells2 : BinAttrs, list
         Bin attributes for the second leg.
         The ``'pole'`` coordinate determines the ordered list of ``ell2`` values.
     ells : list[tuple], optional
@@ -949,7 +1037,7 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
     with each pair block occupying
     ``2 * min(ell1, ell2) + 1`` consecutive coefficients.
     """
-    def pad(M, ell1, ell2, bells1, bells2):
+    def pad(M, ell1, ell2, ells1, ells2):
         """
         Pad a local (ell1, ell2) tripoSH transform block into the full CUDA
         projection layout.
@@ -972,13 +1060,13 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
             return 2 * min(l1, l2) + 1
 
         # Total number of CUDA projections
-        total = sum(block_size(l1, l2) for l1 in bells1 for l2 in bells2)
+        total = sum(block_size(l1, l2) for l1 in ells1 for l2 in ells2)
 
         # Find start offset of this block in CUDA ordering
         offset = 0
         found = False
-        for l1 in bells1:
-            for l2 in bells2:
+        for l1 in ells1:
+            for l2 in ells2:
                 if l1 == ell1 and l2 == ell2:
                     found = True
                     break
@@ -993,10 +1081,9 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
         out[offset:offset + M.shape[0]] = M
         return out
 
-    bells1, bells2 = list(battrs12.coords('pole')), list(battrs13.coords('pole'))
-    bells1, bells2 = [int(ell) for ell in bells1], [int(ell) for ell in bells2]
+    ells1, ells2 = _get_ells(ells1), _get_ells(ells2)
     if ells is None:
-        ells = list(itertools.product(bells1, bells2))
+        ells = list(itertools.product(ells1, ells2))
         ells = [tuple(ell) + (None,) for ell in ells]
     matrix = []
     out_ells = []
@@ -1004,7 +1091,7 @@ def triposh_transform_matrix(battrs12, battrs13, ells=None):
         ells3 = [ell3] if ell3 is not None else list(range(abs(ell1 - ell2), ell1 + ell2 + 1))
         for ell3 in ells3:
             M = _triposh_transform_matrix_sub(ell1, ell2, ell3)
-            matrix.append(pad(M, ell1, ell2, bells1, bells2)[None, :])
+            matrix.append(pad(M, ell1, ell2, ells1, ells2)[None, :])
             out_ells.append((ell1, ell2, ell3))
     return out_ells, np.concatenate(matrix, axis=0)
 
@@ -1165,6 +1252,110 @@ def count3close(*particles: Particles,
     )
 
 
+def count3(*particles: Particles,
+           battrs12: BinAttrs,
+           battrs13: BinAttrs,
+           wattrs: WeightAttrs = None,
+           sattrs12: SelectionAttrs = None,
+           sattrs13: SelectionAttrs = None,
+           veto12: SelectionAttrs = None,
+           veto13: SelectionAttrs = None,
+           mattrs1: MeshAttrs = None,
+           mattrs2: MeshAttrs = None,
+           mattrs3: MeshAttrs = None,
+           nthreads: int = 1):
+    """
+    Perform factorized triplet counts using the native cucount library.
+
+    For each primary particle in catalog 1, catalog 2 is binned as a
+    function of the (1, 2) separation and catalog 3 is binned as a function
+    of the (1, 3) separation. The accumulated contribution is
+
+    .. math::
+
+        w_1 \\, w_2(r_{12}) \\, w_3(r_{13})
+
+    There is no binning or selection in terms of the (2, 3) separation.
+
+    Parameters
+    ----------
+    *particles : Particles
+        Exactly three ``Particles`` instances corresponding to catalogs
+        1, 2, and 3.
+    battrs12 : BinAttrs
+        Binning specification for pair (1, 2).
+    battrs13 : BinAttrs
+        Binning specification for pair (1, 3).
+    wattrs : WeightAttrs, optional
+        Weight attributes. If ``None``, defaults to ``WeightAttrs()``.
+    sattrs12 : SelectionAttrs, optional
+        Selection attributes for pair (1, 2).
+    sattrs13 : SelectionAttrs, optional
+        Selection attributes for pair (1, 3).
+    veto12 : SelectionAttrs, optional
+        Veto selection for pair (1, 2).
+    veto13 : SelectionAttrs, optional
+        Veto selection for pair (1, 3).
+    mattrs1, mattrs2, mattrs3 : MeshAttrs, optional
+        Mesh attributes used for catalogs 1, 2, and 3.
+    nthreads : int, optional
+        Number of GPUs within the same node to run in parallel on.
+
+    Returns
+    -------
+    dict
+        Output of the native ``count3`` call, typically ``{"weight": array}``.
+    """
+    _setup_cucount_logging()
+    assert len(particles) == 3
+
+    if wattrs is None:
+        wattrs = WeightAttrs()
+
+    if sattrs12 is None:
+        sattrs12 = SelectionAttrs()
+    if sattrs13 is None:
+        sattrs13 = SelectionAttrs()
+
+    if veto12 is None:
+        veto12 = SelectionAttrs()
+    if veto13 is None:
+        veto13 = SelectionAttrs()
+
+    wattrs.check(*particles)
+
+    if mattrs1 is None:
+        mattrs1 = MeshAttrs(particles[0], sattrs=sattrs12, battrs=battrs12)
+    if mattrs2 is None:
+        mattrs2 = MeshAttrs(particles[1], sattrs=sattrs12, battrs=battrs12)
+    if mattrs3 is None:
+        mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13)
+
+    particles = [
+        cucountlib.cucount.Particles(
+            p.positions,
+            values=_stack_values(p.values, np=np),
+            **p.index_value._to_c(),
+        )
+        for p in particles
+    ]
+
+    return cucountlib.cucount.count3(
+        *particles,
+        mattrs1._to_c(),
+        mattrs2._to_c(),
+        mattrs3._to_c(),
+        battrs12=battrs12,
+        battrs13=battrs13,
+        wattrs=wattrs._to_c(),
+        sattrs12=sattrs12,
+        sattrs13=sattrs13,
+        veto12=veto12,
+        veto13=veto13,
+        nthreads=nthreads,
+    )
+
+
 # Create a lookup table for set bits per byte
 _popcount_lookuptable = np.array([bin(i).count('1') for i in range(256)], dtype=np.int32)
 
@@ -1315,7 +1506,7 @@ def joint_occurences(nrealizations=128, max_occurences=None, noffset=1, default_
 
 def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
     """
-    Perform two-point pair counts analytically for periodic boxes.
+    Perform pair counts analytically for periodic boxes.
 
     Parameters
     ----------
@@ -1340,6 +1531,10 @@ def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
         # we bin in mu
         v = 2. / 3. * np.pi * edges['s'][..., None, None]**3 * edges['mu']
         dv = np.diff(np.diff(v, axis=1), axis=-1)
+    elif mode == ('s', 'pole'):
+        v = 4. / 3. * np.pi * edges['s']**3
+        dv = np.diff(v, axis=-1)
+        dv = np.concatenate([(ell == 0) * dv[..., None] for ell in battrs.coords('pole')], axis=-1)
     elif mode == ('rp', 'pi'):
         v = np.pi * edges['rp'][..., None, None]**2 * edges['pi']
         dv = np.diff(np.diff(v, axis=1), axis=-1)
@@ -1350,3 +1545,47 @@ def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
     else:
         raise NotImplementedError('No analytic pair counter provided for binning {}'.format(mode))
     return np.squeeze(dv).reshape(shape) / boxsize.prod()
+
+
+
+prod = functools.partial(functools.reduce, operator.mul)
+
+
+def count3_analytic(battrs12: BinAttrs, battrs13: BinAttrs, mattrs: MeshAttrs=None):
+    """
+    Perform triplet counts analytically for periodic boxes.
+
+    Parameters
+    ----------
+    battrs12, battrs13 : BinAttrs
+        Binning specification (edges/shape) for the pair counts.
+    mattrs : MeshAttrs or array, optional
+        Mesh attributes (boxsize).
+
+    Returns
+    -------
+    counts : array
+        Normalized analytical triplet counts in each bin.
+    """
+    boxsize = getattr(mattrs, 'boxsize', mattrs) * np.ones(3, dtype=np.float64)
+    dvs = []
+    for battrs in [battrs12, battrs13]:
+        edges = battrs.edges()
+        mode = tuple(edges)
+        shape = battrs.shape
+        if mode == ('s',) or mode == ('s', 'pole'):
+            v = 4. / 3. * np.pi * edges['s']**3
+            dv = np.diff(v, axis=-1)
+        else:
+            raise NotImplementedError('No analytic pair counter provided for binning {}'.format(mode))
+        dv /= boxsize.prod()
+        dvs.append(dv)
+    dv = prod(np.meshgrid(dvs, indexing='ij', sparse=True))
+    ells = poles_to_ells(battrs12, battrs13)
+    if ells:
+        factor = np.zeros(len(ells))
+        ell0 = (0, 0, 0)
+        if ell0 in ells:
+            factor[ells.index(ell0)] = 1.
+        dv = dv[..., None] * factor
+    return dv
