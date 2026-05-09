@@ -27,8 +27,10 @@ typedef struct DeviceCount3Layout {
     size_t csize;
     size_t nells1;
     size_t nells2;
-    size_t ells1[4];
-    size_t ells2[4];
+    int ellmax1;
+    int ellmax2;
+    size_t ells1[MMAX_SIZE];
+    size_t ells2[MMAX_SIZE];
 } DeviceCount3Layout;
 
 
@@ -211,77 +213,62 @@ __device__ inline void compute_trig_up_to_m(                                    
         sm[m] = s1 * cm[m - 1] + c1 * sm[m - 1];                                  \
     }                                                                              \
 }                                                                                  \
-                                                                                   \
-__device__ inline void compute_pbar_row_lmax5(                                     \
-    int ell,                                                                       \
-    int mmax,                                                                      \
-    FLOAT mu,                                                                      \
-    FLOAT Prow[MMAX_SIZE])                                                         \
-{                                                                                  \
-    FLOAT x  = clamp1(mu);                                                         \
-    FLOAT x2 = x * x;                                                              \
-    FLOAT x3 = x2 * x;                                                             \
-    FLOAT x4 = x2 * x2;                                                            \
-    FLOAT x5 = x4 * x;                                                             \
-                                                                                   \
-    FLOAT s2 = MAX((FLOAT)0., (FLOAT)1. - x2);                                     \
-    FLOAT s  = sqrt(s2);                                                           \
-    FLOAT s3 = s2 * s;                                                             \
-    FLOAT s4 = s2 * s2;                                                            \
-    FLOAT s5 = s4 * s;                                                             \
-                                                                                   \
-    _Pragma("unroll")                                                              \
-    for (int m = 0; m < MMAX_SIZE; m++) {                                          \
-        Prow[m] = (FLOAT)0.;                                                       \
-    }                                                                              \
-                                                                                   \
-    if (mmax > ell) mmax = ell;                                                    \
-    if (mmax > ELLMAX) mmax = ELLMAX;                                              \
-    if (mmax < 0) return;                                                          \
-                                                                                   \
-    switch (ell) {                                                                 \
-        case 0:                                                                    \
-            Prow[0] = (FLOAT)1.;                                                   \
-            break;                                                                 \
-                                                                                   \
-        case 1:                                                                    \
-            if (mmax >= 0) Prow[0] = x;                                            \
-            if (mmax >= 1) Prow[1] = -(FLOAT)0.70710678118654752440 * s;           \
-            break;                                                                 \
-                                                                                   \
-        case 2:                                                                    \
-            if (mmax >= 0) Prow[0] = ((FLOAT)0.5) * (((FLOAT)3.) * x2 - (FLOAT)1.);\
-            if (mmax >= 1) Prow[1] = -(FLOAT)1.22474487139158904910 * x * s;      \
-            if (mmax >= 2) Prow[2] =  (FLOAT)0.61237243569579452455 * s2;          \
-            break;                                                                 \
-                                                                                   \
-        case 3:                                                                    \
-            if (mmax >= 0) Prow[0] = ((FLOAT)0.5) * (((FLOAT)5.) * x3 - ((FLOAT)3.) * x);\
-            if (mmax >= 1) Prow[1] = -(FLOAT)0.43301270189221932338 * ((((FLOAT)5.) * x2) - (FLOAT)1.) * s;\
-            if (mmax >= 2) Prow[2] =  (FLOAT)1.36930639376291527536 * x * s2;     \
-            if (mmax >= 3) Prow[3] = -(FLOAT)0.55901699437494742410 * s3;          \
-            break;                                                                 \
-                                                                                   \
-        case 4:                                                                    \
-            if (mmax >= 0) Prow[0] = ((FLOAT)0.125) * (((FLOAT)35.) * x4 - ((FLOAT)30.) * x2 + (FLOAT)3.);\
-            if (mmax >= 1) Prow[1] = -(FLOAT)0.55901699437494742410 * x * ((((FLOAT)7.) * x2) - (FLOAT)3.) * s;\
-            if (mmax >= 2) Prow[2] =  (FLOAT)0.39528470752104741743 * ((((FLOAT)7.) * x2) - (FLOAT)1.) * s2;\
-            if (mmax >= 3) Prow[3] = -(FLOAT)0.93541434669348534640 * x * s3;     \
-            if (mmax >= 4) Prow[4] =  (FLOAT)0.52291251658379721705 * s4;          \
-            break;                                                                 \
-                                                                                   \
-        case 5:                                                                    \
-            if (mmax >= 0) Prow[0] = ((FLOAT)0.125) * (((FLOAT)63.) * x5 - ((FLOAT)70.) * x3 + ((FLOAT)15.) * x);\
-            if (mmax >= 1) Prow[1] = -(FLOAT)0.19882122822827110675 * ((((FLOAT)21.) * x4) - ((FLOAT)14.) * x2 + (FLOAT)1.) * s;\
-            if (mmax >= 2) Prow[2] =  (FLOAT)0.48412291827592711065 * x * ((((FLOAT)3.) * x2) - (FLOAT)1.) * s2;\
-            if (mmax >= 3) Prow[3] = -(FLOAT)0.52291251658379721705 * ((((FLOAT)9.) * x2) - (FLOAT)1.) * s3;\
-            if (mmax >= 4) Prow[4] =  (FLOAT)1.16926793336685668103 * x * s4;     \
-            if (mmax >= 5) Prow[5] = -(FLOAT)0.70156076002011400980 * s5;          \
-            break;                                                                 \
-                                                                                   \
-        default:                                                                   \
-            break;                                                                 \
-    }                                                                              \
+__device__ inline void compute_pbar_all_lmax5(int ellmax, FLOAT mu, FLOAT P[MMAX_SIZE][MMAX_SIZE])                       \
+{                                                                                                                          \
+    ellmax = MIN(ellmax, ELLMAX);                                                                                          \
+                                                                                                                           \
+    FLOAT x  = clamp1(mu);                                                                                                 \
+    FLOAT x2 = x * x;                                                                                                      \
+    FLOAT s2 = MAX((FLOAT)0., (FLOAT)1. - x2);                                                                             \
+    FLOAT s  = sqrt(s2);                                                                                                   \
+                                                                                                                           \
+    _Pragma("unroll")                                                                                                      \
+    for (int ell = 0; ell < MMAX_SIZE; ell++) {                                                                            \
+        _Pragma("unroll")                                                                                                  \
+        for (int m = 0; m < MMAX_SIZE; m++) P[ell][m] = (FLOAT)0.;                                                        \
+    }                                                                                                                      \
+                                                                                                                           \
+    P[0][0] = (FLOAT)1.;                                                                                                   \
+    if (ellmax <= 0) return;                                                                                               \
+                                                                                                                           \
+    P[1][0] = x;                                                                                                           \
+    P[1][1] = -(FLOAT)0.70710678118654752440 * s;                                                                          \
+    if (ellmax <= 1) return;                                                                                               \
+                                                                                                                           \
+    FLOAT x3 = x2 * x;                                                                                                     \
+                                                                                                                           \
+    P[2][0] = ((FLOAT)0.5) * (((FLOAT)3.) * x2 - (FLOAT)1.);                                                              \
+    P[2][1] = -(FLOAT)1.22474487139158904910 * x * s;                                                                      \
+    P[2][2] =  (FLOAT)0.61237243569579452455 * s2;                                                                         \
+    if (ellmax <= 2) return;                                                                                               \
+                                                                                                                           \
+    FLOAT s3 = s2 * s;                                                                                                     \
+                                                                                                                           \
+    P[3][0] =  ((FLOAT)0.5) * (((FLOAT)5.) * x3 - ((FLOAT)3.) * x);                                                       \
+    P[3][1] = -(FLOAT)0.43301270189221932338 * ((((FLOAT)5.) * x2) - (FLOAT)1.) * s;                                     \
+    P[3][2] =  (FLOAT)1.36930639376291527536 * x * s2;                                                                     \
+    P[3][3] = -(FLOAT)0.55901699437494742410 * s3;                                                                         \
+    if (ellmax <= 3) return;                                                                                               \
+                                                                                                                           \
+    FLOAT x4 = x2 * x2;                                                                                                    \
+    FLOAT s4 = s2 * s2;                                                                                                    \
+                                                                                                                           \
+    P[4][0] =  ((FLOAT)0.125) * (((FLOAT)35.) * x4 - ((FLOAT)30.) * x2 + (FLOAT)3.);                                     \
+    P[4][1] = -(FLOAT)0.55901699437494742410 * x * ((((FLOAT)7.) * x2) - (FLOAT)3.) * s;                                 \
+    P[4][2] =  (FLOAT)0.39528470752104741743 * ((((FLOAT)7.) * x2) - (FLOAT)1.) * s2;                                    \
+    P[4][3] = -(FLOAT)0.93541434669348534640 * x * s3;                                                                     \
+    P[4][4] =  (FLOAT)0.52291251658379721705 * s4;                                                                         \
+    if (ellmax <= 4) return;                                                                                               \
+                                                                                                                           \
+    FLOAT x5 = x4 * x;                                                                                                     \
+    FLOAT s5 = s4 * s;                                                                                                     \
+                                                                                                                           \
+    P[5][0] =  ((FLOAT)0.125) * (((FLOAT)63.) * x5 - ((FLOAT)70.) * x3 + ((FLOAT)15.) * x);                              \
+    P[5][1] = -(FLOAT)0.19882122822827110675 * ((((FLOAT)21.) * x4) - ((FLOAT)14.) * x2 + (FLOAT)1.) * s;               \
+    P[5][2] =  (FLOAT)0.48412291827592711065 * x * ((((FLOAT)3.) * x2) - (FLOAT)1.) * s2;                                \
+    P[5][3] = -(FLOAT)0.52291251658379721705 * ((((FLOAT)9.) * x2) - (FLOAT)1.) * s3;                                    \
+    P[5][4] =  (FLOAT)1.16926793336685668103 * x * s4;                                                                     \
+    P[5][5] = -(FLOAT)0.70156076002011400980 * s5;                                                                         \
 }
 
 #endif

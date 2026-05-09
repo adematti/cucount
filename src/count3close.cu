@@ -29,6 +29,9 @@ DeviceCount3Layout make_device_count3_layout(
     DeviceCount3Layout layout;
     memset(&layout, 0, sizeof(DeviceCount3Layout));
 
+    layout.ellmax1 = 0;
+    layout.ellmax2 = 0;
+
     if (battrs12.ndim == 0 || battrs13.ndim == 0) return layout;
 
     layout.nbins = (size_t)battrs12.shape[0] * (size_t)battrs13.shape[0];
@@ -43,6 +46,7 @@ DeviceCount3Layout make_device_count3_layout(
     }
 
     if (battrs12.var[1] == VAR_POLE && battrs13.var[1] == VAR_POLE) {
+
         layout.nells1 = fill_ells(&battrs12, 1, layout.ells1);
         layout.nells2 = fill_ells(&battrs13, 1, layout.ells2);
 
@@ -51,11 +55,17 @@ DeviceCount3Layout make_device_count3_layout(
         layout.nprojs2 = 0;
 
         for (size_t ill1 = 0; ill1 < layout.nells1; ill1++) {
+
             int ell1 = (int)layout.ells1[ill1];
+
+            layout.ellmax1 = MAX(layout.ellmax1, ell1);
             layout.nprojs1 += (size_t)(2 * ell1 + 1);
 
             for (size_t ill2 = 0; ill2 < layout.nells2; ill2++) {
+
                 int ell2 = (int)layout.ells2[ill2];
+
+                layout.ellmax2 = MAX(layout.ellmax2, ell2);
                 layout.nprojs += (size_t)(2 * MIN(ell1, ell2) + 1);
             }
         }
@@ -181,12 +191,11 @@ __device__ inline void add_weight3(
     }
 
     FLOAT rhat[2][NDIM];
+
     #pragma unroll
     for (int ivec = 0; ivec < 2; ivec++) {
 
         if (r[ivec] == (FLOAT)0.) {
-            // Define zero-separation pair direction as local z-axis
-            // (same as LOS axis = local_frame[0])
             #pragma unroll
             for (int icoord = 0; icoord < NDIM; icoord++) {
                 rhat[ivec][icoord] = local_frame[0][icoord];
@@ -205,6 +214,7 @@ __device__ inline void add_weight3(
     const FLOAT *ey = local_frame[2];
 
     FLOAT mu[2] = {(FLOAT)0., (FLOAT)0.};
+
     #pragma unroll
     for (int ivec = 0; ivec < 2; ivec++) {
         #pragma unroll
@@ -229,6 +239,7 @@ __device__ inline void add_weight3(
     }
 
     FLOAT rho[2];
+
     #pragma unroll
     for (int ivec = 0; ivec < 2; ivec++) {
         rho[ivec] = sqrt(MAX((FLOAT)0., (FLOAT)1. - mu[ivec] * mu[ivec]));
@@ -236,66 +247,42 @@ __device__ inline void add_weight3(
 
     FLOAT cdphi = (FLOAT)1.;
     FLOAT sdphi = (FLOAT)0.;
+
     if (rho[0] > (FLOAT)1e-12 && rho[1] > (FLOAT)1e-12) {
         FLOAT inv = (FLOAT)1. / (rho[0] * rho[1]);
         cdphi = clamp1((xy[0][0] * xy[1][0] + xy[0][1] * xy[1][1]) * inv);
-        sdphi = MIN((FLOAT)1., MAX((FLOAT)-1.,
-            (xy[0][0] * xy[1][1] - xy[0][1] * xy[1][0]) * inv));
+        sdphi = MIN((FLOAT)1., MAX((FLOAT)-1., (xy[0][0] * xy[1][1] - xy[0][1] * xy[1][0]) * inv));
     }
 
-    int global_mmax = 0;
-    int row_mmax1[MMAX_SIZE] = {0, 0, 0, 0, 0, 0};
-    int row_mmax2[MMAX_SIZE] = {0, 0, 0, 0, 0, 0};
-
-    for (size_t i1 = 0; i1 < device_layout.nells1; i1++) {
-        int ell1 = (int)device_layout.ells1[i1];
-        for (size_t i2 = 0; i2 < device_layout.nells2; i2++) {
-            int ell2 = (int)device_layout.ells2[i2];
-            int mmax = MIN(ell1, ell2);
-            global_mmax = MAX(global_mmax, mmax);
-            row_mmax1[i1] = MAX(row_mmax1[i1], mmax);
-            row_mmax2[i2] = MAX(row_mmax2[i2], mmax);
-        }
-    }
+    const int ellmax1 = device_layout.ellmax1;
+    const int ellmax2 = device_layout.ellmax2;
+    const int global_mmax = MIN(ellmax1, ellmax2);
 
     FLOAT cm[MMAX_SIZE], sm[MMAX_SIZE];
-    FLOAT P1[MMAX_SIZE][MMAX_SIZE];
-    FLOAT P2[MMAX_SIZE][MMAX_SIZE];
     compute_trig_up_to_m(global_mmax, cdphi, sdphi, cm, sm);
 
-    for (size_t i1 = 0; i1 < device_layout.nells1; i1++) {
-        compute_pbar_row_lmax5(
-            (int)device_layout.ells1[i1],
-            row_mmax1[i1],
-            mu[0],
-            P1[i1]
-        );
-    }
-
-    for (size_t i2 = 0; i2 < device_layout.nells2; i2++) {
-        compute_pbar_row_lmax5(
-            (int)device_layout.ells2[i2],
-            row_mmax2[i2],
-            mu[1],
-            P2[i2]
-        );
-    }
+    FLOAT P1[MMAX_SIZE][MMAX_SIZE];
+    FLOAT P2[MMAX_SIZE][MMAX_SIZE];
+    compute_pbar_all_lmax5(ellmax1, mu[0], P1);
+    compute_pbar_all_lmax5(ellmax2, mu[1], P2);
 
     FLOAT *counts_bin = counts + ibin * device_layout.nprojs;
 
     size_t iproj = 0;
+
     for (size_t i1 = 0; i1 < device_layout.nells1; i1++) {
         int ell1 = (int)device_layout.ells1[i1];
+
         for (size_t i2 = 0; i2 < device_layout.nells2; i2++) {
             int ell2 = (int)device_layout.ells2[i2];
             int mmax = MIN(ell1, ell2);
 
-            //FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1))) / ((FLOAT)(4.0 * M_PI));
             FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1)));
 
             for (int m = 0; m <= mmax; m++) {
-                FLOAT amp = triplet_weight * ell_norm * P1[i1][m] * P2[i2][m];
+                FLOAT amp = triplet_weight * ell_norm * P1[ell1][m] * P2[ell2][m];
                 atomicAdd(&counts_bin[iproj + (size_t)m], amp * cm[m]);
+
                 if (m > 0) {
                     atomicAdd(&counts_bin[iproj + (size_t)(mmax + m)], amp * sm[m]);
                 }
