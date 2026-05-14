@@ -42,6 +42,34 @@ def _count2_to_lsstypes(counts: np.ndarray, norm: np.ndarray, battrs=None, attrs
     return types.Count2(counts=counts, norm=norm, **kw)
 
 
+def compute_norm2(*particles: Particles, wattrs: WeightAttrs=None, masks=None, return_sum_weights=False):
+    """Compute the 2-point normalization, including autocorr self-pair removal."""
+    if wattrs is None: wattrs = WeightAttrs()
+
+    autocorr = len(particles) == 1
+
+    weights1 = [wattrs(particle) for particle in particles]
+    weights1 += [weights1[-1]] * (2 - len(weights1))
+
+    if masks is not None:
+        masks = list(masks)
+        masks += [masks[-1]] * (2 - len(masks))
+        weights1 = [w * m for w, m in zip(weights1, masks)]
+
+    sum_weights1 = [w.sum() for w in weights1]
+    norm = prod(sum_weights1)
+
+    if autocorr:
+        weights2 = wattrs(*(particles[:1] * 2))
+        if masks is not None:
+            weights2 = weights2 * masks[0] * masks[1]
+        norm = norm - weights2.sum()
+
+    if return_sum_weights:
+        return norm, sum_weights1
+    return norm
+
+
 def count2(*particles: Particles, battrs: BinAttrs=None, wattrs: WeightAttrs=None, norm=None, **kwargs):
     """
     Perform pair counts using the native cucount library, exporting to :mod:`lsstypes` format.
@@ -80,8 +108,6 @@ def count2(*particles: Particles, battrs: BinAttrs=None, wattrs: WeightAttrs=Non
         from cucount.numpy import count2
     raw_counts = count2(*(particles * 2 if autocorr else particles), battrs=battrs, wattrs=wattrs, **kwargs)
     weights2 = wattrs(*(particles[:1] * 2))
-    weights1 = [wattrs(particle) for particle in particles]
-    weights1 += [weights1[-1]] * (2 - len(weights1))
     # input_norm, just in case norm happens to be 0
     input_norm = norm
 
@@ -115,37 +141,34 @@ def count2(*particles: Particles, battrs: BinAttrs=None, wattrs: WeightAttrs=Non
             for isplit in range(spattrs.nsplits):
                 masks_i = [particle.get('split')[0] == isplit for particle in particles]
                 masks_i += [masks_i[-1]] * (2 - len(masks_i))
+
                 # ii counts
-                _weights1 = [weights1[i] * masks_i[i] for i in range(len(weights1))]
-                sum_weights1 = [w.sum() for w in _weights1]
-                norm = prod(sum_weights1)
+                norm, sum_weights1 = compute_norm2(*particles, wattrs=wattrs, masks=masks_i, return_sum_weights=True)
                 _counts = counts[isplit]
                 if autocorr:
                     sum_weights2 = (weights2 * masks_i[0]).sum()
-                    norm = norm - sum_weights2
                     # Correct auto-pairs
                     _counts = _counts - sum_weights2 * zero
                 ii_counts[isplit] = _to_lsstypes(counts=_counts, norm=norm, attrs=dict(wsum=sum_weights1))
+
                 # ij counts
                 _counts = counts[spattrs.nsplits + isplit]
-                _weights1 = (weights1[0] * masks_i[0], weights1[1] * (~masks_i[1]))
-                sum_weights1 = [w.sum() for w in _weights1]
-                norm = prod(sum_weights1)
+                masks_ij = (masks_i[0], ~masks_i[1])
+                norm, sum_weights1 = compute_norm2(*particles, wattrs=wattrs, masks=masks_ij, return_sum_weights=True)
                 ij_counts[isplit] = _to_lsstypes(counts=_counts, norm=norm, attrs=dict(wsum=sum_weights1))
+
                 # ji counts
                 _counts = counts[spattrs.nsplits * 2 + isplit]
-                _weights1 = (weights1[0] * (~masks_i[0]), weights1[1] * masks_i[1])
-                sum_weights1 = [w.sum() for w in _weights1]
-                norm = prod(sum_weights1)
+                masks_ji = (~masks_i[0], masks_i[1])
+                norm, sum_weights1 = compute_norm2(*particles, wattrs=wattrs, masks=masks_ji, return_sum_weights=True)
                 ji_counts[isplit] = _to_lsstypes(counts=_counts, norm=norm, attrs=dict(wsum=sum_weights1))
+
             result[key] = types.Count2Jackknife(ii_counts, ij_counts, ji_counts)
 
         else:
-            sum_weights1 = [w.sum() for w in weights1]
-            norm = prod(sum_weights1)
+            norm, sum_weights1 = compute_norm2(*particles, wattrs=wattrs, return_sum_weights=True)
             if autocorr:
                 sum_weights2 = weights2.sum()
-                norm = norm - sum_weights2
                 # Correct auto-pairs
                 counts = counts - sum_weights2 * zero
 
@@ -196,6 +219,32 @@ def _count3_to_lsstypes(counts: np.ndarray, norm: np.ndarray, battrs12=None, bat
     return types.Count3(counts=counts, norm=norm, **kw)
 
 
+def compute_norm3(*particles: Particles, wattrs: WeightAttrs=None, return_sum_weights=False):
+    """Compute the 3-point normalization."""
+    if wattrs is None: wattrs = WeightAttrs()
+
+    weights1 = [wattrs(particle) for particle in particles]
+    weights1 += [weights1[-1]] * (3 - len(weights1))
+    sum_weights1 = [w.sum() for w in weights1]
+
+    weights2 = [wattrs(particle, particle) for particle in particles]
+    sum_weights2 = [w.sum() for w in weights2]
+
+    if len(particles) == 1:
+        weights3 = wattrs(*(particles[:1] * 3))
+        sum_weights3 = weights3.sum()
+        norm = sum_weights1[0]**3 - 3 * sum_weights1[0] * sum_weights2[0] + 2 * sum_weights3
+    elif len(particles) == 2:
+        # because padding gives (0, 1, 1)
+        norm = sum_weights1[0] * (sum_weights1[1]**2 - sum_weights2[1])
+    else:
+        norm = prod(sum_weights1)
+
+    if return_sum_weights:
+        return norm, sum_weights1
+    return norm
+
+
 def count3close(*particles: Particles,
                 battrs12: BinAttrs,
                 battrs13: BinAttrs,
@@ -242,23 +291,8 @@ def count3close(*particles: Particles,
                             battrs12=battrs12, battrs23=battrs23, battrs13=battrs13,
                             wattrs=wattrs, **kwargs)
 
-    weights1 = [wattrs(particle) for particle in particles]
-    weights1 += [weights1[-1]] * (3 - len(weights1))
-    sum_weights1 = [w.sum() for w in weights1]
-
-    if input_norm is None:
-        weights2 = [wattrs(particle, particle) for particle in particles]
-        sum_weights2 = [w.sum() for w in weights2]
-        if len(particles) == 1:
-            weights3 = wattrs(*(particles[:1] * 3))
-            sum_weights3 = weights3.sum()
-            norm = sum_weights1[0]**3 - 3 * sum_weights1[0] * sum_weights2[0] + 2 * sum_weights3
-        elif len(particles) == 2:
-            # because padding gives (0, 1, 1)
-            norm = sum_weights1[0] * (sum_weights1[1]**2 - sum_weights2[1])
-        else:
-            norm = prod(sum_weights1)
-    else:
+    norm, sum_weights1 = compute_norm3(*particles, wattrs=wattrs, return_sum_weights=True)
+    if input_norm is not None:
         norm = input_norm
 
     result = {}
@@ -326,24 +360,8 @@ def count3(*particles: Particles,
         *(particles + (particles[-1],) * (3 - len(particles))),
         battrs12=battrs12, battrs13=battrs13, wattrs=wattrs, **kwargs)
 
-    weights1 = [wattrs(particle) for particle in particles]
-    weights1 += [weights1[-1]] * (3 - len(weights1))
-    sum_weights1 = [w.sum() for w in weights1]
-
-    if input_norm is None:
-        weights2 = [wattrs(particle, particle) for particle in particles]
-        sum_weights2 = [w.sum() for w in weights2]
-
-        if len(particles) == 1:
-            weights3 = wattrs(*(particles[:1] * 3))
-            sum_weights3 = weights3.sum()
-            norm = (sum_weights1[0] ** 3 - 3 * sum_weights1[0] * sum_weights2[0] + 2 * sum_weights3)
-        elif len(particles) == 2:
-            # padding gives (0, 1, 1)
-            norm = sum_weights1[0] * (sum_weights1[1] ** 2 - sum_weights2[1])
-        else:
-            norm = prod(sum_weights1)
-    else:
+    norm, sum_weights1 = compute_norm3(*particles, wattrs=wattrs, return_sum_weights=True)
+    if input_norm is not None:
         norm = input_norm
 
     result = {}
