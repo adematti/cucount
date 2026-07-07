@@ -234,12 +234,14 @@ __device__ inline void set_angular_bounds(                                      
                                                                                    \
     if (th_hi > M_PI - smax) {                                                     \
         cth_min = -1;                                                              \
-        cth_max = cos(th_lo - smax);                                               \
+        /* window may also wrap the north pole: cos(th_lo - smax) is even in its  \
+           argument and would describe a spurious southern cap instead */          \
+        cth_max = (th_lo < smax) ? (FLOAT)1. : cos(th_lo - smax);                  \
         bounds[2] = 0;                                                             \
         bounds[3] = (int)mattrs.meshsize[1] - 1;                                   \
     }                                                                              \
     else if (th_lo < smax) {                                                       \
-        cth_min = cos(th_hi + smax);                                               \
+        cth_min = (th_hi + smax > M_PI) ? (FLOAT)-1. : cos(th_hi + smax);          \
         cth_max = 1;                                                               \
         bounds[2] = 0;                                                             \
         bounds[3] = (int)mattrs.meshsize[1] - 1;                                   \
