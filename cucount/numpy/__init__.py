@@ -4,14 +4,74 @@ import itertools
 import logging
 import functools
 import operator
+import os
+import warnings
 from dataclasses import dataclass, asdict
 
 import numpy as np
 
 import cucountlib.cucount
 
+from . import _cpu
+
 
 logger = logging.getLogger('cucount')
+
+
+BACKENDS = ('cuda', 'cpu', 'compare')
+"""Backend selection, via a backend= keyword or the CUCOUNT_BACKEND variable.
+
+cuda     (default) CUDA
+cpu      the portable CPU backend, raising if it cannot serve the request
+compare  run both and raise if they disagree
+"""
+
+
+def _resolve_backend(backend=None):
+    mode = (backend or os.environ.get('CUCOUNT_BACKEND') or 'cuda').lower()
+    if mode not in BACKENDS:
+        raise ValueError(f'backend must be one of {BACKENDS}, got {mode!r}')
+    return mode
+
+
+def _dispatch(mode, cuda_call, cpu_call, why):
+    """Run a count on the selected backend.
+
+    `why` is None when the CPU backend can serve the request, otherwise the
+    reason it cannot. No backend is ever chosen implicitly.
+    """
+    if mode == 'cuda':
+        return cuda_call()
+
+    if mode == 'cpu':
+        if why:
+            raise NotImplementedError(f'CPU backend: {why}')
+        return cpu_call()
+
+    # compare
+    if why:
+        warnings.warn(f'CPU backend skipped, comparison not run: {why}', stacklevel=3)
+        return cuda_call()
+
+    # Wall clock on both sides
+    start = time.perf_counter()
+    cpu = cpu_call()
+    cpu_seconds = time.perf_counter() - start
+    start = time.perf_counter()
+    reference = cuda_call()
+    cuda_seconds = time.perf_counter() - start
+    ratio = cuda_seconds / cpu_seconds if cpu_seconds > 0 else float('inf')
+    logger.info('compare: cpu %.4f s, cuda %.4f s -- cpu %.2fx %s',
+                cpu_seconds, cuda_seconds,
+                ratio if ratio >= 1 else 1. / ratio,
+                'faster' if ratio >= 1 else 'slower')
+
+    from numpy.testing import assert_allclose
+
+    for key, want in reference.items():
+        assert_allclose(cpu[key], want, rtol=1e-9, atol=0,
+                        err_msg=f'CPU and CUDA backends disagree on {key!r}')
+    return reference
 
 
 def _setup_cucount_logging():
@@ -813,7 +873,7 @@ class Particles(object):
 
 
 def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None,
-           spattrs: SplitAttrs=None, mattrs: MeshAttrs=None, nthreads: int=1):
+           spattrs: SplitAttrs=None, mattrs: MeshAttrs=None, nthreads: int=1, backend: str=None):
     """
     Perform two-point pair counts using the native cucount library.
 
@@ -838,6 +898,9 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         Mesh attributes (periodic, cellsize). If None, defaults to MeshAttrs().
     nthreads : int, optional
         Number of GPUs (within the same node) to run in parallel on.
+    backend : str, optional
+        Override the CUCOUNT_BACKEND environment variable for this call:
+        'cuda' (default), 'cpu' or 'compare'. See BACKENDS.
 
     Returns
     -------
@@ -852,8 +915,14 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     wattrs.check(*particles)
     spattrs.check(*particles)
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
-    particles = [cucountlib.cucount.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
-    return cucountlib.cucount.count2(*particles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=nthreads)
+
+    def _cuda():
+        cparticles = [cucountlib.cucount.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
+        return cucountlib.cucount.count2(*cparticles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=nthreads)
+
+    mode = _resolve_backend(backend)
+    why = None if mode == 'cuda' else _cpu.unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs)
+    return _dispatch(mode, _cuda, lambda: _cpu.count2(particles, battrs, mattrs), why)
 
 
 def _get_ells(battrs):
