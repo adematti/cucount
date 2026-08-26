@@ -2,7 +2,7 @@
 
 **cucount** is a high-performance CUDA implementation for computing pair counts (positions - spins), and triplet counts, optimized for GPUs. It provides both NumPy and JAX interfaces depending on your workflow.
 
-> ⚠️ A CUDA-capable GPU is required.
+> ⚠️ A CUDA-capable GPU is required. An experimental CPU backend is available, but the package still requires CUDA.
 
 ---
 
@@ -54,6 +54,17 @@ battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
 counts = count2(particles1, particles2, battrs=battrs, nthreads=4)
 # counts is a dictionary with key "weight"
 ```
+
+### CPU Backend
+The `count2()` function in the NumPy API supports an experimental CPU backend:
+
+```python
+counts = count2(particles1, particles2, backend='cpu')
+```
+
+Only `count2` is supported currently and only with a limited subset of features: s and (s, mu) binning, cartesian mesh, and individual weights. More features are expected to be added over time; please open an issue if a particular feature is important to you.
+
+The CPU kernels are written in an ISA-portable way using Google Highway. One should be able to build the code once and run it on a wide variety of CPU architectures with SIMD acceleration. Many optimization opportunities remain, however, so performance is not expected to match Corrfunc, for example.
 
 ---
 
