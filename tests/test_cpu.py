@@ -74,6 +74,7 @@ def brute(pos1, w1, pos2, w2, sedges, muedges=None, los='z', periodic=False):
         den = s * np.sqrt((ell * ell).sum(-1))
     with np.errstate(invalid='ignore', divide='ignore'):
         mu = np.where(den > 0, num / np.where(den > 0, den, 1.0), -2.0)
+    mu[s == 0] = 0.0
 
     mi, mok = _bin_index(mu, muedges)
     nm = len(muedges) - 1
@@ -123,6 +124,23 @@ def test_autocorrelation_self_pairs():
     got = count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
     assert np.allclose(got, brute(pos, w, pos, w, sedges, periodic=True), rtol=1e-9)
     assert got[0] >= (w * w).sum() * (1 - 1e-12)
+
+
+@pytest.mark.parametrize('los', ['z', 'midpoint'])
+def test_self_pairs_bin_at_mu_zero(los):
+    """Coincident points take mu = 0 in (s, mu) counts, on both backends."""
+    pos, w = catalog(4, n=500)
+    p = Particles(pos, w)
+    sedges = np.linspace(0.0, SMAX, 11)
+    battrs = BinAttrs(s=sedges, mu=(MU, los))
+    mattrs = MeshAttrs(p, p, boxsize=BOX, battrs=battrs, periodic=True)
+    got = count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    want = brute(pos, w, pos, w, sedges, MU, los, periodic=True)
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+    imu0 = np.searchsorted(MU, 0.0, side='right') - 1
+    assert got[0, imu0] >= (w * w).sum() * (1 - 1e-12)
+    # compare mode raises if the CUDA backend disagrees on the convention
+    count2(p, p, battrs=battrs, mattrs=mattrs, backend='compare')
 
 
 def test_thread_count_invariance(monkeypatch):
