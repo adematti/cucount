@@ -16,7 +16,8 @@ import itertools
 
 import numpy as np
 import pytest
-from cucount.numpy import BinAttrs, MeshAttrs, Particles, _cpu, count2
+from cucount.numpy import (BinAttrs, MeshAttrs, Particles, SelectionAttrs,
+                           SplitAttrs, WeightAttrs, _cpu, count2)
 
 pytestmark = pytest.mark.skipif(
     not _cpu.available(), reason='CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)')
@@ -181,8 +182,88 @@ def test_unsupported_is_declined_by_name():
     mattrs = MeshAttrs(p, p, battrs=battrs)
     with pytest.raises(NotImplementedError, match='theta'):
         count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')
-    # The CUDA backend serves it as before.
+    # The same request is served when routed to the CUDA backend.
     assert 'weight' in count2(p, p, battrs=battrs, mattrs=mattrs, backend='cuda')
+
+
+UNSUPPORTED = ['rp-pi binning', 'los x', 'los firstpoint', 'non-linear mu',
+               'angular mesh', 'theta selection', 'jackknife splits',
+               'spin weights', 'bitwise weights', 'negative weights',
+               'angular weights']
+
+
+def _unsupported_request(feature, n=200):
+    """A fully-formed count2 request using one feature the CPU backend lacks."""
+    rng = np.random.default_rng(10)
+    pos1, w1 = catalog(11, n)
+    pos2, w2 = catalog(12, n)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    kw = dict(battrs=BinAttrs(s=EDGES['lin']))
+
+    if feature == 'rp-pi binning':
+        kw['battrs'] = BinAttrs(rp=(np.linspace(1.0, 50.0, 11), 'z'),
+                                pi=(np.linspace(1.0, 50.0, 11), 'z'))
+        match = 'rp'
+    elif feature in ('los x', 'los firstpoint'):
+        los = feature.split()[1]
+        kw['battrs'] = BinAttrs(s=EDGES['lin'], mu=(MU, los))
+        match = 'line of sight'
+    elif feature == 'non-linear mu':
+        kw['battrs'] = BinAttrs(s=EDGES['lin'],
+                                mu=(np.array([-1.0, -0.5, 0.8, 1.0]), 'z'))
+        match = 'non-linear mu'
+    elif feature == 'angular mesh':
+        sattrs = SelectionAttrs(theta=(0.0, 1.0))
+        kw.update(sattrs=sattrs, mattrs=MeshAttrs(*particles, battrs=kw['battrs'],
+                                                  sattrs=sattrs))
+        match = 'angular mesh'
+    elif feature == 'theta selection':
+        # A cartesian mesh, so the decline must name the selection itself.
+        kw['sattrs'] = SelectionAttrs(theta=(0.0, 1.0))
+        match = 'selection'
+    elif feature == 'jackknife splits':
+        particles = (Particles(pos1, w1, splits=rng.integers(0, 4, n)),
+                     Particles(pos2, w2, splits=rng.integers(0, 4, n)))
+        kw['spattrs'] = SplitAttrs(mode='jackknife', nsplits=4)
+        match = 'split'
+    elif feature == 'spin weights':
+        particles = (Particles(pos1, w1, spin_values=rng.uniform(-1, 1, (n, 2))),
+                     Particles(pos2, w2, spin_values=rng.uniform(-1, 1, (n, 2))))
+        match = 'spin'
+    elif feature in ('bitwise weights', 'negative weights'):
+        bits = [rng.integers(0, 0xffffffff, n, dtype=np.uint64) for _ in range(2)]
+        # A float array after a bitwise one is read as a negative weight.
+        extra = [w1] if feature == 'negative weights' else []
+        particles = (Particles(pos1, [w1, bits[0]] + extra),
+                     Particles(pos2, [w2, bits[1]] + extra))
+        kw['wattrs'] = WeightAttrs(bitwise=dict(weights=[bits[0]]))
+        match = feature.split()[0] + '_weight'
+    elif feature == 'angular weights':
+        sep = np.linspace(0.0, 5.0, 41)
+        kw['wattrs'] = WeightAttrs(angular=dict(sep=sep, weight=np.ones(sep.size)))
+        match = 'angular weights'
+
+    kw.setdefault('mattrs', MeshAttrs(*particles, battrs=kw['battrs']))
+    return particles, kw, match
+
+
+@pytest.mark.parametrize('feature', UNSUPPORTED)
+def test_unsupported_modes_are_declined(feature):
+    """Every feature the backend lacks must raise, naming the feature."""
+    particles, kw, match = _unsupported_request(feature)
+    with pytest.raises(NotImplementedError, match=match):
+        count2(*particles, backend='cpu', **kw)
+
+
+def test_unbuilt_backend_is_declined(monkeypatch):
+    """Requesting cpu without the extension built must name the build flag."""
+    pos, w = catalog(13, n=100)
+    p = Particles(pos, w)
+    battrs = BinAttrs(s=EDGES['lin'])
+    mattrs = MeshAttrs(p, p, battrs=battrs)
+    monkeypatch.setattr(_cpu, 'cpucount', None)
+    with pytest.raises(NotImplementedError, match='not built'):
+        count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')
 
 
 def test_rejects_unknown_backend():
