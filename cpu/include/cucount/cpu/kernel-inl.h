@@ -210,11 +210,15 @@ void Count2Impl(const Mesh<Float>& m1, const Mesh<Float>& m2,
                                 const size_t n = std::min(L, j1 - j);
                                 const auto active = hn::FirstN(d, n);
 
-                                auto dx = hn::MaskedLoad(active, d, &m2.x[j]) - x1;
-                                auto dy = hn::MaskedLoad(active, d, &m2.y[j]) - y1;
-                                auto dz = hn::MaskedLoad(active, d, &m2.z[j]) - z1;
-                                const auto w2 =
-                                    hn::MaskedLoad(active, d, &m2.w[j]);
+                                // LoadN: MaskedLoad may fault past the tail
+                                // on HWY_MEM_OPS_MIGHT_FAULT targets.
+                                const auto x2 = hn::LoadN(d, &m2.x[j], n);
+                                const auto y2 = hn::LoadN(d, &m2.y[j], n);
+                                const auto z2 = hn::LoadN(d, &m2.z[j], n);
+                                const auto w2 = hn::LoadN(d, &m2.w[j], n);
+                                auto dx = x2 - x1;
+                                auto dy = y2 - y1;
+                                auto dz = z2 - z1;
 
                                 if constexpr (Periodic) {
                                     dx = WrapPeriodic(d, dx, hn::Set(d, bx[0]),
@@ -244,12 +248,9 @@ void Count2Impl(const Mesh<Float>& m1, const Mesh<Float>& m2,
                                     } else {
                                         // Midpoint: los = p1 + p2, so
                                         // mu = (dr . los) / (|los| |dr|).
-                                        const auto lx =
-                                            hn::MaskedLoad(active, d, &m2.x[j]) + x1;
-                                        const auto ly =
-                                            hn::MaskedLoad(active, d, &m2.y[j]) + y1;
-                                        const auto lz =
-                                            hn::MaskedLoad(active, d, &m2.z[j]) + z1;
+                                        const auto lx = x2 + x1;
+                                        const auto ly = y2 + y1;
+                                        const auto lz = z2 + z1;
                                         num = dx * lx + dy * ly + dz * lz;
                                         den = s * hn::Sqrt(lx * lx + ly * ly +
                                                            lz * lz);
