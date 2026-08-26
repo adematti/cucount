@@ -254,14 +254,17 @@ void Count2Impl(const Mesh<Float>& m1, const Mesh<Float>& m2,
                                         den = s * hn::Sqrt(lx * lx + ly * ly +
                                                            lz * lz);
                                     }
-                                    // s == 0 self-pairs would divide by zero;
-                                    // they are pushed out of range instead.
+                                    // Coincident points (s2 == 0) take mu = 0,
+                                    // matching the CUDA kernel; a zero
+                                    // denominator with s > 0 stays out of range.
                                     const auto safe = hn::Gt(den, hn::Zero(d));
-                                    const auto mu = hn::IfThenElse(
+                                    auto mu = hn::IfThenElse(
                                         safe, num / hn::IfThenElse(
                                                         safe, den,
                                                         hn::Set(d, Float(1))),
                                         hn::Set(d, Float(-2)));
+                                    mu = hn::IfThenElse(hn::Eq(s2, hn::Zero(d)),
+                                                        hn::Zero(d), mu);
                                     const auto mres = MuIndex(d, mu, mb);
                                     ok = hn::And(ok, mres.ok);
                                     idx = idx * hn::Set(di, static_cast<
