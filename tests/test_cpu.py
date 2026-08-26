@@ -165,11 +165,27 @@ def test_zero_bins_is_empty_result():
     """A 1-edge array requests zero bins; both backends serve it as empty."""
     pos, w = catalog(7, n=200)
     p = Particles(pos, w)
-    battrs = BinAttrs(s=np.array([5.0]))
-    mattrs = MeshAttrs(p, p, boxsize=BOX, battrs=battrs, periodic=True)
-    got = count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
-    assert got.shape == (0,)
-    count2(p, p, battrs=battrs, mattrs=mattrs, backend='compare')
+    for battrs in (BinAttrs(s=np.array([5.0])),
+                   BinAttrs(s=EDGES['lin'], mu=(np.array([0.5]), 'z'))):
+        mattrs = MeshAttrs(p, p, boxsize=BOX, battrs=battrs, periodic=True)
+        got = count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+        assert got.shape == battrs.shape and got.size == 0
+        count2(p, p, battrs=battrs, mattrs=mattrs, backend='compare')
+
+
+@pytest.mark.parametrize('los', ['z', 'midpoint'])
+def test_single_mu_bin(los):
+    """A 2-edge mu array is one linear bin, served rather than declined."""
+    pos1, w1 = catalog(1)
+    pos2, w2 = catalog(2)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    mu1 = np.array([-1.0, 1.0])
+    battrs = BinAttrs(s=EDGES['lin'], mu=(mu1, los))
+    mattrs = MeshAttrs(*particles, boxsize=BOX, battrs=battrs, periodic=True)
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    want = brute(pos1, w1, pos2, w2, EDGES['lin'], mu1, los, periodic=True)
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+    count2(*particles, battrs=battrs, mattrs=mattrs, backend='compare')
 
 
 def test_thread_count_invariance(monkeypatch):

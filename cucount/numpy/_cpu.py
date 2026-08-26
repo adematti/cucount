@@ -36,8 +36,8 @@ def nthreads():
 def _bin_kind(edges):
     """Match the edge array to the cheapest policy that reproduces it exactly."""
     edges = np.asarray(edges, dtype=float)
-    if len(edges) < 3:
-        return 'edges'
+    if len(edges) < 3:  # <= 1 bin is trivially linear
+        return 'lin'
     d = np.diff(edges)
     if np.allclose(d, d[0], rtol=1e-12, atol=0):
         return 'lin'
