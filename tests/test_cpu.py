@@ -161,6 +161,17 @@ def test_smax_much_smaller_than_box():
     count2(*particles, battrs=battrs, mattrs=mattrs, backend='compare')
 
 
+def test_zero_bins_is_empty_result():
+    """A 1-edge array requests zero bins; both backends serve it as empty."""
+    pos, w = catalog(7, n=200)
+    p = Particles(pos, w)
+    battrs = BinAttrs(s=np.array([5.0]))
+    mattrs = MeshAttrs(p, p, boxsize=BOX, battrs=battrs, periodic=True)
+    got = count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    assert got.shape == (0,)
+    count2(p, p, battrs=battrs, mattrs=mattrs, backend='compare')
+
+
 def test_thread_count_invariance(monkeypatch):
     particles, battrs, mattrs, _, _ = setup('lin', 2, 'z', True)
     ref = None

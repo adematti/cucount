@@ -56,12 +56,16 @@ py::object count2_py(Arr positions1, Arr weights1, Arr positions2,
     a.w2 = weights2.size() ? weights2.data() : nullptr;
     a.n2 = static_cast<size_t>(positions2.shape(0));
 
+    if (sedges.size() == 0)
+        throw std::invalid_argument("sedges must not be empty");
     a.sedges = sedges.data();
     a.nsbins = static_cast<size_t>(sedges.size()) - 1;
 
     Arr mu;
     if (!muedges.is_none()) {
         mu = muedges.cast<Arr>();
+        if (mu.size() == 0)
+            throw std::invalid_argument("muedges must not be empty");
         a.muedges = mu.data();
         a.nmubins = static_cast<size_t>(mu.size()) - 1;
     }
@@ -71,7 +75,7 @@ py::object count2_py(Arr positions1, Arr weights1, Arr positions2,
         a.origin[i] = origin[i];
     }
 
-    a.cfg.ndim = a.nmubins ? 2 : 1;
+    a.cfg.ndim = muedges.is_none() ? 1 : 2;
     a.cfg.sbin = parse_bin(bin);
     a.cfg.los = parse_los(los);
     a.cfg.periodic = periodic;
@@ -88,7 +92,8 @@ py::object count2_py(Arr positions1, Arr weights1, Arr positions2,
     double timings[2] = {0.0, 0.0};
     if (return_timings) a.timings = timings;
 
-    {
+    // Zero requested bins is served as the empty result, like the CUDA backend.
+    if (out.size() != 0) {
         py::gil_scoped_release unlock;
         Count2(a);
     }
