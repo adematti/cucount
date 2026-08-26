@@ -407,12 +407,17 @@ static void DispatchNDim(const Count2Args& a) {
         mb.inv_step = static_cast<Float>(1.0 / (a.muedges[1] - a.muedges[0]));
     }
 
+    // One dims for both meshes: the kernel walks m1's cell coordinates on
+    // m2's grid.
+    int dims[3];
+    mesh_dims(a.boxsize, smax, (a.n1 + a.n2) / 2, dims);
+
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
     const Mesh<Float> m1 = build_mesh<Float>(a.pos1, a.w1, a.n1, a.boxsize,
-                                             a.origin, smax);
+                                             a.origin, dims);
     const Mesh<Float> m2 = build_mesh<Float>(a.pos2, a.w2, a.n2, a.boxsize,
-                                             a.origin, smax);
+                                             a.origin, dims);
     const auto t1 = Clock::now();
 
     if (a.cfg.ndim == 1) {

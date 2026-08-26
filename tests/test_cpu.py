@@ -143,6 +143,24 @@ def test_self_pairs_bin_at_mu_zero(los):
     count2(p, p, battrs=battrs, mattrs=mattrs, backend='compare')
 
 
+def test_smax_much_smaller_than_box():
+    """boxsize/smax = 1000: the mesh must stay O(n) cells, not (box/smax)^3."""
+    pos1, w1 = catalog(5)
+    rng = np.random.default_rng(6)
+    # Pair each point with a nearby partner so counts are nonzero at s < 1.
+    pos2 = (pos1 + rng.uniform(-0.4, 0.4, pos1.shape)) % BOX
+    w2 = rng.uniform(0.5, 1.5, len(pos2))
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    sedges = np.linspace(0.0, 1.0, 6)
+    battrs = BinAttrs(s=sedges)
+    mattrs = MeshAttrs(*particles, boxsize=BOX, battrs=battrs, periodic=True)
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    want = brute(pos1, w1, pos2, w2, sedges, periodic=True)
+    assert want.sum() > 0
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+    count2(*particles, battrs=battrs, mattrs=mattrs, backend='compare')
+
+
 def test_thread_count_invariance(monkeypatch):
     particles, battrs, mattrs, _, _ = setup('lin', 2, 'z', True)
     ref = None

@@ -15,15 +15,24 @@ inline int wrap_index(int i, int n) {
 }
 
 // Cells are sized at >= smax so the candidate scan only ever needs the 27
-// neighbouring cells; delta is recomputed per axis in the kernel anyway.
+// neighbouring cells; coarsening preserves that, so the particle cap keeps
+// the cell count O(n) instead of (boxsize/smax)^3.
+inline void mesh_dims(const double boxsize[3], double smax, size_t n,
+                      int dims[3]) {
+    const double cap = std::cbrt(0.5 * static_cast<double>(n));
+    for (int a = 0; a < 3; ++a) {
+        const double d = std::min(std::floor(boxsize[a] / smax), cap);
+        dims[a] = std::max(1, static_cast<int>(d));
+    }
+}
+
 template <class Float>
 Mesh<Float> build_mesh(const double* pos, const double* w, size_t n,
                        const double boxsize[3], const double origin[3],
-                       double smax) {
+                       const int dims[3]) {
     Mesh<Float> m;
     for (int a = 0; a < 3; ++a) {
-        int d = static_cast<int>(std::floor(boxsize[a] / smax));
-        m.dims[a] = std::max(1, d);
+        m.dims[a] = dims[a];
         m.cell[a] = static_cast<Float>(boxsize[a] / m.dims[a]);
         m.origin[a] = static_cast<Float>(origin[a]);
     }
