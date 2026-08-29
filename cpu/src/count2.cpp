@@ -6,7 +6,7 @@
 #include "cucount/cpu/types.h"
 
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "src/count2_cpu.cpp"
+#define HWY_TARGET_INCLUDE "src/count2.cpp"
 #include "hwy/foreach_target.h"  // must precede highway.h
 
 #include "hwy/highway.h"

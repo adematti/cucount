@@ -17,7 +17,7 @@ set(CUCOUNT_CUDA_SOURCES
     src/count3close.cu
     src/count3.cu)
 
-pybind11_add_module(cucount src/cucount.cu ${CUCOUNT_CUDA_SOURCES})
+pybind11_add_module(cucount src/bind.cu ${CUCOUNT_CUDA_SOURCES})
 target_include_directories(cucount PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 set_target_properties(cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 target_link_libraries(cucount PRIVATE pybind11::module)
@@ -50,7 +50,7 @@ endif()
 
 if(BUILD_FFI_CUCOUNT)
     message(STATUS "Compilation of the JAX FFI module")
-    pybind11_add_module(ffi_cucount src/ffi_cucount.cu ${CUCOUNT_CUDA_SOURCES})
+    pybind11_add_module(ffi_cucount src/ffi_bind.cu ${CUCOUNT_CUDA_SOURCES})
     target_include_directories(ffi_cucount PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../include)
     target_include_directories(ffi_cucount PUBLIC ${XLA_DIR})
     set_target_properties(ffi_cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
