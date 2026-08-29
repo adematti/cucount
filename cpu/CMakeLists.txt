@@ -54,6 +54,11 @@ target_link_libraries(cpucount PRIVATE hwy OpenMP::OpenMP_CXX)
 
 target_compile_options(cpucount PRIVATE -O3 -fno-math-errno)
 
+# Land in a build-tree cucountlib/ (a namespace package), so a standalone
+# build is importable exactly like the installed layout:
+#   PYTHONPATH=<build dir> python -c "from cucountlib import cpucount"
+set_target_properties(cpucount PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
+
 if(CUCOUNT_CPU_ALL_TARGETS)
   target_compile_definitions(cpucount PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
 endif()

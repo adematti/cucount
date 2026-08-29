@@ -18,6 +18,9 @@ set(CMAKE_CXX_STANDARD 17)  # Use C++17
 pybind11_add_module(cucount_attrs src/attrs.cpp src/logger.cpp)
 target_include_directories(cucount_attrs PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(cucount_attrs PRIVATE pybind11::module)
+# Every extension lands in a build-tree cucountlib/, so PYTHONPATH=<build dir>
+# imports the same layout the installed package has.
+set_target_properties(cucount_attrs PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
 install(TARGETS cucount_attrs LIBRARY DESTINATION cucountlib)
 
 if(CUCOUNT_BUILD_CUDA)

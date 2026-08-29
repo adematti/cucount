@@ -22,6 +22,7 @@ target_include_directories(cucount PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include $
 set_target_properties(cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 target_link_libraries(cucount PRIVATE pybind11::module)
 set_target_properties(cucount PROPERTIES INSTALL_RPATH "$ORIGIN/lib")
+set_target_properties(cucount PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
 install(TARGETS cucount LIBRARY DESTINATION cucountlib PUBLIC_HEADER DESTINATION cucountlib)
 
 # Try to get XLA_DIR and set BUILD_FFI_CUCOUNT accordingly
@@ -56,5 +57,6 @@ if(BUILD_FFI_CUCOUNT)
     set_target_properties(ffi_cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(ffi_cucount PRIVATE pybind11::module)
     set_target_properties(ffi_cucount PROPERTIES INSTALL_RPATH "$ORIGIN/lib")
+    set_target_properties(ffi_cucount PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
     install(TARGETS ffi_cucount LIBRARY DESTINATION cucountlib PUBLIC_HEADER DESTINATION cucountlib)
 endif()

@@ -11,13 +11,13 @@ import os
 
 import numpy as np
 
+# One import path for every build: even a standalone `cmake -S cpu` build
+# lands the module in a build-tree cucountlib/ (a namespace package that
+# merges with the installed one), so PYTHONPATH=<build dir> suffices.
 try:
     from cucountlib import cpucount
-except ImportError:  # built out of tree, or -DCUCOUNT_BUILD_CPU=OFF
-    try:
-        import cpucount
-    except ImportError:
-        cpucount = None
+except ImportError:  # -DCUCOUNT_BUILD_CPU=OFF
+    cpucount = None
 
 logger = logging.getLogger('cucount')
 

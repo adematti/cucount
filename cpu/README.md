@@ -21,6 +21,19 @@ cmake --build build/cpu -j
 
 Or as part of the root project: `cmake -S . -B build -DCUCOUNT_BUILD_CPU=ON`.
 
+Either way the module lands in a build-tree `cucountlib/` — a namespace
+package that merges with an installed one — so the freshly built kernel is
+importable without reinstalling:
+
+```bash
+PYTHONPATH=build/cpu:$PYTHONPATH python -c "from cucountlib import cpucount"
+```
+
+One caveat: an *editable* install (`pip install -e .`) plants a
+scikit-build-core finder that pins its own built extensions first regardless
+of `PYTHONPATH`; run `python -s` (or set `PYTHONNOUSERSITE=1`) to let the
+build tree win over a user-site editable install.
+
 ## Use
 
 `cpucount.count2` mirrors `cucountlib.cucount.count2`: it takes the same
