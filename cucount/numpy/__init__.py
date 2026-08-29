@@ -975,7 +975,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         return cucountlib.cucount.count2(*cparticles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=cuda_tuning.get('nthreads', 1))
 
     why = None if mode == 'cuda' else _cpu.unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs)
-    return _dispatch(mode, _cuda, lambda: _cpu.count2(particles, battrs, mattrs, tuning=cpu_tuning), why)
+    return _dispatch(mode, _cuda, lambda: _cpu.count2(particles, battrs, mattrs, wattrs=wattrs, tuning=cpu_tuning), why)
 
 
 def _get_ells(battrs):

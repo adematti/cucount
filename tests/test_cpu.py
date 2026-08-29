@@ -251,7 +251,7 @@ def test_unsupported_is_declined_by_name():
 
 UNSUPPORTED = ['rp-pi binning', 'los x', 'los firstpoint', 'non-linear mu',
                'angular mesh', 'theta selection', 'jackknife splits',
-               'spin weights', 'bitwise weights', 'negative weights',
+               'spin components', 'bitwise weights', 'negative weights',
                'angular weights']
 
 
@@ -289,9 +289,10 @@ def _unsupported_request(feature, n=200):
                      Particles(pos2, w2, splits=rng.integers(0, 4, n)))
         kw['spattrs'] = SplitAttrs(mode='jackknife', nsplits=4)
         match = 'split'
-    elif feature == 'spin weights':
-        particles = (Particles(pos1, w1, spin_values=rng.uniform(-1, 1, (n, 2))),
-                     Particles(pos2, w2, spin_values=rng.uniform(-1, 1, (n, 2))))
+    elif feature == 'spin components':
+        # Spin itself is served now; only a non-2 component count is declined.
+        particles = (Particles(pos1, w1, spin_values=rng.uniform(-1, 1, n)),
+                     Particles(pos2, w2))
         match = 'spin'
     elif feature in ('bitwise weights', 'negative weights'):
         bits = [rng.integers(0, 0xffffffff, n, dtype=np.uint64) for _ in range(2)]
@@ -427,3 +428,122 @@ def test_nthreads_keyword_deprecated():
     particles, battrs, mattrs, _, _ = setup('lin', 1, 'z', True)
     with pytest.warns(DeprecationWarning, match='tuning'):
         count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu', nthreads=2)
+
+
+# ---------------------------------------------------------------------------
+# Spin (galaxy-shear / shear-shear): the SIMD cull is unchanged and surviving
+# lanes take the scalar projection shared with CUDA (include/pair_math.h).
+# ---------------------------------------------------------------------------
+
+def _unit_catalog(seed, n=500):
+    rng = np.random.default_rng(seed)
+    p = rng.normal(size=(n, 3))
+    p /= np.linalg.norm(p, axis=1, keepdims=True)
+    w = rng.uniform(0.5, 1.5, n)
+    e = rng.normal(0., 0.2, (n, 2))
+    return p, w, e
+
+
+def _spin_projection(r1, r2, e0, e1, spin):
+    """Vectorized copy of compute_spin_projection_cartesian in pair_math.h.
+
+    r1 (n1, 3), r2 (n2, 3): unit vectors. e0, e1: components pre-shaped to
+    broadcast against (n1, n2) from whichever side carries them.
+    """
+    east = np.cross(np.array([0., 0., 1.]), r1)
+    east /= np.linalg.norm(east, axis=-1, keepdims=True)
+    north = np.cross(r1, east)
+    dot12 = r1 @ r2.T
+    p = r2[None, :, :] - dot12[..., None] * r1[:, None, :]
+    pe = np.einsum('ijk,ik->ij', p, east)
+    pn = np.einsum('ijk,ik->ij', p, north)
+    phi = np.arctan2(pe, pn)
+    c, s = np.cos(spin * phi), np.sin(spin * phi)
+    splus = -(e0 * c + e1 * s)
+    scross = e0 * s - e1 * c
+    return splus, scross
+
+
+def _brute_multi(pos1, pos2, wmats, sedges, muedges=None, los='z'):
+    """Bin several (n1, n2) pair-weight matrices at once (non-periodic)."""
+    d = pos2[None, :, :] - pos1[:, None, :]
+    s = np.sqrt((d * d).sum(-1))
+    si, ok = _bin_index(s, sedges)
+    nb = len(sedges) - 1
+    shape, idx = (nb,), si
+    if muedges is not None:
+        if los == 'z':
+            num, den = d[..., 2], s
+        else:
+            ell = pos2[None, :, :] + pos1[:, None, :]
+            num = (d * ell).sum(-1)
+            den = s * np.sqrt((ell * ell).sum(-1))
+        with np.errstate(invalid='ignore', divide='ignore'):
+            mu = np.where(den > 0, num / np.where(den > 0, den, 1.0), -2.0)
+        mu[s == 0] = 0.0
+        mi, mok = _bin_index(mu, muedges)
+        nm = len(muedges) - 1
+        ok = ok & mok
+        shape, idx = (nb, nm), si * nm + mi
+    return [np.bincount(idx[ok], weights=w[ok],
+                        minlength=nb * (shape[1] if muedges is not None else 1)
+                        ).reshape(shape) for w in wmats]
+
+
+def _spin_setup(mode, ndim, seeds=(1, 2)):
+    pos1, w1, e1 = _unit_catalog(seeds[0])
+    pos2, w2, e2 = _unit_catalog(seeds[1])
+    s1, s2 = mode[0] == 's', mode[1] == 's'
+    particles = (Particles(pos1, w1, spin_values=e1 if s1 else None),
+                 Particles(pos2, w2, spin_values=e2 if s2 else None))
+    wattrs = WeightAttrs(spin=(2 if s1 else 0, 2 if s2 else 0))
+    sedges = np.linspace(0.05, 1.5, 11)
+    muedges = np.linspace(-1., 1., 7)
+    battrs = (BinAttrs(s=sedges, mu=(muedges, 'z')) if ndim == 2
+              else BinAttrs(s=sedges))
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+
+    # Reference channels, CUDA add_weight2 formulas (cross*plus included).
+    w = w1[:, None] * w2[None, :]
+    if s1:
+        p1, x1 = _spin_projection(pos1, pos2, e1[:, None, 0], e1[:, None, 1], 2)
+    if s2:
+        p2, x2 = _spin_projection(pos1, pos2, e2[None, :, 0], e2[None, :, 1], 2)
+    if s1 and s2:
+        names = ['weight_plus_plus', 'weight_plus_cross', 'weight_cross_cross']
+        wmats = [w * p1 * p2, w * x1 * p2, w * x1 * x2]
+    elif s1:
+        names, wmats = ['weight_plus', 'weight_cross'], [w * p1, w * x1]
+    else:
+        names, wmats = ['weight_plus', 'weight_cross'], [w * p2, w * x2]
+    want = _brute_multi(pos1, pos2, wmats, sedges,
+                        muedges if ndim == 2 else None)
+    kw = dict(battrs=battrs, mattrs=mattrs, wattrs=wattrs)
+    return particles, kw, names, want
+
+
+@pytest.mark.parametrize('ndim', [1, 2])
+@pytest.mark.parametrize('mode', ['gs', 'sg', 'ss'])
+def test_spin_matches_brute_force(mode, ndim):
+    particles, kw, names, want = _spin_setup(mode, ndim)
+    got = count2(*particles, backend='cpu', **kw)
+    assert sorted(got) == sorted(names)
+    for name, ref in zip(names, want):
+        scale = np.abs(ref).max()
+        assert np.allclose(got[name], ref, rtol=1e-9, atol=1e-12 * scale), name
+
+
+@pytest.mark.parametrize('ndim', [1, 2])
+@pytest.mark.parametrize('mode', ['gs', 'ss'])
+def test_spin_matches_cuda(mode, ndim):
+    particles, kw, names, _ = _spin_setup(mode, ndim)
+    cpu = count2(*particles, backend='cpu', **kw)
+    cuda = count2(*particles, backend='cuda', **kw)
+    for name in names:
+        # Both sides normalize in full precision, but CUDA's sin/cos/atan2
+        # intrinsics differ from libm by ulps, and near-cancelling bins
+        # amplify that; hence the atol scaled to the channel.
+        scale = np.abs(cuda[name]).max()
+        np.testing.assert_allclose(cpu[name], cuda[name],
+                                   rtol=1e-7, atol=1e-10 * scale,
+                                   err_msg=name)

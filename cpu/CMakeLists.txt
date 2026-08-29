@@ -36,7 +36,9 @@ find_package(OpenMP REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 
 pybind11_add_module(cpucount src/count2_cpu.cpp src/bind.cpp)
-target_include_directories(cpucount PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+# ../include for pair_math.h, the scalar per-pair math shared with CUDA (the
+# other headers there are CUDA-only and are not included from this target).
+target_include_directories(cpucount PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_link_libraries(cpucount PRIVATE hwy OpenMP::OpenMP_CXX)
 
 target_compile_options(cpucount PRIVATE -O3 -fno-math-errno)

@@ -61,6 +61,11 @@ struct BinSpec {
 template <class Float>
 struct Mesh {
     std::vector<Float> x, y, z, w;
+    // Filled only when the pair count involves spin: unit-sphere positions
+    // (both meshes; the projection frame needs both endpoints) and this
+    // catalogue's two spin components (only where they exist).
+    std::vector<Float> sx, sy, sz;
+    std::vector<Float> e1, e2;
     std::vector<size_t> start;  // ncells + 1 offsets into x/y/z/w
     int dims[3] = {1, 1, 1};
     Float cell[3] = {0, 0, 0};
@@ -86,14 +91,25 @@ struct Count2Args {
     const double* muedges = nullptr;
     size_t nmubins = 0;
 
+    // Optional spin-2 components, interleaved (e1, e2) per particle, nN * 2;
+    // null when that catalogue carries none. The order is the spin the
+    // components transform with (2 for shear); meaningful only with a non-null
+    // pointer on the same side.
+    const double* spin1 = nullptr;
+    const double* spin2 = nullptr;
+    int spin_order1 = 0;
+    int spin_order2 = 0;
+
     double boxsize[3] = {0, 0, 0};
     double origin[3] = {0, 0, 0};
 
     Config cfg;
     int nthreads = 1;
 
-    // nsbins * nmubins accumulators, always double: the point of float32 is
-    // twice the lanes through the geometry, not a narrower accumulator.
+    // nweights * nsbins * nmubins accumulators (channel-major, matching the
+    // CUDA layout; nweights = 1 + one per side with spin), always double: the
+    // point of float32 is twice the lanes through the geometry, not a narrower
+    // accumulator.
     double* out = nullptr;
 
     // Optional [mesh_seconds, pair_seconds], to separate setup from pair work.

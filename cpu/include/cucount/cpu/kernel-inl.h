@@ -11,6 +11,10 @@
 
 #include "cucount/cpu/mesh.h"
 #include "cucount/cpu/types.h"
+// Scalar per-pair math shared with the CUDA backend (plain inline templates,
+// no SIMD attributes, so a single definition per program is fine even though
+// this file is re-included per target).
+#include "pair_math.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/highway.h"
 // Log() for the BIN_LOG policy; must be included per-target, like this file.
@@ -140,15 +144,28 @@ inline AxisRange axis_range(int i, int n, bool periodic) {
 
 template <class Float, int NDim, class SBin, LosKind LOS, bool Periodic,
           ScatterKind SC>
-void Count2Impl(const Mesh<Float>& m1, const Mesh<Float>& m2,
-                const BinSpec<Float>& sb, const BinSpec<Float>& mb,
-                const double boxsize[3], double* out, int nthreads) {
+void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
+                const Mesh<Float>& m2, const BinSpec<Float>& sb,
+                const BinSpec<Float>& mb) {
     const hn::ScalableTag<Float> d;
     const hn::RebindToSigned<decltype(d)> di;
     const size_t L = hn::Lanes(d);
 
     const size_t nmu = (NDim == 2) ? mb.nbins : 1;
     const size_t nbins_total = sb.nbins * nmu;
+
+    // Spin channels replace the plain weight, matching the CUDA layout:
+    // (plus, cross) for one spinning side, (plus*plus, cross*plus,
+    // cross*cross) for two. The SIMD geometry cull is untouched; surviving
+    // lanes take the shared scalar projection.
+    const bool sp1 = !m1.e1.empty();
+    const bool sp2 = !m2.e1.empty();
+    const bool has_spin = sp1 || sp2;
+    const size_t nw = 1 + (sp1 ? 1 : 0) + (sp2 ? 1 : 0);
+
+    const double* boxsize = a.boxsize;
+    double* out = a.out;
+    const int nthreads = a.nthreads;
 
     const Float bx[3] = {static_cast<Float>(boxsize[0]),
                          static_cast<Float>(boxsize[1]),
@@ -162,7 +179,7 @@ void Count2Impl(const Mesh<Float>& m1, const Mesh<Float>& m2,
 #pragma omp parallel num_threads(nthreads)
 #endif
     {
-        std::vector<double> local(nbins_total, 0.0);
+        std::vector<double> local(nw * nbins_total, 0.0);
         // Replicated per-lane histogram for the BinMajor strategy. A flat
         // buffer rather than an array of vectors, because sizeless SVE/RVV
         // vector types cannot be stored in a container; and allocated through
@@ -205,6 +222,18 @@ void Count2Impl(const Mesh<Float>& m1, const Mesh<Float>& m2,
                             const auto y1 = hn::Set(d, m1.y[i]);
                             const auto z1 = hn::Set(d, m1.z[i]);
                             const auto w1 = hn::Set(d, m1.w[i]);
+
+                            Float r1v[3] = {0, 0, 0};
+                            Float e1v[2] = {0, 0};
+                            if (has_spin) {
+                                r1v[0] = m1.sx[i];
+                                r1v[1] = m1.sy[i];
+                                r1v[2] = m1.sz[i];
+                            }
+                            if (sp1) {
+                                e1v[0] = m1.e1[i];
+                                e1v[1] = m1.e2[i];
+                            }
 
                             for (size_t j = j0; j < j1; j += L) {
                                 const size_t n = std::min(L, j1 - j);
@@ -289,9 +318,64 @@ void Count2Impl(const Mesh<Float>& m1, const Mesh<Float>& m2,
                                               di, ibuf);
                                     hn::Store(hn::IfThenElseZero(ok, wpair), d,
                                               wbuf);
-                                    for (size_t k = 0; k < n; ++k) {
-                                        local[static_cast<size_t>(ibuf[k])] +=
-                                            static_cast<double>(wbuf[k]);
+                                    if (!has_spin) {
+                                        for (size_t k = 0; k < n; ++k) {
+                                            local[static_cast<size_t>(ibuf[k])] +=
+                                                static_cast<double>(wbuf[k]);
+                                        }
+                                    } else {
+                                        // Surviving lanes take the shared
+                                        // scalar projection. Masked lanes must
+                                        // be skipped by MASK, not weight: the
+                                        // zero-filled tail coords would project
+                                        // to NaN, and 0 * NaN poisons bin 0.
+                                        HWY_ALIGN Float
+                                            mbuf[HWY_MAX_LANES_D(decltype(d))];
+                                        hn::Store(hn::IfThenElseZero(
+                                                      ok, hn::Set(d, Float(1))),
+                                                  d, mbuf);
+                                        for (size_t k = 0; k < n; ++k) {
+                                            if (mbuf[k] == Float(0)) continue;
+                                            const size_t jj = j + k;
+                                            const size_t b =
+                                                static_cast<size_t>(ibuf[k]);
+                                            const Float r2v[3] = {
+                                                m2.sx[jj], m2.sy[jj], m2.sz[jj]};
+                                            Float splus1 = 0, scross1 = 0;
+                                            Float splus2 = 0, scross2 = 0;
+                                            if (sp1) {
+                                                pairmath::compute_spin_projection_cartesian(
+                                                    r1v, r2v, e1v, a.spin_order1,
+                                                    &splus1, &scross1);
+                                            }
+                                            if (sp2) {
+                                                const Float e2v[2] = {
+                                                    m2.e1[jj], m2.e2[jj]};
+                                                pairmath::compute_spin_projection_cartesian(
+                                                    r1v, r2v, e2v, a.spin_order2,
+                                                    &splus2, &scross2);
+                                            }
+                                            const double w =
+                                                static_cast<double>(wbuf[k]);
+                                            // Channel formulas mirror the CUDA
+                                            // add_weight2, cross*plus ordering
+                                            // included.
+                                            if (sp1 && sp2) {
+                                                local[b] += w * splus1 * splus2;
+                                                local[nbins_total + b] +=
+                                                    w * scross1 * splus2;
+                                                local[2 * nbins_total + b] +=
+                                                    w * scross1 * scross2;
+                                            } else if (sp1) {
+                                                local[b] += w * splus1;
+                                                local[nbins_total + b] +=
+                                                    w * scross1;
+                                            } else {
+                                                local[b] += w * splus2;
+                                                local[nbins_total + b] +=
+                                                    w * scross2;
+                                            }
+                                        }
                                     }
                                 } else {
                                     const auto wv = hn::IfThenElseZero(ok, wpair);
@@ -326,7 +410,7 @@ void Count2Impl(const Mesh<Float>& m1, const Mesh<Float>& m2,
 #ifdef _OPENMP
 #pragma omp critical
 #endif
-        for (size_t b = 0; b < nbins_total; ++b) out[b] += local[b];
+        for (size_t b = 0; b < nw * nbins_total; ++b) out[b] += local[b];
     }
 }
 
@@ -338,12 +422,14 @@ template <class Float, int NDim, class SBin, LosKind LOS, bool Periodic>
 static void DispatchScatter(const Count2Args& a, const Mesh<Float>& m1,
                             const Mesh<Float>& m2, const BinSpec<Float>& sb,
                             const BinSpec<Float>& mb) {
-    if (a.cfg.scatter == ScatterKind::Scalar) {
+    // Spin accumulation is scalar per surviving lane, so BinMajor's replicated
+    // histogram has nothing to offer it; spin requests always take Scalar.
+    if (a.cfg.scatter == ScatterKind::Scalar || a.spin1 || a.spin2) {
         Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::Scalar>(
-            m1, m2, sb, mb, a.boxsize, a.out, a.nthreads);
+            a, m1, m2, sb, mb);
     } else {
         Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::BinMajor>(
-            m1, m2, sb, mb, a.boxsize, a.out, a.nthreads);
+            a, m1, m2, sb, mb);
     }
 }
 
@@ -414,10 +500,11 @@ static void DispatchNDim(const Count2Args& a) {
 
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
+    const bool with_spos = (a.spin1 != nullptr) || (a.spin2 != nullptr);
     const Mesh<Float> m1 = build_mesh<Float>(a.pos1, a.w1, a.n1, a.boxsize,
-                                             a.origin, dims);
+                                             a.origin, dims, a.spin1, with_spos);
     const Mesh<Float> m2 = build_mesh<Float>(a.pos2, a.w2, a.n2, a.boxsize,
-                                             a.origin, dims);
+                                             a.origin, dims, a.spin2, with_spos);
     const auto t1 = Clock::now();
 
     if (a.cfg.ndim == 1) {

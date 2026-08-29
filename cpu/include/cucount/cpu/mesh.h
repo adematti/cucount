@@ -26,10 +26,14 @@ inline void mesh_dims(const double boxsize[3], double smax, size_t n,
     }
 }
 
+// spin: this catalogue's interleaved (e1, e2) components, or null.
+// with_spos: fill unit-sphere positions, needed on BOTH meshes whenever either
+// side of the pair count carries spin (the projection frame uses both ends).
 template <class Float>
 Mesh<Float> build_mesh(const double* pos, const double* w, size_t n,
                        const double boxsize[3], const double origin[3],
-                       const int dims[3]) {
+                       const int dims[3], const double* spin = nullptr,
+                       bool with_spos = false) {
     Mesh<Float> m;
     for (int a = 0; a < 3; ++a) {
         m.dims[a] = dims[a];
@@ -58,6 +62,15 @@ Mesh<Float> build_mesh(const double* pos, const double* w, size_t n,
     m.y.resize(n);
     m.z.resize(n);
     m.w.resize(n);
+    if (with_spos) {
+        m.sx.resize(n);
+        m.sy.resize(n);
+        m.sz.resize(n);
+    }
+    if (spin) {
+        m.e1.resize(n);
+        m.e2.resize(n);
+    }
 
     std::vector<size_t> fill(m.start.begin(), m.start.end() - 1);
     for (size_t i = 0; i < n; ++i) {
@@ -66,6 +79,19 @@ Mesh<Float> build_mesh(const double* pos, const double* w, size_t n,
         m.y[o] = static_cast<Float>(pos[3 * i + 1]);
         m.z[o] = static_cast<Float>(pos[3 * i + 2]);
         m.w[o] = static_cast<Float>(w ? w[i] : 1.0);
+        if (with_spos) {
+            // Normalized in double before narrowing, like the CUDA mesh.
+            const double px = pos[3 * i + 0], py = pos[3 * i + 1],
+                         pz = pos[3 * i + 2];
+            const double r = std::sqrt(px * px + py * py + pz * pz);
+            m.sx[o] = static_cast<Float>(px / r);
+            m.sy[o] = static_cast<Float>(py / r);
+            m.sz[o] = static_cast<Float>(pz / r);
+        }
+        if (spin) {
+            m.e1[o] = static_cast<Float>(spin[2 * i + 0]);
+            m.e2[o] = static_cast<Float>(spin[2 * i + 1]);
+        }
     }
     return m;
 }

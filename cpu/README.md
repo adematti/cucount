@@ -98,8 +98,11 @@ and precision axes that the public API does not expose.
 ## Scope
 
 Covered: `s` and `(s, mu)` binning; linear, log and arbitrary edges; `z` and
-midpoint LOS; periodic and non-periodic; `float`/`double`; per-object weights.
+midpoint LOS; periodic and non-periodic; `float`/`double`; per-object weights;
+spin/shear (galaxy-shear and shear-shear channels, via the scalar projection
+shared with CUDA in `include/pair_math.h` — the SIMD distance cull is
+unchanged and surviving lanes take the shared per-pair math).
 
 Not covered, deliberately: triplet counts, angular mesh, theta/rp/pi/pole/k
-binning, bitwise and angular weights, spin/shear, jackknife splits, JAX FFI,
+binning, bitwise and angular weights, jackknife splits, JAX FFI,
 multi-device.

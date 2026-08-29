@@ -4,6 +4,14 @@
 #include <sm_20_atomic_functions.h>
 #include "common.h"
 #include "count2.h"
+// set_legendre, get_bessel, compute_spin_projection_cartesian: shared with the
+// CPU backend. Note the spin projection now normalizes in FLOAT precision
+// (the pre-extraction code used rsqrtf, truncating the double path to float).
+#include "pair_math.h"
+
+using cucount::pairmath::set_legendre;
+using cucount::pairmath::get_bessel;
+using cucount::pairmath::compute_spin_projection_cartesian;
 
 
 __device__ __constant__ SplitAttrs device_spattrs;
@@ -12,141 +20,6 @@ static __device__ __constant__ DeviceCount2Layout device_layout;
 
 DEFINE_COMPUTE_UTILS
 DEFINE_ANGULAR_WEIGHT
-
-
-__device__ inline void compute_spin_projection_cartesian(
-    const FLOAT *r1,
-    const FLOAT *r2,
-    const FLOAT *s,
-    int spin,
-    FLOAT *splus_out,
-    FLOAT *scross_out)
-{
-    if (spin != 0) {
-        const FLOAT zhat[3] = {0.0, 0.0, 1.0};
-
-        FLOAT east[3] = {
-            zhat[1] * r1[2] - zhat[2] * r1[1],
-            zhat[2] * r1[0] - zhat[0] * r1[2],
-            zhat[0] * r1[1] - zhat[1] * r1[0]
-        };
-
-        FLOAT east_norm = rsqrtf(east[0] * east[0] + east[1] * east[1] + east[2] * east[2]);
-        east[0] *= east_norm;
-        east[1] *= east_norm;
-        east[2] *= east_norm;
-
-        FLOAT north[3] = {
-            r1[1] * east[2] - r1[2] * east[1],
-            r1[2] * east[0] - r1[0] * east[2],
-            r1[0] * east[1] - r1[1] * east[0]
-        };
-
-        FLOAT dot12 = r1[0] * r2[0] + r1[1] * r2[1] + r1[2] * r2[2];
-
-        FLOAT p[3] = {
-            r2[0] - dot12 * r1[0],
-            r2[1] - dot12 * r1[1],
-            r2[2] - dot12 * r1[2]
-        };
-
-        FLOAT pe = p[0] * east[0] + p[1] * east[1] + p[2] * east[2];
-        FLOAT pn = p[0] * north[0] + p[1] * north[1] + p[2] * north[2];
-        FLOAT phi = atan2(pe, pn);
-
-        FLOAT sphi = sin(spin * phi);
-        FLOAT cphi = cos(spin * phi);
-
-        *splus_out  = -(s[0] * cphi + s[1] * sphi);
-        *scross_out =  (s[0] * sphi - s[1] * cphi);
-    }
-    else {
-        *splus_out = -s[0];
-        *scross_out = -s[1];
-    }
-}
-
-
-__device__ inline void set_legendre(FLOAT *legendre_cache, int ellmin, int ellmax, int ellstep, FLOAT mu, FLOAT mu2) {
-    if ((ellmin % 2 == 0) && (ellstep % 2 == 0)) {
-        for (int ell = ellmin; ell <= ellmax; ell += ellstep) {
-            if (ell == 0) {
-                legendre_cache[ell] = 1.;
-            }
-            else if (ell == 2) {
-                legendre_cache[ell] = (3.0 * mu2 - 1.0) / 2.0;
-            }
-            else if (ell == 4) {
-                FLOAT mu4 = mu2 * mu2;
-                legendre_cache[ell] = (35.0 * mu4 - 30.0 * mu2 + 3.0) / 8.0;
-            }
-            else if (ell == 6) {
-                FLOAT mu4 = mu2 * mu2;
-                FLOAT mu6 = mu4 * mu2;
-                legendre_cache[ell] = (231.0 * mu6 - 315.0 * mu4 + 105.0 * mu2 - 5.0) / 16.0;
-            }
-            else if (ell == 8) {
-                FLOAT mu4 = mu2 * mu2;
-                FLOAT mu6 = mu4 * mu2;
-                FLOAT mu8 = mu4 * mu4;
-                legendre_cache[ell] = (6435.0 * mu8 - 12012.0 * mu6 + 6930.0 * mu4 - 1260.0 * mu2 + 35.0) / 128.0;
-            }
-            else {
-                legendre_cache[ell] = 0.;
-            }
-        }
-    }
-    else {
-        legendre_cache[0] = 1.0;
-        legendre_cache[1] = mu;
-
-        for (int ell = 2; ell <= ellmax; ell++) {
-            legendre_cache[ell] =
-                ((2.0 * ell - 1.0) * mu * legendre_cache[ell - 1] -
-                 (ell - 1.0) * legendre_cache[ell - 2]) / ell;
-        }
-    }
-}
-
-
-#define BESSEL_XMIN 0.1
-
-
-__device__ inline FLOAT get_bessel(int ell, FLOAT x) {
-    if (x < BESSEL_XMIN) {
-        FLOAT x2 = x * x;
-
-        switch (ell) {
-            case 0:
-                return 1. - x2 / 6. + x2 * x2 / 120. - x2 * x2 * x2 / 5040.;
-            case 2:
-                return x2 / 15. - x2 * x2 / 210. + x2 * x2 * x2 / 11340.;
-            case 4:
-                return x2 * x2 / 945. - x2 * x2 * x2 / 10395.;
-            default:
-                return 0.0;
-        }
-    }
-    else {
-        FLOAT invx  = 1.0 / x;
-        FLOAT invx2 = invx * invx;
-        FLOAT invx3, invx4;
-
-        switch (ell) {
-            case 0:
-                return sin(x) * invx;
-            case 2:
-                return (3.0 * invx2 - 1.0) * sin(x) * invx - 3.0 * cos(x) * invx2;
-            case 4:
-                invx3 = invx2 * invx;
-                invx4 = invx2 * invx2;
-                return 5 * (2 * invx2 - 21 * invx4) * cos(x) +
-                       (invx - 45 * invx3 + 105 * invx2 * invx3) * sin(x);
-            default:
-                return 0.0;
-        }
-    }
-}
 
 
 // ============================================================================

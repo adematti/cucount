@@ -87,9 +87,11 @@ def unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs):
     for p in particles:
         sizes = dict(p.index_value._sizes)
         extra = {k: v for k, v in sizes.items()
-                 if v and k != 'individual_weight'}
+                 if v and k not in ('individual_weight', 'spin')}
         if extra:
             return f'weight scheme {sorted(extra)} not implemented'
+        if sizes.get('spin') and sizes['spin'] != 2:
+            return f'spin with {sizes["spin"]} components not implemented (only 2)'
 
     if getattr(sattrs, 'ndim', 0):
         return 'selection attributes not implemented'
@@ -102,7 +104,7 @@ def unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs):
     return None
 
 
-def count2(particles, battrs, mattrs, tuning=None):
+def count2(particles, battrs, mattrs, wattrs=None, tuning=None):
     """Run count2 on the CPU backend. Caller must have checked unsupported()."""
     tuning = _check_tuning(tuning)
 
@@ -111,8 +113,17 @@ def count2(particles, battrs, mattrs, tuning=None):
         w = np.ascontiguousarray(w[0], dtype=float) if w else np.ones(p.size)
         return np.ascontiguousarray(p.positions, dtype=float), w
 
+    def spin_array(p):
+        comps = p.get('spin')
+        if not comps:
+            return None
+        return np.ascontiguousarray(np.column_stack(
+            [np.asarray(c, dtype=float) for c in comps]))
+
     pos1, w1 = arrays(particles[0])
     pos2, w2 = arrays(particles[1])
+    spin1, spin2 = spin_array(particles[0]), spin_array(particles[1])
+    orders = tuple(getattr(wattrs, 'spin', None) or (0, 0))
 
     names = list(battrs.varnames)
     sedges = np.ascontiguousarray(battrs.array[0], dtype=float)
@@ -137,11 +148,20 @@ def count2(particles, battrs, mattrs, tuning=None):
             periodic=bool(mattrs.periodic),
             scatter=str(tuning.get('scatter', 'scalar')),
             nthreads=int(tuning.get('nthreads') or nthreads()),
-            return_timings=True)
+            return_timings=True,
+            spin1=spin1, spin2=spin2,
+            spin_order1=int(orders[0]), spin_order2=int(orders[1]))
     finally:
         if isa is not None:
             cpucount.set_target('')
     # The mesh build is still serial, so its share grows with thread count.
     logger.debug('cpu backend: mesh %.1f ms, pairs %.1f ms',
                  mesh_seconds * 1e3, pair_seconds * 1e3)
-    return {'weight': counts.reshape(battrs.shape)}
+    # Channel names mirror get_count2_weight_names in the CUDA backend.
+    if spin1 is not None and spin2 is not None:
+        names = ['weight_plus_plus', 'weight_plus_cross', 'weight_cross_cross']
+    elif spin1 is not None or spin2 is not None:
+        names = ['weight_plus', 'weight_cross']
+    else:
+        return {'weight': counts.reshape(battrs.shape)}
+    return {name: counts[i].reshape(battrs.shape) for i, name in enumerate(names)}
