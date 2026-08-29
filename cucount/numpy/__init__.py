@@ -936,6 +936,32 @@ def _get_ells(battrs):
     return [int(ell) for ell in ells]
 
 
+# Mirrors ELLMAX in include/count3close.h. The kernel applies it as `ellmax = MIN(ellmax, ELLMAX)`,
+# i.e. it CLAMPS SILENTLY: asking for higher orders returns fewer poles than the binning describes,
+# with no error. Keep in sync with the header (raising it also needs MMAX_SIZE = ELLMAX + 1).
+KERNEL_ELLMAX = 5
+
+
+def check_kernel_ells(*battrs_or_ells):
+    """
+    Raise if any requested multipole exceeds what the count3 kernel can compute.
+
+    Without this the kernel clamps silently, and the mismatch surfaces far downstream -- as an
+    opaque IndexError while packing the poles, or, worse, as counts quietly built from the wrong
+    multipoles.
+    """
+    ells = [_get_ells(x) for x in battrs_or_ells if x is not None]  # battrs23 is optional
+    ells = [ell for ell in ells if ell is not None and len(ell)]
+    if not ells: return
+    requested = max(max(np.ravel(ell)) for ell in ells)
+    if requested > KERNEL_ELLMAX:
+        raise ValueError(
+            f'requested multipoles up to ell = {requested}, but the count3/count3close cucount kernel supports only '
+            f'ell <= {KERNEL_ELLMAX} (ELLMAX in include/count3close.h) and would clamp silently. '
+            f'Lower the requested multipoles, or rebuild cucount with a larger ELLMAX '
+            f'(and MMAX_SIZE = ELLMAX + 1).')
+
+
 def poles_to_ells(ells1, ells2, with_prefactor: bool=True):
     """Return (factor, ell1, ell2, m) for the stored pole axis."""
     ells1, ells2 = _get_ells(ells1), _get_ells(ells2)
@@ -979,6 +1005,13 @@ def symmetrize_poles(poles, ells1, ells2, axis=-1, np=np):
 
     keep = np.asarray(keep)
     factors = np.asarray(factors, dtype=poles.dtype)
+
+    # The jax path binds np=jnp, and jnp.take CLIPS out-of-range indices instead of raising
+    npoles = poles.shape[axis]
+    if keep.size and int(keep.max()) >= npoles:
+        raise ValueError(f'pole axis has {npoles} entries but poles_to_ells(ells1, ells2) describes '
+                         f'{len(labels)} (needing index {int(keep.max())}); ells1 = {list(ells1)}, '
+                         f'ells2 = {list(ells2)} do not match the counts that were computed')
 
     sym = np.take(poles, keep, axis=axis)
 
@@ -1071,6 +1104,9 @@ def count3close(*particles: Particles,
 
             {"weight": array}
     """
+    # the kernel clamps ell silently past ELLMAX -- fail loudly instead
+    check_kernel_ells(battrs12, battrs13, battrs23)
+
     _setup_cucount_logging()
     assert len(particles) == 3
 
@@ -1199,6 +1235,9 @@ def count3(*particles: Particles,
     dict
         Output of the native ``count3`` call, typically ``{"weight": array}``.
     """
+    # the kernel clamps ell silently past ELLMAX -- fail loudly instead
+    check_kernel_ells(battrs12, battrs13)
+
     _setup_cucount_logging()
     assert len(particles) == 3
 

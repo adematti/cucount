@@ -210,12 +210,14 @@ def _count3_to_lsstypes(counts: np.ndarray, norm: np.ndarray, battrs12=None, bat
         coords = coords | coords23
         edges = edges | edges23
     names = list(coords)
-    norm = norm * np.ones_like(counts)
     kw = dict(**coords, **edges, coords=names, attrs=attrs)
     if ells12 and ells13:
         counts, ells = symmetrize_poles(counts, ells12, ells13)
+        # broadcast the (scalar) norm only AFTER symmetrisation: symmetrize_poles replaces the pole axis
+        norm = norm * np.ones_like(counts)
         poles = [types.Count3Pole(counts=counts[..., ill], norm=norm[..., ill], **kw, ell=ell) for ill, ell in enumerate(ells)]
         return types.Count3Poles(poles)
+    norm = norm * np.ones_like(counts)
     return types.Count3(counts=counts, norm=norm, **kw)
 
 
@@ -392,4 +394,3 @@ def count3_analytic(battrs12: BinAttrs, battrs13: BinAttrs, mattrs: MeshAttrs=No
     from cucount.numpy import count3_analytic
 
     return _count3_to_lsstypes(count3_analytic(battrs12=battrs12, battrs13=battrs13, mattrs=mattrs), norm=1., battrs12=battrs12, battrs13=battrs13, attrs={})
-

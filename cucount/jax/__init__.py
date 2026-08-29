@@ -422,6 +422,8 @@ def count3close(
     assert jax.config.read("jax_enable_x64"), "for cucount you have to enable float64"
     assert len(particles) == 3
     assert shard_particle in (1, 2, 3)
+    # the kernel clamps ell silently past ELLMAX -- fail loudly instead
+    numpy.check_kernel_ells(battrs12, battrs13, battrs23)
 
     _setup_cucount_logging()
 
@@ -579,8 +581,8 @@ def _count3_no_shard(
     # Buffer for the 12 and 12 histograms
     nthreads = nblocks * nthreads_per_block
     nells2, nells3 = [max(sum(2 * ell + 1 for ell in _get_ells(battrs)), 1) for battrs in [battrs12, battrs13]]
-    hsize2 = battrs12.shape[0] * nells2
-    hsize3 = battrs13.shape[0] * nells3
+    hsize2 = battrs12.shape[0] * (1 + nells2)
+    hsize3 = battrs13.shape[0] * (1 + nells3)
 
     bufsize += nthreads * hsize2
     bufsize += nthreads * hsize3
@@ -677,6 +679,9 @@ def count3(
     dict
         Output of the native ``count3`` call, typically ``{"weight": array}``.
     """
+    # the kernel clamps ell silently past ELLMAX -- fail loudly instead
+    numpy.check_kernel_ells(battrs12, battrs13)
+
     assert jax.config.read("jax_enable_x64"), "for cucount you have to enable float64"
     assert len(particles) == 3
     assert shard_particle in (1, 2, 3)

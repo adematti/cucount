@@ -1008,6 +1008,8 @@ if __name__ == '__main__':
 
     setup_logging()
 
+    test_thetacut()
+    
     test_analytic()
     test_particles()
     #test_thetacut()

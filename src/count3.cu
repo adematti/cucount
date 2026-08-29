@@ -20,8 +20,6 @@ DEFINE_FOR_EACH_CANDIDATE_CARTESIAN
 DEFINE_FOR_EACH_CANDIDATE
 
 
-
-
 static __device__ __constant__ DeviceCount3Layout device_layout;
 
 
@@ -33,6 +31,7 @@ enum Count3Leg {
 
 __device__ inline void add_pair_weight(
     FLOAT *hist,
+    unsigned char *seen,
     const FLOAT local_frame[3][NDIM],
     FLOAT *sposition1,
     FLOAT *sposition2,
@@ -79,9 +78,14 @@ __device__ inline void add_pair_weight(
     if (index_value2.size_negative_weight) {
         weight -= value2[index_value2.start_negative_weight];
     }
+    if (weight == (FLOAT)0.) {
+        return;
+    }
+
+    seen[ibin] = 1;
 
     if (!need_pole) {
-        atomicAdd(&hist[ibin], weight);
+        hist[ibin] += weight;
         return;
     }
 
@@ -139,16 +143,15 @@ __device__ inline void add_pair_weight(
     FLOAT *hist_bin = hist + (size_t)ibin * nprojs;
 
     size_t iproj = 0;
-
     for (size_t iell = 0; iell < nells; iell++) {
         int ell = (int)ells[iell];
         int mmax = ell;
 
         for (int m = 0; m <= mmax; m++) {
-            atomicAdd(&hist_bin[iproj + (size_t)m], weight * P[ell][m] * cm[m]);
+            hist_bin[iproj + (size_t)m] += weight * P[ell][m] * cm[m];
 
             if (m > 0) {
-                atomicAdd(&hist_bin[iproj + (size_t)(mmax + m)], weight * P[ell][m] * sm[m]);
+                hist_bin[iproj + (size_t)(mmax + m)] += weight * P[ell][m] * sm[m];
             }
         }
 
@@ -159,6 +162,8 @@ __device__ inline void add_pair_weight(
 
 struct Count3PairOp {
     FLOAT *hist;
+    unsigned char *seen;
+
     const FLOAT (*local_frame)[NDIM];
 
     FLOAT *sposition1;
@@ -194,6 +199,7 @@ struct Count3PairOp {
 
         add_pair_weight(
             hist,
+            seen,
             local_frame,
             sposition1,
             sposition,
@@ -213,6 +219,8 @@ __global__ void count3_kernel(
     FLOAT *block_counts,
     FLOAT *hist2_all,
     FLOAT *hist3_all,
+    unsigned char *seen2_all,
+    unsigned char *seen3_all,
     size_t csize,
     size_t hsize2,
     size_t hsize3,
@@ -237,9 +245,15 @@ __global__ void count3_kernel(
     size_t gtid = blockIdx.x * blockDim.x + tid;
     size_t nthreads_total = gridDim.x * blockDim.x;
 
+    const size_t nbin12 = (size_t)battrs12.shape[0];
+    const size_t nbin13 = (size_t)battrs13.shape[0];
+
     FLOAT *local_counts = &block_counts[blockIdx.x * csize];
     FLOAT *hist2 = hist2_all + gtid * hsize2;
     FLOAT *hist3 = hist3_all + gtid * hsize3;
+
+    unsigned char *seen2 = seen2_all + gtid * nbin12;
+    unsigned char *seen3 = seen3_all + gtid * nbin13;
 
     for (size_t i = tid; i < csize; i += blockDim.x) {
         local_counts[i] = (FLOAT)0.;
@@ -251,6 +265,15 @@ __global__ void count3_kernel(
         FLOAT *sposition1 = &(mesh1.spositions[NDIM * i1]);
         FLOAT *value1 = &(mesh1.values[mesh1.index_value.size * i1]);
 
+        FLOAT w1 = (FLOAT)1.;
+        if (mesh1.index_value.size_individual_weight) {
+            w1 *= value1[mesh1.index_value.start_individual_weight];
+        }
+        if (mesh1.index_value.size_negative_weight) {
+            w1 -= value1[mesh1.index_value.start_negative_weight];
+        }
+        if (w1 == (FLOAT)0.) continue;
+
         for (size_t i = 0; i < hsize2; i++) {
             hist2[i] = (FLOAT)0.;
         }
@@ -258,11 +281,19 @@ __global__ void count3_kernel(
             hist3[i] = (FLOAT)0.;
         }
 
+        for (size_t i = 0; i < nbin12; i++) {
+            seen2[i] = 0;
+        }
+        for (size_t i = 0; i < nbin13; i++) {
+            seen3[i] = 0;
+        }
+
         FLOAT local_frame[3][NDIM];
         build_los_frame(sposition1, get_count3_los(battrs12, battrs13), local_frame);
 
         Count3PairOp op2{
             hist2,
+            seen2,
             local_frame,
             sposition1,
             position1,
@@ -284,6 +315,7 @@ __global__ void count3_kernel(
 
         Count3PairOp op3{
             hist3,
+            seen3,
             local_frame,
             sposition1,
             position1,
@@ -303,24 +335,15 @@ __global__ void count3_kernel(
             op3
         );
 
-        FLOAT w1 = (FLOAT)1.;
-        if (mesh1.index_value.size_individual_weight) {
-            w1 *= value1[mesh1.index_value.start_individual_weight];
-        }
-        if (mesh1.index_value.size_negative_weight) {
-            w1 -= value1[mesh1.index_value.start_negative_weight];
-        }
-
         if (device_layout.nprojs == 0) {
-            for (size_t ibin12 = 0; ibin12 < (size_t)battrs12.shape[0]; ibin12++) {
+            for (size_t ibin12 = 0; ibin12 < nbin12; ibin12++) {
+                if (!seen2[ibin12]) continue;
                 FLOAT w2 = hist2[ibin12];
-                if (w2 == (FLOAT)0.) continue;
 
-                for (size_t ibin13 = 0; ibin13 < (size_t)battrs13.shape[0]; ibin13++) {
+                for (size_t ibin13 = 0; ibin13 < nbin13; ibin13++) {
+                    if (!seen3[ibin13]) continue;
                     FLOAT w3 = hist3[ibin13];
-                    if (w3 == (FLOAT)0.) continue;
-
-                    size_t ibin = ibin12 * (size_t)battrs13.shape[0] + ibin13;
+                    size_t ibin = ibin12 * nbin13 + ibin13;
                     atomicAdd(&local_counts[ibin], w1 * w2 * w3);
                 }
             }
@@ -338,20 +361,25 @@ __global__ void count3_kernel(
                     int mmax = MIN(ell1, ell2);
 
                     FLOAT ell_norm = sqrt((FLOAT)((2 * ell1 + 1) * (2 * ell2 + 1)));
+                    FLOAT ell_norm_w1 = ell_norm * w1;
 
-                    for (size_t ibin12 = 0; ibin12 < (size_t)battrs12.shape[0]; ibin12++) {
+                    for (size_t ibin12 = 0; ibin12 < nbin12; ibin12++) {
+                        if (!seen2[ibin12]) continue;
+
                         FLOAT *hist2_bin = hist2 + ibin12 * device_layout.nprojs1;
 
-                        for (size_t ibin13 = 0; ibin13 < (size_t)battrs13.shape[0]; ibin13++) {
+                        for (size_t ibin13 = 0; ibin13 < nbin13; ibin13++) {
+                            if (!seen3[ibin13]) continue;
+
                             FLOAT *hist3_bin = hist3 + ibin13 * device_layout.nprojs2;
 
-                            size_t ibin = ibin12 * (size_t)battrs13.shape[0] + ibin13;
+                            size_t ibin = ibin12 * nbin13 + ibin13;
                             FLOAT *counts_bin = local_counts + ibin * device_layout.nprojs;
 
                             FLOAT c2 = hist2_bin[iproj1];
                             FLOAT c3 = hist3_bin[iproj2];
 
-                            atomicAdd(&counts_bin[iproj], ell_norm * w1 * c2 * c3);
+                            atomicAdd(&counts_bin[iproj], ell_norm_w1 * c2 * c3);
 
                             for (int m = 1; m <= mmax; m++) {
                                 size_t ireal  = iproj + (size_t)m;
@@ -369,8 +397,8 @@ __global__ void count3_kernel(
                                 FLOAT c3 = hist3_bin[ireal2];
                                 FLOAT s3 = hist3_bin[iimag2];
 
-                                atomicAdd(&counts_bin[ireal], ell_norm * w1 * (c2 * c3 + s2 * s3));
-                                atomicAdd(&counts_bin[iimag], ell_norm * w1 * (s2 * c3 - c2 * s3));
+                                atomicAdd(&counts_bin[ireal], ell_norm_w1 * (c2 * c3 + s2 * s3));
+                                atomicAdd(&counts_bin[iimag], ell_norm_w1 * (s2 * c3 - c2 * s3));
                             }
                         }
                     }
@@ -392,6 +420,8 @@ __global__ void count3_kernel(
             block_counts,                                                      \
             hist2_all,                                                         \
             hist3_all,                                                         \
+            seen2_all,                                                         \
+            seen3_all,                                                         \
             csize,                                                             \
             hsize2,                                                            \
             hsize3,                                                            \
@@ -444,11 +474,17 @@ void count3(
     const size_t hsize2 = (size_t)battrs12.shape[0] * ((layout.nprojs1 > 0) ? layout.nprojs1 : 1);
     const size_t hsize3 = (size_t)battrs13.shape[0] * ((layout.nprojs2 > 0) ? layout.nprojs2 : 1);
 
+    const size_t nbin12 = (size_t)battrs12.shape[0];
+    const size_t nbin13 = (size_t)battrs13.shape[0];
+
     const size_t nthreads = (size_t)nblocks * (size_t)nthreads_per_block;
 
     FLOAT *block_counts = (FLOAT *)my_device_malloc(nblocks * csize * sizeof(FLOAT), buffer);
     FLOAT *hist2_all = (FLOAT *)my_device_malloc(nthreads * hsize2 * sizeof(FLOAT), buffer);
     FLOAT *hist3_all = (FLOAT *)my_device_malloc(nthreads * hsize3 * sizeof(FLOAT), buffer);
+
+    unsigned char *seen2_all = (unsigned char *)my_device_malloc(nthreads * nbin12 * sizeof(unsigned char), buffer);
+    unsigned char *seen3_all = (unsigned char *)my_device_malloc(nthreads * nbin13 * sizeof(unsigned char), buffer);
 
     CUDA_CHECK(cudaMemsetAsync(counts, 0, csize * sizeof(FLOAT), stream));
     CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(DeviceCount3Layout)));
@@ -480,6 +516,9 @@ void count3(
 
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
+
+    my_device_free(seen3_all, buffer);
+    my_device_free(seen2_all, buffer);
 
     my_device_free(hist3_all, buffer);
     my_device_free(hist2_all, buffer);
