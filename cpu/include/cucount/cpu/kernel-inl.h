@@ -142,8 +142,12 @@ inline AxisRange axis_range(int i, int n, bool periodic) {
     return {i - 1, i + 1, true};
 }
 
+// ScalarTail is compile-time: when false (plain w1 * w2 weighting) the whole
+// per-lane tail below is compiled OUT of the inner loop, keeping its codegen
+// identical to the pre-spin kernel -- carrying the dead branch cost the plain
+// path 2-8% in the A/B benchmark.
 template <class Float, int NDim, class SBin, LosKind LOS, bool Periodic,
-          ScatterKind SC>
+          ScatterKind SC, bool ScalarTail>
 void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                 const Mesh<Float>& m2, const BinSpec<Float>& sb,
                 const BinSpec<Float>& mb) {
@@ -171,7 +175,7 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
     const size_t nbit = a.nbitwise;
     const bool has_bitwise = !m1.bw.empty() && !m2.bw.empty() && nbit;
     const bool has_negative = !m1.nw.empty() && !m2.nw.empty();
-    const bool scalar_tail = has_spin || has_bitwise || has_negative;
+    (void)(has_spin || has_bitwise || has_negative);  // dispatch chose ScalarTail
     BitwiseWeight bitwise = {};
     IndexValue iv_bw = {};  // synthetic: columns at offset 0, stride nbit
     if (has_bitwise) {
@@ -256,14 +260,16 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
 
                             Float r1v[3] = {0, 0, 0};
                             Float e1v[2] = {0, 0};
-                            if (has_spin) {
-                                r1v[0] = m1.sx[i];
-                                r1v[1] = m1.sy[i];
-                                r1v[2] = m1.sz[i];
-                            }
-                            if (sp1) {
-                                e1v[0] = m1.e1[i];
-                                e1v[1] = m1.e2[i];
+                            if constexpr (ScalarTail) {
+                                if (has_spin) {
+                                    r1v[0] = m1.sx[i];
+                                    r1v[1] = m1.sy[i];
+                                    r1v[2] = m1.sz[i];
+                                }
+                                if (sp1) {
+                                    e1v[0] = m1.e1[i];
+                                    e1v[1] = m1.e2[i];
+                                }
                             }
 
                             for (size_t j = j0; j < j1; j += L) {
@@ -371,7 +377,7 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                                               di, ibuf);
                                     hn::Store(hn::IfThenElseZero(ok, wpair), d,
                                               wbuf);
-                                    if (!scalar_tail) {
+                                    if constexpr (!ScalarTail) {
                                         for (size_t k = 0; k < n; ++k) {
                                             local[static_cast<size_t>(ibuf[k])] +=
                                                 static_cast<double>(wbuf[k]);
@@ -492,13 +498,16 @@ static void DispatchScatter(const Count2Args& a, const Mesh<Float>& m1,
                             const BinSpec<Float>& mb) {
     // Spin/bitwise/negative accumulation is scalar per surviving lane, so
     // BinMajor's replicated histogram has nothing to offer; those requests
-    // always take Scalar.
-    if (a.cfg.scatter == ScatterKind::Scalar || a.spin1 || a.spin2 ||
-        (a.bw1 && a.bw2) || (a.nw1 && a.nw2)) {
-        Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::Scalar>(
+    // always take Scalar, with the per-lane tail compiled in (ScalarTail).
+    const bool tail = a.spin1 || a.spin2 || (a.bw1 && a.bw2) || (a.nw1 && a.nw2);
+    if (tail) {
+        Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::Scalar, true>(
+            a, m1, m2, sb, mb);
+    } else if (a.cfg.scatter == ScatterKind::Scalar) {
+        Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::Scalar, false>(
             a, m1, m2, sb, mb);
     } else {
-        Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::BinMajor>(
+        Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::BinMajor, false>(
             a, m1, m2, sb, mb);
     }
 }
