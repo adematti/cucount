@@ -79,8 +79,9 @@ counts = count2(particles1, particles2, backend='cpu')
 ```
 
 Only `count2` is supported currently, with a subset of features: s and (s, mu) binning
-(z and midpoint lines of sight), cartesian mesh, individual weights, and spin/shear
-(galaxy-shear and shear-shear channels). Requests it cannot serve are declined by name.
+(every line of sight), cartesian mesh, individual weights, spin/shear
+(galaxy-shear and shear-shear channels), and bitwise (PIP) + negative weights.
+Requests it cannot serve are declined by name.
 `backend='compare'` runs both backends and raises if they disagree. More features are
 expected to be added over time; please open an issue if a particular feature is
 important to you. See [cpu/README.md](cpu/README.md) for details.

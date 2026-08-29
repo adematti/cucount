@@ -75,7 +75,8 @@ def unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs):
     for p in particles:
         sizes = dict(p.index_value._sizes)
         extra = {k: v for k, v in sizes.items()
-                 if v and k not in ('individual_weight', 'spin')}
+                 if v and k not in ('individual_weight', 'spin',
+                                    'bitwise_weight', 'negative_weight')}
         if extra:
             return f'weight scheme {sorted(extra)} not implemented'
         if sizes.get('spin') and sizes['spin'] != 2:
@@ -87,8 +88,6 @@ def unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs):
         return 'jackknife splits not implemented'
     if getattr(wattrs, 'angular', None) is not None:
         return 'angular weights not implemented'
-    if getattr(getattr(wattrs, 'bitwise', None), 'nrealizations', 0):
-        return 'bitwise weights not implemented'
     return None
 
 

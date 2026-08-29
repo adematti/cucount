@@ -163,6 +163,27 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
     const bool has_spin = sp1 || sp2;
     const size_t nw = 1 + (sp1 ? 1 : 0) + (sp2 ? 1 : 0);
 
+    // PIP (bitwise) and negative weighting stop the pair weight factorizing
+    // as w1 * w2, so like spin they ride the scalar tail; the application
+    // order (individual, bitwise, negative subtraction, then spin channels)
+    // mirrors the CUDA add_weight2. Both apply only when both sides carry
+    // the columns, like the CUDA kernel.
+    const size_t nbit = a.nbitwise;
+    const bool has_bitwise = !m1.bw.empty() && !m2.bw.empty() && nbit;
+    const bool has_negative = !m1.nw.empty() && !m2.nw.empty();
+    const bool scalar_tail = has_spin || has_bitwise || has_negative;
+    BitwiseWeight bitwise = {};
+    IndexValue iv_bw = {};  // synthetic: columns at offset 0, stride nbit
+    if (has_bitwise) {
+        bitwise.default_value = a.bitwise_default;
+        bitwise.nrealizations = a.bitwise_nrealizations;
+        bitwise.noffset = a.bitwise_noffset;
+        bitwise.p_nbits = a.bitwise_p_nbits;
+        bitwise.p_correction_nbits = const_cast<double*>(a.bitwise_p_correction);
+        iv_bw.size_bitwise_weight = nbit;
+        iv_bw.size = nbit;
+    }
+
     const double* boxsize = a.boxsize;
     double* out = a.out;
     const int nthreads = a.nthreads;
@@ -350,17 +371,18 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                                               di, ibuf);
                                     hn::Store(hn::IfThenElseZero(ok, wpair), d,
                                               wbuf);
-                                    if (!has_spin) {
+                                    if (!scalar_tail) {
                                         for (size_t k = 0; k < n; ++k) {
                                             local[static_cast<size_t>(ibuf[k])] +=
                                                 static_cast<double>(wbuf[k]);
                                         }
                                     } else {
                                         // Surviving lanes take the shared
-                                        // scalar projection. Masked lanes must
-                                        // be skipped by MASK, not weight: the
-                                        // zero-filled tail coords would project
-                                        // to NaN, and 0 * NaN poisons bin 0.
+                                        // scalar per-pair weighting. Masked
+                                        // lanes must be skipped by MASK, not
+                                        // weight: a zero weight would still
+                                        // subtract the negative product, and
+                                        // a NaN projection poisons bin 0.
                                         HWY_ALIGN Float
                                             mbuf[HWY_MAX_LANES_D(decltype(d))];
                                         hn::Store(hn::IfThenElseZero(
@@ -371,6 +393,22 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                                             const size_t jj = j + k;
                                             const size_t b =
                                                 static_cast<size_t>(ibuf[k]);
+                                            double w =
+                                                static_cast<double>(wbuf[k]);
+                                            if (has_bitwise) {
+                                                w *= pairmath::pair_bitwise_weight(
+                                                    &m1.bw[i * nbit],
+                                                    &m2.bw[jj * nbit],
+                                                    iv_bw, iv_bw, bitwise);
+                                            }
+                                            if (has_negative) {
+                                                w -= static_cast<double>(m1.nw[i]) *
+                                                     static_cast<double>(m2.nw[jj]);
+                                            }
+                                            if (!has_spin) {
+                                                local[b] += w;
+                                                continue;
+                                            }
                                             const Float r2v[3] = {
                                                 m2.sx[jj], m2.sy[jj], m2.sz[jj]};
                                             Float splus1 = 0, scross1 = 0;
@@ -387,8 +425,6 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                                                     r1v, r2v, e2v, a.spin_order2,
                                                     &splus2, &scross2);
                                             }
-                                            const double w =
-                                                static_cast<double>(wbuf[k]);
                                             // Channel formulas mirror the CUDA
                                             // add_weight2, cross*plus ordering
                                             // included.
@@ -454,9 +490,11 @@ template <class Float, int NDim, class SBin, LosKind LOS, bool Periodic>
 static void DispatchScatter(const Count2Args& a, const Mesh<Float>& m1,
                             const Mesh<Float>& m2, const BinSpec<Float>& sb,
                             const BinSpec<Float>& mb) {
-    // Spin accumulation is scalar per surviving lane, so BinMajor's replicated
-    // histogram has nothing to offer it; spin requests always take Scalar.
-    if (a.cfg.scatter == ScatterKind::Scalar || a.spin1 || a.spin2) {
+    // Spin/bitwise/negative accumulation is scalar per surviving lane, so
+    // BinMajor's replicated histogram has nothing to offer; those requests
+    // always take Scalar.
+    if (a.cfg.scatter == ScatterKind::Scalar || a.spin1 || a.spin2 ||
+        (a.bw1 && a.bw2) || (a.nw1 && a.nw2)) {
         Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::Scalar>(
             a, m1, m2, sb, mb);
     } else {
@@ -547,9 +585,11 @@ static void DispatchNDim(const Count2Args& a) {
         (a.cfg.ndim == 2 && (a.cfg.los == LosKind::FirstPoint ||
                              a.cfg.los == LosKind::EndPoint));
     const Mesh<Float> m1 = build_mesh<Float>(a.pos1, a.w1, a.n1, a.boxsize,
-                                             a.origin, dims, a.spin1, with_spos);
+                                             a.origin, dims, a.spin1, with_spos,
+                                             a.bw1, a.nbitwise, a.nw1);
     const Mesh<Float> m2 = build_mesh<Float>(a.pos2, a.w2, a.n2, a.boxsize,
-                                             a.origin, dims, a.spin2, with_spos);
+                                             a.origin, dims, a.spin2, with_spos,
+                                             a.bw2, a.nbitwise, a.nw2);
     const auto t1 = Clock::now();
 
     if (a.cfg.ndim == 1) {

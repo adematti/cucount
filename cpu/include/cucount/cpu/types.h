@@ -69,6 +69,11 @@ struct Mesh {
     // catalogue's two spin components (only where they exist).
     std::vector<Float> sx, sy, sz;
     std::vector<Float> e1, e2;
+    // Filled only for PIP weighting: nbitwise 64-bit realization masks per
+    // particle, interleaved, kept as doubles (the wire format's bit patterns)
+    // whatever the working precision; and the optional negative-weight column.
+    std::vector<double> bw;
+    std::vector<Float> nw;
     std::vector<size_t> start;  // ncells + 1 offsets into x/y/z/w
     int dims[3] = {1, 1, 1};
     Float cell[3] = {0, 0, 0};
@@ -102,6 +107,24 @@ struct Count2Args {
     const double* spin2 = nullptr;
     int spin_order1 = 0;
     int spin_order2 = 0;
+
+    // Optional PIP (bitwise) weighting: nbitwise 64-bit realization masks per
+    // particle stored as doubles, interleaved; applied only when both sides
+    // carry them, like the CUDA kernel. The correction table, when present,
+    // is (p_nbits x p_nbits) doubles indexed by the per-particle popcounts.
+    const double* bw1 = nullptr;
+    const double* bw2 = nullptr;
+    size_t nbitwise = 0;
+    double bitwise_default = 0.;
+    double bitwise_nrealizations = 0.;
+    int bitwise_noffset = 0;
+    size_t bitwise_p_nbits = 0;
+    const double* bitwise_p_correction = nullptr;
+
+    // Optional negative weights (one column per side; subtracted as
+    // nw1 * nw2 when both sides carry one, after the bitwise factor).
+    const double* nw1 = nullptr;
+    const double* nw2 = nullptr;
 
     double boxsize[3] = {0, 0, 0};
     double origin[3] = {0, 0, 0};

@@ -80,21 +80,25 @@ void validate(const Particles& p1, const Particles& p2, const BinAttrs& battrs,
         throw std::invalid_argument("cpu backend: jackknife splits not implemented");
     if (wattrs.angular.size)
         throw std::invalid_argument("cpu backend: angular weights not implemented");
-    if (wattrs.bitwise.nrealizations != (FLOAT)0.)
-        throw std::invalid_argument("cpu backend: bitwise weights not implemented");
     for (const Particles* p : {&p1, &p2}) {
         const IndexValue& iv = p->index_value;
-        if (iv.size_bitwise_weight || iv.size_negative_weight || iv.size_split)
+        if (iv.size_split)
             throw std::invalid_argument("cpu backend: weight scheme not implemented");
         if (iv.size_spin && iv.size_spin != 2)
             throw std::invalid_argument("cpu backend: spin needs exactly 2 components");
+        if (iv.size_negative_weight > 1)
+            throw std::invalid_argument("cpu backend: only one negative weight is supported");
     }
+    if (p1.index_value.size_bitwise_weight != p2.index_value.size_bitwise_weight)
+        throw std::invalid_argument(
+            "cpu backend: both catalogues must carry the same number of bitwise weights");
 }
 
 // Contiguous copies of the packed-value columns the kernel consumes; O(n)
 // doubles, trivial next to the pair loop.
 void extract_columns(const Particles& p, std::vector<double>& w,
-                     std::vector<double>& spin) {
+                     std::vector<double>& spin, std::vector<double>& bw,
+                     std::vector<double>& nw) {
     const IndexValue& iv = p.index_value;
     if (iv.size_individual_weight) {
         w.resize(p.size);
@@ -107,6 +111,19 @@ void extract_columns(const Particles& p, std::vector<double>& w,
             spin[2 * i + 0] = p.values[i * iv.size + iv.start_spin + 0];
             spin[2 * i + 1] = p.values[i * iv.size + iv.start_spin + 1];
         }
+    }
+    if (iv.size_bitwise_weight) {
+        // Bit patterns riding double storage; copied verbatim.
+        bw.resize(p.size * iv.size_bitwise_weight);
+        for (size_t i = 0; i < p.size; i++)
+            for (size_t ib = 0; ib < iv.size_bitwise_weight; ib++)
+                bw[i * iv.size_bitwise_weight + ib] =
+                    p.values[i * iv.size + iv.start_bitwise_weight + ib];
+    }
+    if (iv.size_negative_weight) {
+        nw.resize(p.size);
+        for (size_t i = 0; i < p.size; i++)
+            nw[i] = p.values[i * iv.size + iv.start_negative_weight];
     }
 }
 
@@ -135,9 +152,9 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     a.pos2 = p2.positions;
     a.n2 = p2.size;
 
-    std::vector<double> w1, w2, spin1, spin2;
-    extract_columns(p1, w1, spin1);
-    extract_columns(p2, w2, spin2);
+    std::vector<double> w1, w2, spin1, spin2, bw1, bw2, nw1, nw2;
+    extract_columns(p1, w1, spin1, bw1, nw1);
+    extract_columns(p2, w2, spin2, bw2, nw2);
     a.w1 = w1.empty() ? nullptr : w1.data();
     a.w2 = w2.empty() ? nullptr : w2.data();
     if (!spin1.empty()) {
@@ -147,6 +164,21 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     if (!spin2.empty()) {
         a.spin2 = spin2.data();
         a.spin_order2 = static_cast<int>(wattrs.spin[1]);
+    }
+    if (!bw1.empty() && !bw2.empty()) {
+        a.bw1 = bw1.data();
+        a.bw2 = bw2.data();
+        a.nbitwise = p1.index_value.size_bitwise_weight;
+        a.bitwise_default = wattrs.bitwise.default_value;
+        a.bitwise_nrealizations = wattrs.bitwise.nrealizations;
+        a.bitwise_noffset = wattrs.bitwise.noffset;
+        a.bitwise_p_nbits = wattrs.bitwise.p_nbits;
+        // Points into arrays wattrs_py keeps alive for the call.
+        a.bitwise_p_correction = wattrs.bitwise.p_correction_nbits;
+    }
+    if (!nw1.empty() && !nw2.empty()) {
+        a.nw1 = nw1.data();
+        a.nw2 = nw2.data();
     }
 
     // Edges point into the numpy buffers held by battrs_py for the call.

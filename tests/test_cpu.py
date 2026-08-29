@@ -287,8 +287,7 @@ def test_unsupported_is_declined_by_name():
 
 UNSUPPORTED = ['rp-pi binning', 'non-linear mu',
                'angular mesh', 'theta selection', 'jackknife splits',
-               'spin components', 'bitwise weights', 'negative weights',
-               'angular weights']
+               'spin components', 'angular weights']
 
 
 def _unsupported_request(feature, n=200):
@@ -326,14 +325,6 @@ def _unsupported_request(feature, n=200):
         particles = (Particles(pos1, w1, spin_values=rng.uniform(-1, 1, n)),
                      Particles(pos2, w2))
         match = 'spin'
-    elif feature in ('bitwise weights', 'negative weights'):
-        bits = [rng.integers(0, 0xffffffff, n, dtype=np.uint64) for _ in range(2)]
-        # A float array after a bitwise one is read as a negative weight.
-        extra = [w1] if feature == 'negative weights' else []
-        particles = (Particles(pos1, [w1, bits[0]] + extra),
-                     Particles(pos2, [w2, bits[1]] + extra))
-        kw['wattrs'] = WeightAttrs(bitwise=dict(weights=[bits[0]]))
-        match = feature.split()[0] + '_weight'
     elif feature == 'angular weights':
         sep = np.linspace(0.0, 5.0, 41)
         kw['wattrs'] = WeightAttrs(angular=dict(sep=sep, weight=np.ones(sep.size)))
@@ -581,3 +572,72 @@ def test_spin_matches_cuda(mode, ndim):
         np.testing.assert_allclose(cpu[name], cuda[name],
                                    rtol=1e-7, atol=1e-10 * scale,
                                    err_msg=name)
+
+
+# ---------------------------------------------------------------------------
+# Bitwise (PIP) and negative weights: the pair weight stops factorizing as
+# w1 * w2, so surviving lanes take the scalar tail with the shared
+# pair_bitwise_weight (include/pair_math.h).
+# ---------------------------------------------------------------------------
+
+def _pip_reference(bits1, bits2, bw):
+    """(n1, n2) PIP pair weights, mirroring pair_bitwise_weight exactly."""
+    from cucount.numpy import popcount
+    nb = bw.noffset + sum(popcount(b1[:, None] & b2[None, :])
+                          for b1, b2 in zip(bits1, bits2))
+    w = bw.nrealizations / np.where(nb == 0, 1, nb)
+    if bw.p_correction_nbits is not None:
+        c1 = sum(popcount(b) for b in bits1)
+        c2 = sum(popcount(b) for b in bits2)
+        w = w / np.asarray(bw.p_correction_nbits)[c1[:, None], c2[None, :]]
+    return np.where(nb == 0, bw.default_value, w)
+
+
+def _pip_setup(mode, ndim, seeds=(1, 2), n=400):
+    rng = np.random.default_rng(20)
+    pos1, w1 = catalog(seeds[0], n)
+    pos2, w2 = catalog(seeds[1], n)
+    bits1 = [rng.integers(0, 0xffffffff, n, dtype=np.uint64) for _ in range(2)]
+    bits2 = [rng.integers(0, 0xffffffff, n, dtype=np.uint64) for _ in range(2)]
+    # Small negative weights keep the bins clear of cancellation.
+    nw1, nw2 = rng.uniform(0., 0.1, n), rng.uniform(0., 0.1, n)
+
+    extra = [nw1, nw2] if mode == 'pip-negative' else [None, None]
+    # A float array after the bitwise ones is read as a negative weight.
+    particles = (Particles(pos1, [w1] + bits1 + ([extra[0]] if extra[0] is not None else [])),
+                 Particles(pos2, [w2] + bits2 + ([extra[1]] if extra[1] is not None else [])))
+    correction = mode != 'pip-nocorrection'
+    wattrs = WeightAttrs(bitwise=dict(weights=bits1, p_correction_nbits=correction))
+
+    sedges = EDGES['lin']
+    muedges = np.linspace(-1., 1., 5)
+    battrs = (BinAttrs(s=sedges, mu=(muedges, 'z')) if ndim == 2
+              else BinAttrs(s=sedges))
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+
+    w = w1[:, None] * w2[None, :]
+    w = w * _pip_reference(bits1, bits2, wattrs.bitwise)
+    if mode == 'pip-negative':
+        w = w - nw1[:, None] * nw2[None, :]
+    want = _brute_multi(pos1, pos2, [w], sedges,
+                        muedges if ndim == 2 else None)[0]
+    kw = dict(battrs=battrs, mattrs=mattrs, wattrs=wattrs)
+    return particles, kw, want
+
+
+@pytest.mark.parametrize('ndim', [1, 2])
+@pytest.mark.parametrize('mode', ['pip', 'pip-nocorrection', 'pip-negative'])
+def test_bitwise_matches_brute_force(mode, ndim):
+    particles, kw, want = _pip_setup(mode, ndim)
+    got = count2(*particles, backend='cpu', **kw)['weight']
+    scale = np.abs(want).max()
+    assert np.allclose(got, want, rtol=1e-9, atol=1e-12 * scale)
+
+
+@needs_cuda
+@pytest.mark.parametrize('ndim', [1, 2])
+@pytest.mark.parametrize('mode', ['pip', 'pip-negative'])
+def test_bitwise_matches_cuda(mode, ndim):
+    """Popcount math is exact on both sides, so compare mode's tight rtol holds."""
+    particles, kw, _ = _pip_setup(mode, ndim)
+    count2(*particles, backend='compare', **kw)

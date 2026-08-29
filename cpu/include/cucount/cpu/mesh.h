@@ -29,11 +29,14 @@ inline void mesh_dims(const double boxsize[3], double smax, size_t n,
 // spin: this catalogue's interleaved (e1, e2) components, or null.
 // with_spos: fill unit-sphere positions, needed on BOTH meshes whenever either
 // side of the pair count carries spin (the projection frame uses both ends).
+// bw/nbit: this catalogue's interleaved bitwise (PIP) columns, or null;
+// nw: its negative-weight column, or null.
 template <class Float>
 Mesh<Float> build_mesh(const double* pos, const double* w, size_t n,
                        const double boxsize[3], const double origin[3],
                        const int dims[3], const double* spin = nullptr,
-                       bool with_spos = false) {
+                       bool with_spos = false, const double* bw = nullptr,
+                       size_t nbit = 0, const double* nw = nullptr) {
     Mesh<Float> m;
     for (int a = 0; a < 3; ++a) {
         m.dims[a] = dims[a];
@@ -71,6 +74,8 @@ Mesh<Float> build_mesh(const double* pos, const double* w, size_t n,
         m.e1.resize(n);
         m.e2.resize(n);
     }
+    if (bw && nbit) m.bw.resize(n * nbit);
+    if (nw) m.nw.resize(n);
 
     std::vector<size_t> fill(m.start.begin(), m.start.end() - 1);
     for (size_t i = 0; i < n; ++i) {
@@ -92,6 +97,12 @@ Mesh<Float> build_mesh(const double* pos, const double* w, size_t n,
             m.e1[o] = static_cast<Float>(spin[2 * i + 0]);
             m.e2[o] = static_cast<Float>(spin[2 * i + 1]);
         }
+        if (bw && nbit) {
+            // Bit patterns: copied verbatim, never narrowed.
+            for (size_t ib = 0; ib < nbit; ++ib)
+                m.bw[o * nbit + ib] = bw[i * nbit + ib];
+        }
+        if (nw) m.nw[o] = static_cast<Float>(nw[i]);
     }
     return m;
 }

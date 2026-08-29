@@ -124,8 +124,10 @@ LOS (`z`, `x`, `y`, midpoint, firstpoint, endpoint); periodic and
 non-periodic; `float`/`double`; per-object weights;
 spin/shear (galaxy-shear and shear-shear channels, via the scalar projection
 shared with CUDA in `include/pair_math.h` — the SIMD distance cull is
-unchanged and surviving lanes take the shared per-pair math).
+unchanged and surviving lanes take the shared per-pair math); bitwise (PIP)
+and negative weights (same scalar-tail pattern, via the shared
+`pair_bitwise_weight`; the bit patterns ride double storage whatever the
+working precision).
 
 Not covered, deliberately: triplet counts, angular mesh, theta/rp/pi/pole/k
-binning, bitwise and angular weights, jackknife splits, JAX FFI,
-multi-device.
+binning, angular weights, jackknife splits, JAX FFI, multi-device.
