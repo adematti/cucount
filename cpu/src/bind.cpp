@@ -349,7 +349,7 @@ py::object count2_arrays_py(Arr positions1, Arr weights1, Arr positions2,
 
 // The kernel touches no Python objects and releases the GIL, so the module
 // is safe to import into a free-threaded interpreter without re-enabling it.
-PYBIND11_MODULE(cpucount, m, py::mod_gil_not_used()) {
+PYBIND11_MODULE(cpu, m, py::mod_gil_not_used()) {
     m.doc() = "Portable-SIMD CPU pair counting";
 
     // Same attrs classes as the other extensions (module_local, one shared

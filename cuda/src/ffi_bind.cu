@@ -582,7 +582,7 @@ py::capsule EncapsulateFfiCall(T *fn) {
 // Module
 // -----------------------------------------------------------------------------
 
-PYBIND11_MODULE(ffi_cucount, m) {
+PYBIND11_MODULE(ffi_cuda, m) {
     register_attrs(m);
 
     // count2 setup

@@ -14,7 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # from Highway. Fail with the reason instead (seen with /usr/bin/g++ 7.5 when
 # a newer g++ was on PATH but CMake's default compiler probe picked cc/c++).
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-  message(FATAL_ERROR "cpucount needs GCC >= 9 (found ${CMAKE_CXX_COMPILER_VERSION} at "
+  message(FATAL_ERROR "cucount_cpu needs GCC >= 9 (found ${CMAKE_CXX_COMPILER_VERSION} at "
           "${CMAKE_CXX_COMPILER}); pass -DCMAKE_CXX_COMPILER=g++ or a newer compiler")
 endif()
 if(NOT CMAKE_BUILD_TYPE)
@@ -46,19 +46,19 @@ find_package(pybind11 CONFIG REQUIRED)
 
 # ../src/logger.cpp: register_attrs binds setup_logging, which needs the
 # module-local global_log_level.
-pybind11_add_module(cpucount src/count2.cpp src/bind.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp)
+pybind11_add_module(cucount_cpu src/count2.cpp src/bind.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp)
 # ../include for pair_math.h, the scalar per-pair math shared with CUDA (the
 # other headers there are CUDA-only and are not included from this target).
-target_include_directories(cpucount PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../include)
-target_link_libraries(cpucount PRIVATE hwy OpenMP::OpenMP_CXX)
+target_include_directories(cucount_cpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(cucount_cpu PRIVATE hwy OpenMP::OpenMP_CXX)
 
-target_compile_options(cpucount PRIVATE -O3 -fno-math-errno)
+target_compile_options(cucount_cpu PRIVATE -O3 -fno-math-errno)
 
 # Land in a build-tree cucountlib/ (a namespace package), so a standalone
 # build is importable exactly like the installed layout:
-#   PYTHONPATH=<build dir> python -c "from cucountlib import cpucount"
-set_target_properties(cpucount PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
+#   PYTHONPATH=<build dir> python -c "from cucountlib import cpu"
+set_target_properties(cucount_cpu PROPERTIES OUTPUT_NAME cpu LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
 
 if(CUCOUNT_CPU_ALL_TARGETS)
-  target_compile_definitions(cpucount PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
+  target_compile_definitions(cucount_cpu PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
 endif()

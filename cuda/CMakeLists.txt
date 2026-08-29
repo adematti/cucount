@@ -1,5 +1,5 @@
-# CUDA backend: the cucountlib.cucount extension and, when jax provides its
-# FFI headers, the cucountlib.ffi_cucount module. Mirrors cpu/. The shared
+# CUDA backend: the cucountlib.cuda extension and, when jax provides its
+# FFI headers, the cucountlib.ffi_cuda module. Mirrors cpu/. The shared
 # code (attrs, pair_math, common types, logger) lives at the repository root.
 
 # Overridable: CUDA 13 dropped compute_70, so builds against a recent
@@ -17,13 +17,14 @@ set(CUCOUNT_CUDA_SOURCES
     src/count3close.cu
     src/count3.cu)
 
-pybind11_add_module(cucount src/bind.cu ${CUCOUNT_CUDA_SOURCES})
-target_include_directories(cucount PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../include)
-set_target_properties(cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-target_link_libraries(cucount PRIVATE pybind11::module)
-set_target_properties(cucount PROPERTIES INSTALL_RPATH "$ORIGIN/lib")
-set_target_properties(cucount PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
-install(TARGETS cucount LIBRARY DESTINATION cucountlib PUBLIC_HEADER DESTINATION cucountlib)
+pybind11_add_module(cucount_cuda src/bind.cu ${CUCOUNT_CUDA_SOURCES})
+target_include_directories(cucount_cuda PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+set_target_properties(cucount_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+target_link_libraries(cucount_cuda PRIVATE pybind11::module)
+set_target_properties(cucount_cuda PROPERTIES INSTALL_RPATH "$ORIGIN/lib")
+set_target_properties(cucount_cuda PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
+set_target_properties(cucount_cuda PROPERTIES OUTPUT_NAME cuda)
+install(TARGETS cucount_cuda LIBRARY DESTINATION cucountlib PUBLIC_HEADER DESTINATION cucountlib)
 
 # Try to get XLA_DIR and set BUILD_FFI_CUCOUNT accordingly
 execute_process(
@@ -51,12 +52,13 @@ endif()
 
 if(BUILD_FFI_CUCOUNT)
     message(STATUS "Compilation of the JAX FFI module")
-    pybind11_add_module(ffi_cucount src/ffi_bind.cu ${CUCOUNT_CUDA_SOURCES})
-    target_include_directories(ffi_cucount PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../include)
-    target_include_directories(ffi_cucount PUBLIC ${XLA_DIR})
-    set_target_properties(ffi_cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(ffi_cucount PRIVATE pybind11::module)
-    set_target_properties(ffi_cucount PROPERTIES INSTALL_RPATH "$ORIGIN/lib")
-    set_target_properties(ffi_cucount PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
-    install(TARGETS ffi_cucount LIBRARY DESTINATION cucountlib PUBLIC_HEADER DESTINATION cucountlib)
+    pybind11_add_module(cucount_ffi_cuda src/ffi_bind.cu ${CUCOUNT_CUDA_SOURCES})
+    target_include_directories(cucount_ffi_cuda PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+    target_include_directories(cucount_ffi_cuda PUBLIC ${XLA_DIR})
+    set_target_properties(cucount_ffi_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(cucount_ffi_cuda PRIVATE pybind11::module)
+    set_target_properties(cucount_ffi_cuda PROPERTIES INSTALL_RPATH "$ORIGIN/lib")
+    set_target_properties(cucount_ffi_cuda PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
+    set_target_properties(cucount_ffi_cuda PROPERTIES OUTPUT_NAME ffi_cuda)
+    install(TARGETS cucount_ffi_cuda LIBRARY DESTINATION cucountlib PUBLIC_HEADER DESTINATION cucountlib)
 endif()

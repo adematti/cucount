@@ -1,6 +1,6 @@
 """Adapter from the numpy frontend to the portable CPU backend.
 
-Since the bindings converged, the native cpucount.count2 takes the same
+Since the bindings converged, the native cucountlib.cpu count2 takes the same
 Particles/attrs objects and returns the same named channels as the CUDA
 backend; what remains here is backend selection support: availability,
 decline-by-name, thread defaults and tuning.
@@ -15,7 +15,7 @@ import numpy as np
 # lands the module in a build-tree cucountlib/ (a namespace package that
 # merges with the installed one), so PYTHONPATH=<build dir> suffices.
 try:
-    from cucountlib import cpucount
+    from cucountlib import cpu as cpucount
 except ImportError:  # -DCUCOUNT_BUILD_CPU=OFF
     cpucount = None
 

@@ -16,6 +16,9 @@ set(CMAKE_CXX_STANDARD 17)  # Use C++17
 # Backend-neutral attrs extension: always built, no nvcc. This is what lets
 # cucount.numpy import on a CUDA-less build and serve backend='cpu'.
 pybind11_add_module(cucount_attrs src/attrs.cpp src/logger.cpp)
+# Target names carry a cucount_ prefix (a bare `cuda` target invites
+# collisions); OUTPUT_NAME is the import name: cucountlib.attrs etc.
+set_target_properties(cucount_attrs PROPERTIES OUTPUT_NAME attrs)
 target_include_directories(cucount_attrs PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(cucount_attrs PRIVATE pybind11::module)
 # Every extension lands in a build-tree cucountlib/, so PYTHONPATH=<build dir>
@@ -29,7 +32,7 @@ endif()
 
 if(CUCOUNT_BUILD_CPU)
     add_subdirectory(cpu)
-    install(TARGETS cpucount LIBRARY DESTINATION cucountlib)
+    install(TARGETS cucount_cpu LIBRARY DESTINATION cucountlib)
 endif()
 
 if(NOT CUCOUNT_BUILD_CUDA AND NOT CUCOUNT_BUILD_CPU)

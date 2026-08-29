@@ -9,7 +9,7 @@ Requests are made with backend='cpu' explicitly: the default is 'cuda', so
 without it these would pass without ever running the code under test.
 
 The few axes the public API does not expose (scatter strategy, single
-precision) are tested against cucountlib.cpucount directly at the end.
+precision) are tested against cucountlib.cpu directly at the end.
 """
 
 import itertools
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(
 
 def _cuda_available():
     try:
-        import cucountlib.cucount  # noqa: F401
+        import cucountlib.cuda  # noqa: F401
         return True
     except ImportError:
         return False

@@ -582,7 +582,7 @@ py::object count3_py(
 
 
 // Bind the function and structs to Python
-PYBIND11_MODULE(cucount, m) {
+PYBIND11_MODULE(cuda, m) {
 
     register_attrs(m);
 

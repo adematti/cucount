@@ -1,8 +1,8 @@
 # CUDA backend
 
-The default backend: the `cucountlib.cucount` extension (count2, count3,
+The default backend: the `cucountlib.cuda` extension (count2, count3,
 count3close on the GPU) and, when `jax.ffi` headers are found at build time,
-the `cucountlib.ffi_cucount` module behind the JAX API. See the
+the `cucountlib.ffi_cuda` module behind the JAX API. See the
 [top-level README](../README.md) for usage; this directory only holds the
 CUDA sources, mirroring [cpu/](../cpu/).
 

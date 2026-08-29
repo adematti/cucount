@@ -12,7 +12,7 @@ from jax import sharding
 from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
-from cucountlib import ffi_cucount
+from cucountlib import ffi_cuda as ffi_cucount
 from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weights, _format_positions, _format_values, _stack_values, count2_analytic, setup_logging, _setup_cucount_logging, _get_ells
 from cucount import numpy
 
@@ -246,7 +246,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs = None, 
     Perform two-point pair counts using the native cucount library.
 
     This is a thin frontend that prepares Python-side Particles and Weight/Selection
-    attributes and calls the underlying cucountlib.cucount.count2 implementation
+    attributes and calls the underlying cucountlib.cuda.count2 implementation
     (GPU-accelerated C/C++/CUDA).
 
     Parameters

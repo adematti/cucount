@@ -10,14 +10,16 @@ from dataclasses import dataclass, asdict
 
 import numpy as np
 
-from cucountlib import cucount_attrs
+# Import names mirror the source layout: cucountlib.attrs / .cuda / .cpu
+# / .ffi_cuda; local aliases keep the frontend text stable.
+from cucountlib import attrs as cucount_attrs
 
 from . import _cpu
 
 # The CUDA extension, imported lazily so that a build with
 # -DCUCOUNT_BUILD_CUDA=OFF (or a machine without CUDA libraries) can still
 # import this module and serve backend='cpu'. Nothing outside the CUDA call
-# paths may touch cucountlib.cucount.
+# paths may touch cucountlib.cuda.
 _cucount_lib = None
 
 
@@ -25,13 +27,13 @@ def _get_cucount():
     global _cucount_lib
     if _cucount_lib is None:
         try:
-            import cucountlib.cucount
+            import cucountlib.cuda
         except ImportError as exc:
             raise ImportError(
                 "the cucount CUDA extension is not available (was cucount built with "
                 "-DCUCOUNT_BUILD_CUDA=OFF, or is CUDA missing?); only backend='cpu' "
                 "can be served") from exc
-        _cucount_lib = cucountlib.cucount
+        _cucount_lib = cucountlib.cuda
         _cucount_lib.setup_logging(_log_level_name())
     return _cucount_lib
 
@@ -961,7 +963,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     Perform two-point pair counts using the native cucount library.
 
     This is a thin frontend that prepares Python-side Particles and Weight/Selection
-    attributes and calls the underlying cucountlib.cucount.count2 implementation
+    attributes and calls the underlying cucountlib.cuda.count2 implementation
     (GPU-accelerated C/C++/CUDA).
 
     Parameters
@@ -1141,7 +1143,7 @@ def count3close(*particles: Particles,
 
     This is a thin frontend that prepares Python-side ``Particles`` and
     weight/selection attributes and calls the underlying
-    ``cucountlib.cucount.count3close`` implementation.
+    ``cucountlib.cuda.count3close`` implementation.
 
     Parameters
     ----------

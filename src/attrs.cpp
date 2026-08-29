@@ -6,7 +6,7 @@
 #define CUCOUNT_NO_CUDA
 #include "attrs.h"
 
-PYBIND11_MODULE(cucount_attrs, m) {
+PYBIND11_MODULE(attrs, m) {
     m.doc() = "Backend-neutral cucount attribute classes";
     register_attrs(m);
 }
