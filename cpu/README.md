@@ -7,7 +7,7 @@ multi-ISA compile with runtime dispatch, compile-time binning specialisation,
 
 It is additive and deletable: the CUDA build is unchanged when
 `-DCUCOUNT_BUILD_CPU=OFF` is passed. Conversely, `-DCUCOUNT_BUILD_CUDA=OFF`
-builds this backend (plus the CUDA-free `cucount_attrs` extension) without
+builds this backend (plus the CUDA-free `cucountlib.attrs` extension) without
 nvcc, and `cucount.numpy` then serves `backend='cpu'` end to end.
 
 ## Build
@@ -26,7 +26,7 @@ package that merges with an installed one — so the freshly built kernel is
 importable without reinstalling:
 
 ```bash
-PYTHONPATH=build/cpu:$PYTHONPATH python -c "from cucountlib import cpucount"
+PYTHONPATH=build/cpu:$PYTHONPATH python -c "from cucountlib import cpu"
 ```
 
 One caveat: an *editable* install (`pip install -e .`) plants a
@@ -36,7 +36,7 @@ build tree win over a user-site editable install.
 
 ## Use
 
-`cpucount.count2` mirrors `cucountlib.cucount.count2`: it takes the same
+`cucountlib.cpu.count2` mirrors `cucountlib.cuda.count2`: it takes the same
 `Particles`, `MeshAttrs`, `BinAttrs`, `WeightAttrs`, ... objects (from any of
 the extensions -- pybind's foreign module_local loading casts them across) and
 returns the same dict of named, shaped channels. The lowering to the kernel
@@ -44,22 +44,22 @@ returns the same dict of named, shaped channels. The lowering to the kernel
 in `src/bind.cpp`:
 
 ```python
-from cucountlib import cpucount
-counts = cpucount.count2(particles1, particles2, mattrs, battrs,
+from cucountlib import cpu
+counts = cpu.count2(particles1, particles2, mattrs, battrs,
                          nthreads=16,           # CPU threads
                          float32=False,
                          scatter='scalar')      # 'scalar' | 'binmajor'
 # counts is {'weight': array} -- or the spin channels, named as CUDA names them
 ```
 
-A low-level raw-array entry point, `cpucount.count2_arrays`, keeps the old
+A low-level raw-array entry point, `cpu.count2_arrays`, keeps the old
 `(pos1, w1, pos2, w2, sedges, ...)` signature for tests and benchmarks that
 want to bypass the attrs layer.
 
 Every ordered pair is visited, matching the CUDA backend: an autocorrelation
 counts each pair twice and includes self-pairs.
 
-`cpucount.set_target('AVX2')` pins Highway to one ISA (`''` restores automatic
+`cpu.set_target('AVX2')` pins Highway to one ISA (`''` restores automatic
 selection); `available_targets()` and `current_target()` report what is
 reachable. This is how the tests check that every compiled ISA agrees and how
 the benchmark measures SIMD-width scaling.

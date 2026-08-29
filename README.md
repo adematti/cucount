@@ -98,6 +98,13 @@ Highway backend) — while backend-neutral code lives at the root: `include/attr
 `include/common.h` (type definitions). `-DCUCOUNT_BUILD_CUDA=OFF` /
 `-DCUCOUNT_BUILD_CPU=OFF` skip either backend.
 
+The Python frontend mirrors that split: `cucount/numpy/_cuda.py` and
+`cucount/numpy/_cpu.py` are one adapter per backend (same shape on both:
+`available`, `setup_logging`, `TUNING_KEYS`, `unsupported`, `count2`, ...),
+and `cucount/numpy/__init__.py` holds the backend-neutral API — the
+attribute classes, `Particles`, the utilities, and the dispatch between the
+backends.
+
 ---
 
 ## ⚡ JAX API

@@ -35,6 +35,12 @@ def available():
     return cpucount is not None
 
 
+def setup_logging(level):
+    """Sync the level into the extension (a no-op when it is not built)."""
+    if cpucount is not None:
+        cpucount.setup_logging(level)
+
+
 def nthreads():
     """CPU threads, which is not what cucount's nthreads means (that is GPUs)."""
     n = os.environ.get('CUCOUNT_CPU_NTHREADS')
