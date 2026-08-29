@@ -175,7 +175,8 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
     const size_t nbit = a.nbitwise;
     const bool has_bitwise = !m1.bw.empty() && !m2.bw.empty() && nbit;
     const bool has_negative = !m1.nw.empty() && !m2.nw.empty();
-    (void)(has_spin || has_bitwise || has_negative);  // dispatch chose ScalarTail
+    const bool has_angular = a.angular_weight && a.angular_shape;
+    (void)(has_spin || has_bitwise || has_negative || has_angular);  // dispatch chose ScalarTail
     BitwiseWeight bitwise = {};
     IndexValue iv_bw = {};  // synthetic: columns at offset 0, stride nbit
     if (has_bitwise) {
@@ -186,6 +187,16 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
         bitwise.p_correction_nbits = const_cast<double*>(a.bitwise_p_correction);
         iv_bw.size_bitwise_weight = nbit;
         iv_bw.size = nbit;
+    }
+    AngularWeight angular = {};
+    if (has_angular) {
+        angular.ndim = 1;
+        angular.size = a.angular_shape;
+        angular.weight = const_cast<double*>(a.angular_weight);
+        angular.sep[0] = const_cast<double*>(a.angular_sep);
+        angular.sep_is_edges[0] = a.angular_sep_is_edges;
+        angular.bin[0] = static_cast<BIN_TYPE>(a.angular_bin);
+        angular.shape[0] = a.angular_shape;
     }
 
     const double* boxsize = a.boxsize;
@@ -261,7 +272,7 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                             Float r1v[3] = {0, 0, 0};
                             Float e1v[2] = {0, 0};
                             if constexpr (ScalarTail) {
-                                if (has_spin) {
+                                if (has_spin || has_angular) {
                                     r1v[0] = m1.sx[i];
                                     r1v[1] = m1.sy[i];
                                     r1v[2] = m1.sz[i];
@@ -407,6 +418,14 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                                                     &m2.bw[jj * nbit],
                                                     iv_bw, iv_bw, bitwise);
                                             }
+                                            if (has_angular) {
+                                                const double ct[1] = {
+                                                    double(r1v[0]) * m2.sx[jj] +
+                                                    double(r1v[1]) * m2.sy[jj] +
+                                                    double(r1v[2]) * m2.sz[jj]};
+                                                w *= pairmath::lookup_angular_weight<1>(
+                                                    ct, angular);
+                                            }
                                             if (has_negative) {
                                                 w -= static_cast<double>(m1.nw[i]) *
                                                      static_cast<double>(m2.nw[jj]);
@@ -499,7 +518,8 @@ static void DispatchScatter(const Count2Args& a, const Mesh<Float>& m1,
     // Spin/bitwise/negative accumulation is scalar per surviving lane, so
     // BinMajor's replicated histogram has nothing to offer; those requests
     // always take Scalar, with the per-lane tail compiled in (ScalarTail).
-    const bool tail = a.spin1 || a.spin2 || (a.bw1 && a.bw2) || (a.nw1 && a.nw2);
+    const bool tail = a.spin1 || a.spin2 || (a.bw1 && a.bw2) || (a.nw1 && a.nw2) ||
+                      a.angular_weight;
     if (tail) {
         Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::Scalar, true>(
             a, m1, m2, sb, mb);
@@ -591,6 +611,7 @@ static void DispatchNDim(const Count2Args& a) {
     const auto t0 = Clock::now();
     const bool with_spos =
         (a.spin1 != nullptr) || (a.spin2 != nullptr) ||
+        (a.angular_weight != nullptr) ||
         (a.cfg.ndim == 2 && (a.cfg.los == LosKind::FirstPoint ||
                              a.cfg.los == LosKind::EndPoint));
     const Mesh<Float> m1 = build_mesh<Float>(a.pos1, a.w1, a.n1, a.boxsize,

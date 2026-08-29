@@ -20,8 +20,11 @@ __device__ __constant__ SplitAttrs device_spattrs;
 static __device__ __constant__ DeviceCount2Layout device_layout;
 
 
+using cucount::pairmath::search_bin_index;
+using cucount::pairmath::get_sep_bin_index;
+using cucount::pairmath::get_interp_sep_index;
+using cucount::pairmath::lookup_angular_weight;
 DEFINE_COMPUTE_UTILS
-DEFINE_ANGULAR_WEIGHT
 
 
 // ============================================================================

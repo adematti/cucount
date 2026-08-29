@@ -89,6 +89,9 @@ def main(argv=None):
         ref = {r['name']: r['seconds'] for r in base['rows']}
         worst = 0.
         for r in result['rows']:
+            if r['name'] not in ref:  # baseline may cover only some configs
+                print(f'{r["name"]:26s} (not in baseline)')
+                continue
             ratio = r['seconds'] / ref[r['name']]
             print(f'{r["name"]:26s} ratio {ratio:5.3f}')
             if 'binmajor' not in r['name']:

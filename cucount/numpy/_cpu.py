@@ -86,8 +86,9 @@ def unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs):
         return 'selection attributes not implemented'
     if getattr(spattrs, 'size', 0) > 1:
         return 'jackknife splits not implemented'
-    if getattr(wattrs, 'angular', None) is not None:
-        return 'angular weights not implemented'
+    angular = getattr(wattrs, 'angular', None)
+    if angular is not None and angular.ndim != 1:
+        return 'N-dimensional angular weights not implemented (only 1D)'
     return None
 
 

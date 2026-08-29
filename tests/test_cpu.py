@@ -326,9 +326,11 @@ def _unsupported_request(feature, n=200):
                      Particles(pos2, w2))
         match = 'spin'
     elif feature == 'angular weights':
-        sep = np.linspace(0.0, 5.0, 41)
-        kw['wattrs'] = WeightAttrs(angular=dict(sep=sep, weight=np.ones(sep.size)))
-        match = 'angular weights'
+        # 1D angular weights are served now; only N-dimensional tables decline.
+        sep = np.linspace(0.0, 5.0, 11)
+        kw['wattrs'] = WeightAttrs(angular=dict(sep=[sep, sep],
+                                                weight=np.ones((sep.size, sep.size))))
+        match = 'N-dimensional angular'
 
     kw.setdefault('mattrs', MeshAttrs(*particles, battrs=kw['battrs']))
     return particles, kw, match
@@ -641,3 +643,91 @@ def test_bitwise_matches_cuda(mode, ndim):
     """Popcount math is exact on both sides, so compare mode's tight rtol holds."""
     particles, kw, _ = _pip_setup(mode, ndim)
     count2(*particles, backend='compare', **kw)
+
+
+# ---------------------------------------------------------------------------
+# Angular (PIP) upweights: 1D tables, applied per surviving lane via the
+# lookup_angular_weight shared with CUDA (include/pair_math.h).
+# ---------------------------------------------------------------------------
+
+def _angular_reference(ct, angular):
+    """(n1, n2) angular weights, mirroring the shared 1D lookup: linear
+    interpolation over sep points, piecewise-constant over edges, 1 outside."""
+    state = angular._to_c()  # axes converted to ascending cos(theta)
+    wt = state['weight']
+    w = np.ones_like(ct)
+    if angular.tabulation == 'sep':
+        sep = state['sep'][0]
+        inside = (ct >= sep[0]) & (ct <= sep[-1])
+        w[inside] = np.interp(ct[inside], sep, wt)
+    else:
+        e = state['edges'][0]
+        inside = (ct >= e[0]) & (ct < e[-1])
+        idx = np.clip(np.searchsorted(e, ct, side='right') - 1, 0, wt.size - 1)
+        w[inside] = wt[idx[inside]]
+    return w
+
+
+@pytest.mark.parametrize('tabulation', ['sep', 'edges'])
+def test_angular_matches_brute_force(tabulation):
+    pos1, w1, _ = _unit_catalog(1)
+    pos2, w2, _ = _unit_catalog(2)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    # Tabulate only to 60 deg so pairs beyond it exercise the weight-1 branch.
+    theta = np.linspace(0., 60., 41)
+    table = 1. + 0.5 * np.exp(-theta / 20.)
+    if tabulation == 'sep':
+        wattrs = WeightAttrs(angular=dict(sep=theta, weight=table))
+    else:
+        wattrs = WeightAttrs(angular=dict(edges=theta, weight=table[:-1]))
+    sedges = np.linspace(0.05, 1.5, 11)
+    battrs = BinAttrs(s=sedges)
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+
+    ct = pos1 @ pos2.T
+    w = w1[:, None] * w2[None, :] * _angular_reference(ct, wattrs.angular)
+    want = _brute_multi(pos1, pos2, [w], sedges)[0]
+
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, wattrs=wattrs,
+                 backend='cpu')['weight']
+    scale = np.abs(want).max()
+    assert np.allclose(got, want, rtol=1e-9, atol=1e-12 * scale)
+
+
+@needs_cuda
+@pytest.mark.parametrize('tabulation', ['sep', 'edges'])
+def test_angular_matches_cuda(tabulation):
+    """Both backends run the same shared lookup, so compare mode's rtol holds."""
+    pos1, w1, _ = _unit_catalog(1)
+    pos2, w2, _ = _unit_catalog(2)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    theta = np.linspace(0., 60., 41)
+    table = 1. + 0.5 * np.exp(-theta / 20.)
+    kw = dict(sep=theta, weight=table) if tabulation == 'sep' else \
+         dict(edges=theta, weight=table[:-1])
+    wattrs = WeightAttrs(angular=kw)
+    battrs = BinAttrs(s=np.linspace(0.05, 1.5, 11))
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    count2(*particles, battrs=battrs, mattrs=mattrs, wattrs=wattrs,
+           backend='compare')
+
+
+@needs_cuda
+def test_all_weight_schemes_combined_match_cuda():
+    """individual + bitwise + angular + negative together, in the CUDA order."""
+    rng = np.random.default_rng(30)
+    n = 400
+    pos1, w1 = catalog(1, n)
+    pos2, w2 = catalog(2, n)
+    bits1 = [rng.integers(0, 0xffffffff, n, dtype=np.uint64) for _ in range(2)]
+    bits2 = [rng.integers(0, 0xffffffff, n, dtype=np.uint64) for _ in range(2)]
+    nw1, nw2 = rng.uniform(0., 0.1, n), rng.uniform(0., 0.1, n)
+    particles = (Particles(pos1, [w1] + bits1 + [nw1]),
+                 Particles(pos2, [w2] + bits2 + [nw2]))
+    theta = np.linspace(0., 30., 16)
+    wattrs = WeightAttrs(bitwise=dict(weights=bits1),
+                         angular=dict(sep=theta, weight=1. + theta / 60.))
+    battrs = BinAttrs(s=EDGES['lin'])
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    count2(*particles, battrs=battrs, mattrs=mattrs, wattrs=wattrs,
+           backend='compare')

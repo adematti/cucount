@@ -78,8 +78,9 @@ void validate(const Particles& p1, const Particles& p2, const BinAttrs& battrs,
         throw std::invalid_argument("cpu backend: selections not implemented");
     if (spattrs.nsplits)
         throw std::invalid_argument("cpu backend: jackknife splits not implemented");
-    if (wattrs.angular.size)
-        throw std::invalid_argument("cpu backend: angular weights not implemented");
+    if (wattrs.angular.size && wattrs.angular.ndim != 1)
+        throw std::invalid_argument(
+            "cpu backend: only 1D angular weights are implemented");
     for (const Particles* p : {&p1, &p2}) {
         const IndexValue& iv = p->index_value;
         if (iv.size_split)
@@ -179,6 +180,15 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     if (!nw1.empty() && !nw2.empty()) {
         a.nw1 = nw1.data();
         a.nw2 = nw2.data();
+    }
+    if (wattrs.angular.size) {
+        // 1D only (validated above); points into arrays wattrs_py keeps
+        // alive for the call, axes already ascending cos(theta).
+        a.angular_sep = wattrs.angular.sep[0];
+        a.angular_weight = wattrs.angular.weight;
+        a.angular_shape = wattrs.angular.shape[0];
+        a.angular_bin = static_cast<int>(wattrs.angular.bin[0]);
+        a.angular_sep_is_edges = wattrs.angular.sep_is_edges[0];
     }
 
     // Edges point into the numpy buffers held by battrs_py for the call.

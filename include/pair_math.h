@@ -30,6 +30,13 @@
 #define CUCOUNT_POPCOUNT(x) __builtin_popcountll((unsigned long long)(x))
 #endif
 
+// Loop unrolling hint: meaningful under nvcc, silently absent on the host.
+#if defined(__CUDACC__)
+#define CUCOUNT_UNROLL _Pragma("unroll")
+#else
+#define CUCOUNT_UNROLL
+#endif
+
 namespace cucount {
 namespace pairmath {
 
@@ -38,6 +45,8 @@ using std::sqrt;
 using std::sin;
 using std::cos;
 using std::atan2;
+using std::log;
+using std::floor;
 #endif
 
 // Legendre polynomials P_ell(mu) for ellmin <= ell <= ellmax. The even-only
@@ -342,6 +351,179 @@ CUCOUNT_HOST_DEVICE inline Float pair_bitwise_weight(
     }
 
     return pair_bweight;
+}
+
+// Bin/lookup index searches and the angular-weight interpolation, lifted
+// verbatim from the historical macro-generated CUDA code (double, the wire
+// format). The angular axes arrive from Python already converted to
+// ascending cos(theta), so callers feed dot(r1, r2) directly.
+
+CUCOUNT_HOST_DEVICE inline int search_bin_index(
+    double value,
+    const double *edges,
+    int nbins)
+{
+    if (!edges || nbins <= 0) return -1;
+    if (value < edges[0] || value >= edges[nbins]) return -1;
+
+    int lo = 0;
+    int hi = nbins;
+
+    while (lo + 1 < hi) {
+        int mid = lo + (hi - lo) / 2;
+
+        if (value >= edges[mid]) {
+            lo = mid;
+        }
+        else {
+            hi = mid;
+        }
+    }
+
+    return lo;
+}
+
+
+CUCOUNT_HOST_DEVICE inline int get_sep_bin_index(
+    double value,
+    const double *sep,
+    int shape,
+    BIN_TYPE bin,
+    bool sep_is_edges)
+{
+    const int nbins = sep_is_edges ? shape : shape - 1;
+
+    if (bin == BIN_CUSTOM) {
+        return search_bin_index(value, sep, nbins);
+    }
+
+    const double min = sep[0];
+    const double max = sep[nbins];
+
+    if (value < min || value >= max) return -1;
+
+    if (bin == BIN_LIN) {
+        const double step = sep[1] - sep[0];
+        int ibin = (int)floor((value - min) / step);
+        return (ibin >= 0 && ibin < nbins) ? ibin : -1;
+    }
+
+    if (bin == BIN_LOG) {
+        if (value <= 0.) return -1;
+        const double logstep = log(sep[1] / sep[0]);
+        int ibin = (int)floor(log(value / min) / logstep);
+        return (ibin >= 0 && ibin < nbins) ? ibin : -1;
+    }
+
+    return -1;
+}
+
+
+CUCOUNT_HOST_DEVICE inline int get_interp_sep_index(
+    double x,
+    const double *sep,
+    int nsep,
+    BIN_TYPE bin,
+    double *frac)
+{
+    *frac = 0.;
+    if (!sep || nsep < 2) return -1;
+
+    if (x < sep[0] || x > sep[nsep - 1]) return -1;
+
+    if (x == sep[nsep - 1]) {
+        *frac = 1.;
+        return nsep - 2;
+    }
+
+    int ibin = get_sep_bin_index(x, sep, nsep, bin, false);
+    if (ibin < 0) return -1;
+
+    double dx = sep[ibin + 1] - sep[ibin];
+    *frac = (dx != 0.) ? (x - sep[ibin]) / dx : 0.;
+    return ibin;
+}
+
+
+// Angular (PIP) upweight: multilinear interpolation over `sep` axes,
+// piecewise-constant over `edges` axes, 1 outside the tabulated range.
+template <int ND>
+CUCOUNT_HOST_DEVICE inline double lookup_angular_weight(
+    const double (&costheta)[ND],
+    const AngularWeight& angular)
+{
+    if (!angular.weight) return 1.;
+
+    int i0[ND];
+    double frac[ND];
+
+    CUCOUNT_UNROLL
+    for (int idim = 0; idim < ND; idim++) {
+        if (angular.sep_is_edges[idim]) {
+            i0[idim] = get_sep_bin_index(
+                costheta[idim],
+                angular.sep[idim],
+                (int) angular.shape[idim],
+                angular.bin[idim],
+                true);
+            frac[idim] = 0.;
+        }
+        else {
+            i0[idim] = get_interp_sep_index(
+                costheta[idim],
+                angular.sep[idim],
+                (int) angular.shape[idim],
+                angular.bin[idim],
+                &frac[idim]);
+        }
+
+        if (i0[idim] < 0) return 1.;
+    }
+
+    bool any_interp = false;
+
+    CUCOUNT_UNROLL
+    for (int idim = 0; idim < ND; idim++) {
+        any_interp = any_interp || !angular.sep_is_edges[idim];
+    }
+
+    if (!any_interp) {
+        size_t idx = 0;
+
+        CUCOUNT_UNROLL
+        for (int idim = 0; idim < ND; idim++) {
+            idx = idx * (size_t) angular.shape[idim] + (size_t) i0[idim];
+        }
+
+        return angular.weight[idx];
+    }
+
+    double result = 0.;
+    const int ncorners = 1 << ND;
+
+    for (int icorner = 0; icorner < ncorners; icorner++) {
+        size_t idx = 0;
+        double wcorner = 1.;
+
+        CUCOUNT_UNROLL
+        for (int idim = 0; idim < ND; idim++) {
+            int ibin = i0[idim];
+
+            if (!angular.sep_is_edges[idim]) {
+                const int upper = (icorner >> idim) & 1;
+                ibin += upper;
+                wcorner *= upper
+                    ? frac[idim]
+                    : (1. - frac[idim]);
+            }
+
+            idx = idx * (size_t) angular.shape[idim] + (size_t) ibin;
+        }
+
+        result += wcorner * angular.weight[idx];
+    }
+
+    return result;
 }
 
 }  // namespace pairmath

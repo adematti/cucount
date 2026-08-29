@@ -1,5 +1,6 @@
 #include "common.h"
 #include "count2.h"
+#include "pair_math.h"
 #include "count3close.h"
 #include "count3.h"
 
@@ -10,8 +11,11 @@
  */
 
 
+using cucount::pairmath::search_bin_index;
+using cucount::pairmath::get_sep_bin_index;
+using cucount::pairmath::get_interp_sep_index;
+using cucount::pairmath::lookup_angular_weight;
 DEFINE_COMPUTE_UTILS
-DEFINE_ANGULAR_WEIGHT
 DEFINE_BUILD_LOS_FRAME
 DEFINE_COMPUTE_SPHERICAL_HARMONICS
 

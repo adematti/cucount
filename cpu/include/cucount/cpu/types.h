@@ -126,6 +126,16 @@ struct Count2Args {
     const double* nw1 = nullptr;
     const double* nw2 = nullptr;
 
+    // Optional 1D angular (PIP) upweight, tabulated against ascending
+    // cos(theta) (the Python layer converts from degrees): interpolation
+    // points or bin edges per angular_sep_is_edges, policy angular_bin
+    // (a BIN_TYPE value), applied as a factor between bitwise and negative.
+    const double* angular_sep = nullptr;
+    const double* angular_weight = nullptr;
+    size_t angular_shape = 0;
+    int angular_bin = 0;
+    bool angular_sep_is_edges = false;
+
     double boxsize[3] = {0, 0, 0};
     double origin[3] = {0, 0, 0};
 

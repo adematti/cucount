@@ -103,7 +103,7 @@ and `'scalar'`. In `compare` mode the dict nests per backend:
 `tuning={'cpu': {...}, 'cuda': {...}}`.
 
 Requests the CPU backend cannot serve — theta/pole/k binning, angular mesh,
-bitwise or angular weights, jackknife splits, selections — are declined
+N-dimensional angular weights, jackknife splits, selections — are declined
 by name, so it never silently computes something different.
 
 ## Verify
@@ -138,10 +138,11 @@ LOS (`z`, `x`, `y`, midpoint, firstpoint, endpoint); periodic and
 non-periodic; `float`/`double`; per-object weights;
 spin/shear (galaxy-shear and shear-shear channels, via the scalar projection
 shared with CUDA in `include/pair_math.h` — the SIMD distance cull is
-unchanged and surviving lanes take the shared per-pair math); bitwise (PIP)
-and negative weights (same scalar-tail pattern, via the shared
-`pair_bitwise_weight`; the bit patterns ride double storage whatever the
-working precision).
+unchanged and surviving lanes take the shared per-pair math); bitwise (PIP),
+negative and 1D angular weights (same scalar-tail pattern, via the shared
+`pair_bitwise_weight` and `lookup_angular_weight`; the bit patterns ride
+double storage whatever the working precision).
 
 Not covered, deliberately: triplet counts, angular mesh, theta/rp/pi/pole/k
-binning, angular weights, jackknife splits, JAX FFI, multi-device.
+binning, N-dimensional angular weights, jackknife splits, JAX FFI,
+multi-device.
