@@ -78,9 +78,24 @@ The `count2()` function in the NumPy API supports an experimental CPU backend:
 counts = count2(particles1, particles2, backend='cpu')
 ```
 
-Only `count2` is supported currently and only with a limited subset of features: s and (s, mu) binning, cartesian mesh, and individual weights. More features are expected to be added over time; please open an issue if a particular feature is important to you.
+Only `count2` is supported currently, with a subset of features: s and (s, mu) binning
+(z and midpoint lines of sight), cartesian mesh, individual weights, and spin/shear
+(galaxy-shear and shear-shear channels). Requests it cannot serve are declined by name.
+`backend='compare'` runs both backends and raises if they disagree. More features are
+expected to be added over time; please open an issue if a particular feature is
+important to you. See [cpu/README.md](cpu/README.md) for details.
 
 The CPU kernels are written in an ISA-portable way using Google Highway. One should be able to build the code once and run it on a wide variety of CPU architectures with SIMD acceleration. Many optimization opportunities remain, however, so performance is not expected to match Corrfunc, for example.
+
+### Repository layout
+
+Each backend owns a subdirectory with the same shape — [cuda/](cuda/) (the default
+`cucountlib.cucount` extension and the JAX FFI module) and [cpu/](cpu/) (the portable
+Highway backend) — while backend-neutral code lives at the root: `include/attrs.h`
+(the attribute classes, compiled into the CUDA-free `cucount_attrs` extension),
+`include/pair_math.h` (scalar per-pair math shared by both backends) and
+`include/common.h` (type definitions). `-DCUCOUNT_BUILD_CUDA=OFF` /
+`-DCUCOUNT_BUILD_CPU=OFF` skip either backend.
 
 ---
 

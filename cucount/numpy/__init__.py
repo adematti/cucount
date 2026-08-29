@@ -1021,7 +1021,7 @@ def _get_ells(battrs):
     return [int(ell) for ell in ells]
 
 
-# Mirrors ELLMAX in include/count3close.h. The kernel applies it as `ellmax = MIN(ellmax, ELLMAX)`,
+# Mirrors ELLMAX in cuda/include/count3close.h. The kernel applies it as `ellmax = MIN(ellmax, ELLMAX)`,
 # i.e. it CLAMPS SILENTLY: asking for higher orders returns fewer poles than the binning describes,
 # with no error. Keep in sync with the header (raising it also needs MMAX_SIZE = ELLMAX + 1).
 KERNEL_ELLMAX = 5
@@ -1042,7 +1042,7 @@ def check_kernel_ells(*battrs_or_ells):
     if requested > KERNEL_ELLMAX:
         raise ValueError(
             f'requested multipoles up to ell = {requested}, but the count3/count3close cucount kernel supports only '
-            f'ell <= {KERNEL_ELLMAX} (ELLMAX in include/count3close.h) and would clamp silently. '
+            f'ell <= {KERNEL_ELLMAX} (ELLMAX in cuda/include/count3close.h) and would clamp silently. '
             f'Lower the requested multipoles, or rebuild cucount with a larger ELLMAX '
             f'(and MMAX_SIZE = ELLMAX + 1).')
 
