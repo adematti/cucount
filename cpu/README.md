@@ -5,9 +5,10 @@ CPU+CUDA cucount would need: [Google Highway](https://github.com/google/highway)
 multi-ISA compile with runtime dispatch, compile-time binning specialisation,
 `Float` templating, and SIMD traversal with scatter-accumulate.
 
-It is additive and deletable. Nothing under `src/` or `include/`
-is touched, and the CUDA build is unchanged when `-DCUCOUNT_BUILD_CPU=OFF`
-is passed.
+It is additive and deletable: the CUDA build is unchanged when
+`-DCUCOUNT_BUILD_CPU=OFF` is passed. Conversely, `-DCUCOUNT_BUILD_CUDA=OFF`
+builds this backend (plus the CUDA-free `cucount_attrs` extension) without
+nvcc, and `cucount.numpy` then serves `backend='cpu'` end to end.
 
 ## Build
 

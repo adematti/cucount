@@ -8,6 +8,15 @@ endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# GCC < 9 drops the per-target SIMD options on OpenMP-outlined regions, which
+# surfaces as pages of always_inline "target specific option mismatch" errors
+# from Highway. Fail with the reason instead (seen with /usr/bin/g++ 7.5 when
+# a newer g++ was on PATH but CMake's default compiler probe picked cc/c++).
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+  message(FATAL_ERROR "cpucount needs GCC >= 9 (found ${CMAKE_CXX_COMPILER_VERSION} at "
+          "${CMAKE_CXX_COMPILER}); pass -DCMAKE_CXX_COMPILER=g++ or a newer compiler")
+endif()
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()

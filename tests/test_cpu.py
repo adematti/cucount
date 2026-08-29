@@ -22,6 +22,20 @@ from cucount.numpy import (BinAttrs, MeshAttrs, Particles, SelectionAttrs,
 pytestmark = pytest.mark.skipif(
     not _cpu.available(), reason='CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)')
 
+
+def _cuda_available():
+    try:
+        import cucountlib.cucount  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+# CUDA-oracle checks are skipped on a CUDA-less build (-DCUCOUNT_BUILD_CUDA=OFF)
+# so the suite still validates the CPU backend against the numpy brute force.
+CUDA = _cuda_available()
+needs_cuda = pytest.mark.skipif(not CUDA, reason='CUDA extension not built')
+
 BOX = 1000.0
 SMAX = 100.0
 MU = np.linspace(-1.0, 1.0, 9)
@@ -107,6 +121,7 @@ def test_matches_brute_force(kind, ndim, los, periodic):
     assert np.allclose(got, want, rtol=1e-9, atol=0)
 
 
+@needs_cuda
 @pytest.mark.parametrize('kind,ndim,los,periodic', MATRIX, ids=MATRIX_IDS)
 def test_matches_cuda(kind, ndim, los, periodic):
     """compare mode raises if the two backends disagree."""
@@ -140,7 +155,8 @@ def test_self_pairs_bin_at_mu_zero(los):
     imu0 = np.searchsorted(MU, 0.0, side='right') - 1
     assert got[0, imu0] >= (w * w).sum() * (1 - 1e-12)
     # compare mode raises if the CUDA backend disagrees on the convention
-    count2(p, p, battrs=battrs, mattrs=mattrs, backend='compare')
+    if CUDA:
+        count2(p, p, battrs=battrs, mattrs=mattrs, backend='compare')
 
 
 def test_smax_much_smaller_than_box():
@@ -158,7 +174,8 @@ def test_smax_much_smaller_than_box():
     want = brute(pos1, w1, pos2, w2, sedges, periodic=True)
     assert want.sum() > 0
     assert np.allclose(got, want, rtol=1e-9, atol=0)
-    count2(*particles, battrs=battrs, mattrs=mattrs, backend='compare')
+    if CUDA:
+        count2(*particles, battrs=battrs, mattrs=mattrs, backend='compare')
 
 
 def test_zero_bins_is_empty_result():
@@ -170,7 +187,8 @@ def test_zero_bins_is_empty_result():
         mattrs = MeshAttrs(p, p, boxsize=BOX, battrs=battrs, periodic=True)
         got = count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
         assert got.shape == battrs.shape and got.size == 0
-        count2(p, p, battrs=battrs, mattrs=mattrs, backend='compare')
+        if CUDA:
+            count2(p, p, battrs=battrs, mattrs=mattrs, backend='compare')
 
 
 @pytest.mark.parametrize('los', ['z', 'midpoint'])
@@ -185,7 +203,8 @@ def test_single_mu_bin(los):
     got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
     want = brute(pos1, w1, pos2, w2, EDGES['lin'], mu1, los, periodic=True)
     assert np.allclose(got, want, rtol=1e-9, atol=0)
-    count2(*particles, battrs=battrs, mattrs=mattrs, backend='compare')
+    if CUDA:
+        count2(*particles, battrs=battrs, mattrs=mattrs, backend='compare')
 
 
 def test_thread_count_invariance(monkeypatch):
@@ -246,7 +265,8 @@ def test_unsupported_is_declined_by_name():
     with pytest.raises(NotImplementedError, match='theta'):
         count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')
     # The same request is served when routed to the CUDA backend.
-    assert 'weight' in count2(p, p, battrs=battrs, mattrs=mattrs, backend='cuda')
+    if CUDA:
+        assert 'weight' in count2(p, p, battrs=battrs, mattrs=mattrs, backend='cuda')
 
 
 UNSUPPORTED = ['rp-pi binning', 'los x', 'los firstpoint', 'non-linear mu',
@@ -345,8 +365,9 @@ def test_backend_env_var(monkeypatch):
     monkeypatch.setenv('CUCOUNT_BACKEND', 'cpu')
     got = count2(*particles, battrs=battrs, mattrs=mattrs)['weight']
     assert np.allclose(got, brute(*raw, sedges, periodic=True), rtol=1e-9)
-    monkeypatch.setenv('CUCOUNT_BACKEND', 'compare')
-    count2(*particles, battrs=battrs, mattrs=mattrs)
+    if CUDA:
+        monkeypatch.setenv('CUCOUNT_BACKEND', 'compare')
+        count2(*particles, battrs=battrs, mattrs=mattrs)
 
 
 # --- axes the public API does not expose -----------------------------------
@@ -533,6 +554,7 @@ def test_spin_matches_brute_force(mode, ndim):
         assert np.allclose(got[name], ref, rtol=1e-9, atol=1e-12 * scale), name
 
 
+@needs_cuda
 @pytest.mark.parametrize('ndim', [1, 2])
 @pytest.mark.parametrize('mode', ['gs', 'ss'])
 def test_spin_matches_cuda(mode, ndim):

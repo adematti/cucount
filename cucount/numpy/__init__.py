@@ -10,9 +10,35 @@ from dataclasses import dataclass, asdict
 
 import numpy as np
 
-import cucountlib.cucount
+from cucountlib import cucount_attrs
 
 from . import _cpu
+
+# The CUDA extension, imported lazily so that a build with
+# -DCUCOUNT_BUILD_CUDA=OFF (or a machine without CUDA libraries) can still
+# import this module and serve backend='cpu'. Nothing outside the CUDA call
+# paths may touch cucountlib.cucount.
+_cucount_lib = None
+
+
+def _get_cucount():
+    global _cucount_lib
+    if _cucount_lib is None:
+        try:
+            import cucountlib.cucount
+        except ImportError as exc:
+            raise ImportError(
+                "the cucount CUDA extension is not available (was cucount built with "
+                "-DCUCOUNT_BUILD_CUDA=OFF, or is CUDA missing?); only backend='cpu' "
+                "can be served") from exc
+        _cucount_lib = cucountlib.cucount
+        _cucount_lib.setup_logging(_log_level_name())
+    return _cucount_lib
+
+
+def _log_level_name():
+    level = logging.getLogger('cucount').getEffectiveLevel()
+    return logging.getLevelName(level).lower()
 
 
 logger = logging.getLogger('cucount')
@@ -117,9 +143,12 @@ def _dispatch(mode, cuda_call, cpu_call, why):
 
 
 def _setup_cucount_logging():
-    level = logging.getLogger('cucount').getEffectiveLevel()
-    level = logging.getLevelName(level)
-    cucountlib.cucount.setup_logging(level.lower())
+    level = _log_level_name()
+    cucount_attrs.setup_logging(level)
+    # Each extension holds its own copy of the log level; sync the CUDA one
+    # only if it has been imported (importing it here would defeat laziness).
+    if _cucount_lib is not None:
+        _cucount_lib.setup_logging(level)
 
 
 def setup_logging(level=logging.INFO, stream=sys.stdout,  **kwargs):
@@ -434,7 +463,9 @@ class WeightAttrs(object):
             value = getattr(self, name)
             if value is not None:
                 state[name] = value
-        return cucountlib.cucount.WeightAttrs(**state)
+        # A backend-neutral instance: the CUDA extensions load it through
+        # pybind's foreign module_local casting.
+        return cucount_attrs.WeightAttrs(**state)
 
     def check(self, *particles):
         if not particles:
@@ -471,14 +502,14 @@ class WeightAttrs(object):
         return weight
 
 
-class SelectionAttrs(cucountlib.cucount.SelectionAttrs):
+class SelectionAttrs(cucount_attrs.SelectionAttrs):
     """
     Provide selection:
     - theta = (min, max)  # in degrees
     """
 
 
-class SplitAttrs(cucountlib.cucount.SplitAttrs):
+class SplitAttrs(cucount_attrs.SplitAttrs):
     """
     Provide split attributes:
     - mode = 'jackknife'
@@ -493,7 +524,7 @@ class SplitAttrs(cucountlib.cucount.SplitAttrs):
                 assert len(particle.index_value('split', return_type=list)) == 0, 'splits provided but SplitAttrs is not set'
 
 
-class BinAttrs(cucountlib.cucount.BinAttrs):
+class BinAttrs(cucount_attrs.BinAttrs):
     """
     Provide binning:
     - s = edge array or (min, max, step)
@@ -677,7 +708,7 @@ class MeshAttrs(object):
 
     def _to_c(self):
         state = asdict(self)
-        return cucountlib.cucount.MeshAttrs(**state)
+        return cucount_attrs.MeshAttrs(**state)
 
 
 @dataclass(init=False)
@@ -971,8 +1002,9 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     cuda_tuning, cpu_tuning = _resolve_tuning(mode, tuning, nthreads=nthreads)
 
     def _cuda():
-        cparticles = [cucountlib.cucount.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
-        return cucountlib.cucount.count2(*cparticles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=cuda_tuning.get('nthreads', 1))
+        lib = _get_cucount()
+        cparticles = [lib.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
+        return lib.count2(*cparticles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=cuda_tuning.get('nthreads', 1))
 
     why = None if mode == 'cuda' else _cpu.unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs)
     return _dispatch(mode, _cuda, lambda: _cpu.count2(particles, battrs, mattrs, wattrs=wattrs, tuning=cpu_tuning), why)
@@ -1212,8 +1244,9 @@ def count3close(*particles: Particles,
             battrs=battrs23 if close_pair == (2, 3) else battrs13,
         )
 
+    lib = _get_cucount()
     particles = [
-        cucountlib.cucount.Particles(
+        lib.Particles(
             p.positions,
             values=_stack_values(p.values, np=np),
             **p.index_value._to_c(),
@@ -1221,7 +1254,7 @@ def count3close(*particles: Particles,
         for p in particles
     ]
 
-    return cucountlib.cucount.count3close(
+    return lib.count3close(
         *particles,
         mattrs1._to_c(),
         mattrs2._to_c(),
@@ -1330,8 +1363,9 @@ def count3(*particles: Particles,
     if mattrs3 is None:
         mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13)
 
+    lib = _get_cucount()
     particles = [
-        cucountlib.cucount.Particles(
+        lib.Particles(
             p.positions,
             values=_stack_values(p.values, np=np),
             **p.index_value._to_c(),
@@ -1339,7 +1373,7 @@ def count3(*particles: Particles,
         for p in particles
     ]
 
-    return cucountlib.cucount.count3(
+    return lib.count3(
         *particles,
         mattrs1._to_c(),
         mattrs2._to_c(),

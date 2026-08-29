@@ -1,5 +1,9 @@
 #include <stdio.h>
 #include <stdarg.h>
+// Plain C++ so the CUDA-free cucount_attrs extension can link it; compiled by
+// the host compiler even inside the CUDA targets, where the CUDA include
+// paths are not on the CXX search path.
+#define CUCOUNT_NO_CUDA
 #include "common.h"
 
 

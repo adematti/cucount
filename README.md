@@ -2,7 +2,7 @@
 
 **cucount** is a high-performance CUDA implementation for computing pair counts (positions - spins), and triplet counts, optimized for GPUs. It provides both NumPy and JAX interfaces depending on your workflow.
 
-> ⚠️ A CUDA-capable GPU is required. An experimental CPU backend is available, but the package still requires CUDA at build and run time. (`-DCUCOUNT_BUILD_CUDA=OFF` skips the CUDA build and yields the standalone `cpucount` module only; the `cucount` Python API does not yet work without the CUDA module.)
+> ⚠️ A CUDA-capable GPU is required for the default backend. Building with `-DCUCOUNT_BUILD_CUDA=OFF` skips CUDA entirely: `cucount.numpy` still imports (the attribute classes live in a CUDA-free extension) and serves the experimental `backend='cpu'`; any CUDA call then raises with a message naming the flag.
 
 ---
 

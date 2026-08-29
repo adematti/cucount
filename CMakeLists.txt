@@ -9,6 +9,13 @@ find_package(pybind11 CONFIG REQUIRED)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 set(CMAKE_CXX_STANDARD 17)  # Use C++17
 
+# Backend-neutral attrs extension: always built, no nvcc. This is what lets
+# cucount.numpy import on a CUDA-less build and serve backend='cpu'.
+pybind11_add_module(cucount_attrs src/attrs.cpp src/logger.cpp)
+target_include_directories(cucount_attrs PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(cucount_attrs PRIVATE pybind11::module)
+install(TARGETS cucount_attrs LIBRARY DESTINATION cucountlib)
+
 if(CUCOUNT_BUILD_CUDA)
     # Overridable: CUDA 13 dropped compute_70, so builds against a recent
     # toolkit must narrow this, e.g. -DCMAKE_CUDA_ARCHITECTURES=80.
@@ -17,7 +24,7 @@ if(CUCOUNT_BUILD_CUDA)
     endif()
     enable_language(CUDA)
 
-    pybind11_add_module(cucount src/cucount.cu src/common.cu src/logger.cu src/mesh.cu src/count2.cu src/count3close.cu src/count3.cu)
+    pybind11_add_module(cucount src/cucount.cu src/common.cu src/logger.cpp src/mesh.cu src/count2.cu src/count3close.cu src/count3.cu)
     target_include_directories(cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
     set_target_properties(cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(cucount PRIVATE pybind11::module)
@@ -50,7 +57,7 @@ if(CUCOUNT_BUILD_CUDA)
 
     if(BUILD_FFI_CUCOUNT)
         message(STATUS "Compilation of the JAX FFI module")
-        pybind11_add_module(ffi_cucount src/ffi_cucount.cu src/common.cu src/logger.cu src/mesh.cu src/count2.cu src/count3close.cu src/count3.cu)
+        pybind11_add_module(ffi_cucount src/ffi_cucount.cu src/common.cu src/logger.cpp src/mesh.cu src/count2.cu src/count3close.cu src/count3.cu)
         target_include_directories(ffi_cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
         target_include_directories(ffi_cucount PUBLIC ${XLA_DIR})
         set_target_properties(ffi_cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -70,9 +77,8 @@ if(NOT CUCOUNT_BUILD_CUDA AND NOT CUCOUNT_BUILD_CPU)
 endif()
 
 if(NOT CUCOUNT_BUILD_CUDA)
-    # cucount.numpy still imports cucountlib.cucount eagerly (the Attrs types
-    # are pybind classes of the CUDA module), so a CUDA-less build serves the
-    # CPU backend through `import cpucount` only. Lifting that is the
-    # backend-neutral Attrs extraction, tracked in the convergence roadmap.
-    message(STATUS "CUDA backend disabled: only the standalone cpucount module will be importable")
+    # The attrs layer lives in the CUDA-free cucount_attrs extension, so
+    # cucount.numpy imports fine and serves backend='cpu'; only a CUDA call
+    # raises (loudly, naming this flag).
+    message(STATUS "CUDA backend disabled: cucount.numpy serves backend='cpu' only")
 endif()

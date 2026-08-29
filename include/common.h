@@ -1,5 +1,10 @@
 #include <stdlib.h>
+// CUCOUNT_NO_CUDA: CUDA-free consumers (the cucount_attrs extension, the
+// logger) use only the type definitions and declarations below; the CUDA
+// helper macros are harmless as long as they are never expanded there.
+#ifndef CUCOUNT_NO_CUDA
 #include <cuda.h>
+#endif
 
 #ifndef _CUCOUNT_COMMON_
 #define _CUCOUNT_COMMON_

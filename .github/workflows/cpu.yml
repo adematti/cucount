@@ -1,0 +1,31 @@
+# CPU-only CI: builds without nvcc (CUCOUNT_BUILD_CUDA=OFF) and runs the CPU
+# backend suite against the numpy brute-force oracle. The CUDA-oracle tests
+# (compare mode, spin-vs-CUDA) skip themselves when the CUDA extension is
+# absent; those run on a GPU machine instead.
+name: cpu
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build and test dependencies
+        run: pip install numpy pytest pybind11 scikit-build-core cmake ninja
+
+      # No build isolation: the pyproject build requirements include jax (for
+      # the CUDA FFI module, disabled here), which this job must not pull in.
+      - name: Build and install (CUDA off)
+        run: pip install . -v --no-build-isolation -C cmake.define.CUCOUNT_BUILD_CUDA=OFF
+
+      - name: Run the CPU suite
+        run: pytest tests/test_cpu.py -q

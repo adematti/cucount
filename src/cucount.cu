@@ -663,39 +663,7 @@ PYBIND11_MODULE(cucount, m) {
     .def_readonly("values", &Particles_py::values)
     .def_readonly("index_value", &Particles_py::index_value);
 
-    py::class_<BinAttrs_py>(m, "BinAttrs", py::module_local())
-        .def(py::init<py::kwargs>()) // Accept Python kwargs
-        .def_property_readonly("shape", &BinAttrs_py::shape)
-        .def_property_readonly("size", &BinAttrs_py::size)
-        .def_property_readonly("ndim", &BinAttrs_py::ndim)
-        .def_property_readonly("varnames", &BinAttrs_py::varnames, "Return list of variable names in order (e.g. ['s','mu'])")
-        .def_property_readonly("losnames", &BinAttrs_py::losnames, "Return list of line-of-sight names in order")
-        .def_readonly("var", &BinAttrs_py::var)
-        .def_readonly("min", &BinAttrs_py::min)
-        .def_readonly("max", &BinAttrs_py::max)
-        .def_readonly("step", &BinAttrs_py::step) // The lambda approach is safer to avoid exposing internal mutable containers
-        .def_property_readonly("array", [](const BinAttrs_py &b) -> std::vector<py::array_t<FLOAT>> {return b.array;});
-
-    py::class_<SelectionAttrs_py>(m, "SelectionAttrs", py::module_local())
-        .def(py::init<py::kwargs>()) // Accept Python kwargs
-        .def_property_readonly("ndim", &SelectionAttrs_py::ndim)
-        .def_property_readonly("varnames", &SelectionAttrs_py::varnames, "Return list of variable names in order (e.g. ['theta'])")
-        .def_readonly("var", &SelectionAttrs_py::var)
-        .def_readonly("min", &SelectionAttrs_py::min)
-        .def_readonly("max", &SelectionAttrs_py::max);
-
-    py::class_<WeightAttrs_py>(m, "WeightAttrs", py::module_local())
-        .def(py::init<py::kwargs>()); // Accept Python kwargs
-
-    py::class_<MeshAttrs_py>(m, "MeshAttrs", py::module_local())
-        .def(py::init<py::kwargs>());
-
-    py::class_<SplitAttrs_py>(m, "SplitAttrs", py::module_local())
-        .def(py::init<py::kwargs>())
-        .def_readonly("nsplits", &SplitAttrs_py::nsplits)
-        .def_readonly("size", &SplitAttrs_py::size);
-
-    m.def("setup_logging", &setup_logging, "Set the global logging level (debug, info, warn, error)");
+    register_attrs(m);
 
     m.def("count2", &count2_py, "Take particle positions and weights (numpy arrays), perform 2-pt counts on the GPU and return a numpy array",
         py::arg("particles1"),
