@@ -26,12 +26,54 @@ cpu      the portable CPU backend, raising if it cannot serve the request
 compare  run both and raise if they disagree
 """
 
+# The two backends accumulate in different orders (per-thread histograms on the
+# GPU, SIMD lanes + threads on the CPU), so bitwise equality is not the
+# contract; this is. One knob, applied everywhere compare mode compares.
+COMPARE_RTOL = float(os.environ.get('CUCOUNT_COMPARE_RTOL', 1e-9))
+
+CUDA_TUNING_KEYS = ('nthreads',)
+"""Tuning keys the CUDA backend accepts; kernel launch geometry is chosen by
+occupancy (CONFIGURE_KERNEL_LAUNCH) and is not exposed yet."""
+
 
 def _resolve_backend(backend=None):
     mode = (backend or os.environ.get('CUCOUNT_BACKEND') or 'cuda').lower()
     if mode not in BACKENDS:
         raise ValueError(f'backend must be one of {BACKENDS}, got {mode!r}')
     return mode
+
+
+def _resolve_tuning(mode, tuning, nthreads=1):
+    """Return (cuda_tuning, cpu_tuning) for the resolved backend mode.
+
+    ``tuning`` is a flat dict addressed to the selected backend; ``compare``
+    runs both backends, so there it must be nested as
+    ``{'cpu': {...}, 'cuda': {...}}``. Only the shape is checked here and the
+    CUDA keys (the CUDA call is assembled in this module); the CPU backend
+    rejects its own unknown keys by name.
+    """
+    tuning = dict(tuning or {})
+    if mode == 'compare':
+        unknown = set(tuning) - {'cuda', 'cpu'}
+        if unknown:
+            raise ValueError(
+                f"backend='compare' runs both backends, so tuning must be nested as "
+                f"{{'cpu': {{...}}, 'cuda': {{...}}}}; got extra keys {sorted(unknown)}")
+        cuda, cpu = dict(tuning.get('cuda') or {}), dict(tuning.get('cpu') or {})
+    elif mode == 'cuda':
+        cuda, cpu = tuning, {}
+    else:
+        cuda, cpu = {}, tuning
+    if nthreads != 1:
+        warnings.warn("nthreads= is deprecated: pass tuning={'nthreads': ...} instead "
+                      "(addressed to the selected backend, so it no longer only means GPUs)",
+                      DeprecationWarning, stacklevel=3)
+        cuda.setdefault('nthreads', nthreads)
+    unknown = set(cuda) - set(CUDA_TUNING_KEYS)
+    if unknown:
+        raise ValueError(f'CUDA backend tuning: unknown keys {sorted(unknown)}; accepted: {list(CUDA_TUNING_KEYS)} '
+                         '(kernel launch geometry is chosen by occupancy and is not exposed yet)')
+    return cuda, cpu
 
 
 def _dispatch(mode, cuda_call, cpu_call, why):
@@ -69,7 +111,7 @@ def _dispatch(mode, cuda_call, cpu_call, why):
     from numpy.testing import assert_allclose
 
     for key, want in reference.items():
-        assert_allclose(cpu[key], want, rtol=1e-9, atol=0,
+        assert_allclose(cpu[key], want, rtol=COMPARE_RTOL, atol=0,
                         err_msg=f'CPU and CUDA backends disagree on {key!r}')
     return reference
 
@@ -873,7 +915,8 @@ class Particles(object):
 
 
 def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None,
-           spattrs: SplitAttrs=None, mattrs: MeshAttrs=None, nthreads: int=1, backend: str=None):
+           spattrs: SplitAttrs=None, mattrs: MeshAttrs=None, nthreads: int=1, backend: str=None,
+           tuning: dict=None):
     """
     Perform two-point pair counts using the native cucount library.
 
@@ -897,10 +940,18 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     mattrs : MeshAttrs, optional
         Mesh attributes (periodic, cellsize). If None, defaults to MeshAttrs().
     nthreads : int, optional
-        Number of GPUs (within the same node) to run in parallel on.
+        Deprecated: number of GPUs (within the same node) to run in parallel on.
+        Use ``tuning={'nthreads': ...}`` instead.
     backend : str, optional
         Override the CUCOUNT_BACKEND environment variable for this call:
         'cuda' (default), 'cpu' or 'compare'. See BACKENDS.
+    tuning : dict, optional
+        Tuning options for the selected backend, passed through opaquely;
+        unknown keys are rejected by name. CUDA accepts ``nthreads`` (number of
+        GPUs); the CPU backend accepts ``nthreads`` (CPU threads), ``isa``
+        (e.g. 'AVX2', pinning Highway for this call) and ``scatter``
+        ('scalar' or 'binmajor'). With ``backend='compare'``, nest per backend:
+        ``{'cpu': {...}, 'cuda': {...}}``.
 
     Returns
     -------
@@ -916,13 +967,15 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     spattrs.check(*particles)
     if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
 
+    mode = _resolve_backend(backend)
+    cuda_tuning, cpu_tuning = _resolve_tuning(mode, tuning, nthreads=nthreads)
+
     def _cuda():
         cparticles = [cucountlib.cucount.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
-        return cucountlib.cucount.count2(*cparticles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=nthreads)
+        return cucountlib.cucount.count2(*cparticles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=cuda_tuning.get('nthreads', 1))
 
-    mode = _resolve_backend(backend)
     why = None if mode == 'cuda' else _cpu.unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs)
-    return _dispatch(mode, _cuda, lambda: _cpu.count2(particles, battrs, mattrs), why)
+    return _dispatch(mode, _cuda, lambda: _cpu.count2(particles, battrs, mattrs, tuning=cpu_tuning), why)
 
 
 def _get_ells(battrs):
@@ -1037,7 +1090,8 @@ def count3close(*particles: Particles,
                 mattrs2: MeshAttrs = None,
                 mattrs3: MeshAttrs = None,
                 close_pair: tuple = (1, 2),
-                nthreads: int = 1):
+                nthreads: int = 1,
+                tuning: dict = None):
     """
     Perform close-triplet counts using the native cucount library.
 
@@ -1094,7 +1148,11 @@ def count3close(*particles: Particles,
         It is generally best to choose the pair with the tightest
         angular selection.
     nthreads : int, optional
-        Number of GPUs (within the same node) to run in parallel on.
+        Deprecated: number of GPUs (within the same node) to run in parallel on.
+        Use ``tuning={'nthreads': ...}`` instead.
+    tuning : dict, optional
+        Tuning options for the (CUDA-only) backend; accepts ``nthreads``
+        (number of GPUs). Unknown keys are rejected by name.
 
     Returns
     -------
@@ -1106,6 +1164,8 @@ def count3close(*particles: Particles,
     """
     # the kernel clamps ell silently past ELLMAX -- fail loudly instead
     check_kernel_ells(battrs12, battrs13, battrs23)
+
+    cuda_tuning, _ = _resolve_tuning('cuda', tuning, nthreads=nthreads)
 
     _setup_cucount_logging()
     assert len(particles) == 3
@@ -1177,7 +1237,7 @@ def count3close(*particles: Particles,
         veto13=veto13,
         veto23=veto23,
         close_pair=close_pair,
-        nthreads=nthreads,
+        nthreads=cuda_tuning.get('nthreads', 1),
     )
 
 
@@ -1192,7 +1252,8 @@ def count3(*particles: Particles,
            mattrs1: MeshAttrs = None,
            mattrs2: MeshAttrs = None,
            mattrs3: MeshAttrs = None,
-           nthreads: int = 1):
+           nthreads: int = 1,
+           tuning: dict = None):
     """
     Perform factorized triplet counts using the native cucount library.
 
@@ -1228,7 +1289,11 @@ def count3(*particles: Particles,
     mattrs1, mattrs2, mattrs3 : MeshAttrs, optional
         Mesh attributes used for catalogs 1, 2, and 3.
     nthreads : int, optional
-        Number of GPUs within the same node to run in parallel on.
+        Deprecated: number of GPUs within the same node to run in parallel on.
+        Use ``tuning={'nthreads': ...}`` instead.
+    tuning : dict, optional
+        Tuning options for the (CUDA-only) backend; accepts ``nthreads``
+        (number of GPUs). Unknown keys are rejected by name.
 
     Returns
     -------
@@ -1237,6 +1302,8 @@ def count3(*particles: Particles,
     """
     # the kernel clamps ell silently past ELLMAX -- fail loudly instead
     check_kernel_ells(battrs12, battrs13)
+
+    cuda_tuning, _ = _resolve_tuning('cuda', tuning, nthreads=nthreads)
 
     _setup_cucount_logging()
     assert len(particles) == 3
@@ -1284,7 +1351,7 @@ def count3(*particles: Particles,
         sattrs13=sattrs13,
         veto12=veto12,
         veto13=veto13,
-        nthreads=nthreads,
+        nthreads=cuda_tuning.get('nthreads', 1),
     )
 
 

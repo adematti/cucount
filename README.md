@@ -2,7 +2,7 @@
 
 **cucount** is a high-performance CUDA implementation for computing pair counts (positions - spins), and triplet counts, optimized for GPUs. It provides both NumPy and JAX interfaces depending on your workflow.
 
-> ⚠️ A CUDA-capable GPU is required. An experimental CPU backend is available, but the package still requires CUDA.
+> ⚠️ A CUDA-capable GPU is required. An experimental CPU backend is available, but the package still requires CUDA at build and run time. (`-DCUCOUNT_BUILD_CUDA=OFF` skips the CUDA build and yields the standalone `cpucount` module only; the `cucount` Python API does not yet work without the CUDA module.)
 
 ---
 
@@ -46,14 +46,30 @@ positions2, weights2 = generate_catalog(rng, size)
 edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
 los = 'midpoint'
 
-# Compute pair counts, with 4 threads (i.e. on 4 GPU)
+# Compute pair counts, on 4 GPUs
 # If you want to go multi-node, MPI is a good option
 particles1 = Particles(positions1, weights1)
 particles2 = Particles(positions2, weights2)
 battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
-counts = count2(particles1, particles2, battrs=battrs, nthreads=4)
+counts = count2(particles1, particles2, battrs=battrs, tuning={'nthreads': 4})
 # counts is a dictionary with key "weight"
 ```
+
+### Tuning
+
+Backend tuning options go through the `tuning=` keyword as a flat dict addressed
+to the selected backend; unknown keys are rejected by name. The CUDA backend
+accepts `nthreads` (number of GPUs on the node; this replaces the deprecated
+`nthreads=` keyword). The CPU backend accepts `nthreads` (CPU threads), `isa`
+(pin a Highway target, e.g. `'AVX2'`) and `scatter` (`'scalar'` or `'binmajor'`):
+
+```python
+counts = count2(particles1, particles2, battrs=battrs, backend='cpu',
+                tuning={'nthreads': 32, 'isa': 'AVX2'})
+```
+
+`backend='compare'` runs both backends, so there the dict nests per backend:
+`tuning={'cpu': {...}, 'cuda': {...}}`.
 
 ### CPU Backend
 The `count2()` function in the NumPy API supports an experimental CPU backend:

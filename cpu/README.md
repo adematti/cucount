@@ -71,9 +71,14 @@ DEBUG  Time elapsed: 31.1 ms.          <- CUDA kernel only, from the C++ side
 
 Enable with `cucount.numpy.setup_logging(logging.INFO)` (or `DEBUG` for the
 per-phase split). Note the first CUDA call of a process includes context
-creation, which can add ~100 ms; warm it up before reading the ratio. `nthreads` keeps its existing meaning (number of GPUs), so the
-CPU backend takes its thread count from `CUCOUNT_CPU_NTHREADS`, defaulting to
-the number available in the affinity mask.
+creation, which can add ~100 ms; warm it up before reading the ratio.
+
+Per-call tuning goes through `count2(..., tuning={...})`, addressed to the
+selected backend: the CPU backend accepts `nthreads` (CPU threads), `isa`
+(pin one Highway target for the call) and `scatter`. Defaults remain
+`CUCOUNT_CPU_NTHREADS` (else the affinity mask), automatic ISA selection,
+and `'scalar'`. In `compare` mode the dict nests per backend:
+`tuning={'cpu': {...}, 'cuda': {...}}`.
 
 Requests the CPU backend cannot serve — theta/pole/k binning, angular mesh,
 bitwise or angular weights, spin, jackknife splits, selections — are declined

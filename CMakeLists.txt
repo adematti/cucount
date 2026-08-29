@@ -1,57 +1,78 @@
 cmake_minimum_required(VERSION 3.18)
-project(cucount LANGUAGES CUDA CXX)
+project(cucount LANGUAGES CXX)
+
+option(CUCOUNT_BUILD_CUDA "Build the CUDA backend (cucountlib.cucount and the JAX FFI module)" ON)
+option(CUCOUNT_BUILD_CPU "Build the CPU backend" ON)
 
 set(PYBIND11_FINDPYTHON ON)
 find_package(pybind11 CONFIG REQUIRED)
-set(CMAKE_CUDA_ARCHITECTURES 70 75 80)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 set(CMAKE_CXX_STANDARD 17)  # Use C++17
-enable_language(CUDA)
 
-pybind11_add_module(cucount src/cucount.cu src/common.cu src/logger.cu src/mesh.cu src/count2.cu src/count3close.cu src/count3.cu)
-target_include_directories(cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-set_target_properties(cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-target_link_libraries(cucount PRIVATE pybind11::module)
-set_target_properties(cucount PROPERTIES INSTALL_RPATH "$ORIGIN/lib")
-install(TARGETS cucount LIBRARY DESTINATION cucountlib PUBLIC_HEADER DESTINATION cucountlib)
+if(CUCOUNT_BUILD_CUDA)
+    # Overridable: CUDA 13 dropped compute_70, so builds against a recent
+    # toolkit must narrow this, e.g. -DCMAKE_CUDA_ARCHITECTURES=80.
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+        set(CMAKE_CUDA_ARCHITECTURES 70 75 80)
+    endif()
+    enable_language(CUDA)
 
-# Try to get XLA_DIR and set BUILD_FFI_CUCOUNT accordingly
-execute_process(
-  COMMAND "${Python_EXECUTABLE}"
-          "-c" "from jax import ffi; print(ffi.include_dir())"
-  OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE XLA_DIR
-  RESULT_VARIABLE XLA_RESULT
-)
-if(XLA_RESULT EQUAL 0)
-    message(STATUS "XLA include directory: ${XLA_DIR}")
-else()
-    message(STATUS "XLA include directory not found")
-endif()
+    pybind11_add_module(cucount src/cucount.cu src/common.cu src/logger.cu src/mesh.cu src/count2.cu src/count3close.cu src/count3.cu)
+    target_include_directories(cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+    set_target_properties(cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    target_link_libraries(cucount PRIVATE pybind11::module)
+    set_target_properties(cucount PROPERTIES INSTALL_RPATH "$ORIGIN/lib")
+    install(TARGETS cucount LIBRARY DESTINATION cucountlib PUBLIC_HEADER DESTINATION cucountlib)
 
-# Set BUILD_FFI_CUCOUNT default: ON if XLA_RESULT is 0 (success), else OFF
-if(DEFINED ENV{BUILD_FFI_CUCOUNT})
-    set(BUILD_FFI_CUCOUNT $ENV{BUILD_FFI_CUCOUNT})
-else()
+    # Try to get XLA_DIR and set BUILD_FFI_CUCOUNT accordingly
+    execute_process(
+      COMMAND "${Python_EXECUTABLE}"
+              "-c" "from jax import ffi; print(ffi.include_dir())"
+      OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE XLA_DIR
+      RESULT_VARIABLE XLA_RESULT
+    )
     if(XLA_RESULT EQUAL 0)
-        set(BUILD_FFI_CUCOUNT ON)
+        message(STATUS "XLA include directory: ${XLA_DIR}")
     else()
-        set(BUILD_FFI_CUCOUNT OFF)
+        message(STATUS "XLA include directory not found")
+    endif()
+
+    # Set BUILD_FFI_CUCOUNT default: ON if XLA_RESULT is 0 (success), else OFF
+    if(DEFINED ENV{BUILD_FFI_CUCOUNT})
+        set(BUILD_FFI_CUCOUNT $ENV{BUILD_FFI_CUCOUNT})
+    else()
+        if(XLA_RESULT EQUAL 0)
+            set(BUILD_FFI_CUCOUNT ON)
+        else()
+            set(BUILD_FFI_CUCOUNT OFF)
+        endif()
+    endif()
+
+    if(BUILD_FFI_CUCOUNT)
+        message(STATUS "Compilation of the JAX FFI module")
+        pybind11_add_module(ffi_cucount src/ffi_cucount.cu src/common.cu src/logger.cu src/mesh.cu src/count2.cu src/count3close.cu src/count3.cu)
+        target_include_directories(ffi_cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+        target_include_directories(ffi_cucount PUBLIC ${XLA_DIR})
+        set_target_properties(ffi_cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+        target_link_libraries(ffi_cucount PRIVATE pybind11::module)
+        set_target_properties(ffi_cucount PROPERTIES INSTALL_RPATH "$ORIGIN/lib")
+        install(TARGETS ffi_cucount LIBRARY DESTINATION cucountlib PUBLIC_HEADER DESTINATION cucountlib)
     endif()
 endif()
 
-if(BUILD_FFI_CUCOUNT)
-    message(STATUS "Compilation of the JAX FFI module")
-    pybind11_add_module(ffi_cucount src/ffi_cucount.cu src/common.cu src/logger.cu src/mesh.cu src/count2.cu src/count3close.cu src/count3.cu)
-    target_include_directories(ffi_cucount PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-    target_include_directories(ffi_cucount PUBLIC ${XLA_DIR})
-    set_target_properties(ffi_cucount PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-    target_link_libraries(ffi_cucount PRIVATE pybind11::module)
-    set_target_properties(ffi_cucount PROPERTIES INSTALL_RPATH "$ORIGIN/lib")
-    install(TARGETS ffi_cucount LIBRARY DESTINATION cucountlib PUBLIC_HEADER DESTINATION cucountlib)
-endif()
-
-option(CUCOUNT_BUILD_CPU "Build the CPU backend" ON)
 if(CUCOUNT_BUILD_CPU)
     add_subdirectory(cpu)
     install(TARGETS cpucount LIBRARY DESTINATION cucountlib)
+endif()
+
+if(NOT CUCOUNT_BUILD_CUDA AND NOT CUCOUNT_BUILD_CPU)
+    message(FATAL_ERROR "Both CUCOUNT_BUILD_CUDA and CUCOUNT_BUILD_CPU are OFF: nothing to build")
+endif()
+
+if(NOT CUCOUNT_BUILD_CUDA)
+    # cucount.numpy still imports cucountlib.cucount eagerly (the Attrs types
+    # are pybind classes of the CUDA module), so a CUDA-less build serves the
+    # CPU backend through `import cpucount` only. Lifting that is the
+    # backend-neutral Attrs extraction, tracked in the convergence roadmap.
+    message(STATUS "CUDA backend disabled: only the standalone cpucount module will be importable")
 endif()

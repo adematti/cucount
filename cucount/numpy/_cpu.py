@@ -23,6 +23,15 @@ logger = logging.getLogger('cucount')
 _LOS = {'z': 'z', 'midpoint': 'midpoint'}
 
 
+TUNING_KEYS = ('nthreads', 'isa', 'scatter')
+"""Tuning keys the CPU backend accepts through the public tuning= keyword.
+
+nthreads  CPU threads (default: CUCOUNT_CPU_NTHREADS, else the affinity mask)
+isa       Highway target to pin for this call, e.g. 'AVX2' (default: automatic)
+scatter   'scalar' (default) or 'binmajor' accumulation strategy
+"""
+
+
 def available():
     return cpucount is not None
 
@@ -31,6 +40,15 @@ def nthreads():
     """CPU threads, which is not what cucount's nthreads means (that is GPUs)."""
     n = os.environ.get('CUCOUNT_CPU_NTHREADS')
     return int(n) if n else len(os.sched_getaffinity(0))
+
+
+def _check_tuning(tuning):
+    """Validate the tuning dict, rejecting unknown keys by name."""
+    tuning = dict(tuning or {})
+    unknown = set(tuning) - set(TUNING_KEYS)
+    if unknown:
+        raise ValueError(f'CPU backend tuning: unknown keys {sorted(unknown)}; accepted: {list(TUNING_KEYS)}')
+    return tuning
 
 
 def _bin_kind(edges):
@@ -84,8 +102,10 @@ def unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs):
     return None
 
 
-def count2(particles, battrs, mattrs):
+def count2(particles, battrs, mattrs, tuning=None):
     """Run count2 on the CPU backend. Caller must have checked unsupported()."""
+    tuning = _check_tuning(tuning)
+
     def arrays(p):
         w = p.get('individual_weight')
         w = np.ascontiguousarray(w[0], dtype=float) if w else np.ones(p.size)
@@ -103,13 +123,24 @@ def count2(particles, battrs, mattrs):
     boxsize = np.asarray(mattrs.boxsize, dtype=float)
     origin = np.asarray(mattrs.boxcenter, dtype=float) - boxsize / 2.
 
-    counts, (mesh_seconds, pair_seconds) = cpucount.count2(
-        pos1, w1, pos2, w2, sedges,
-        muedges=muedges,
-        boxsize=tuple(boxsize), origin=tuple(origin),
-        bin=_bin_kind(sedges), los=los,
-        periodic=bool(mattrs.periodic), nthreads=nthreads(),
-        return_timings=True)
+    isa = tuning.get('isa')
+    if isa is not None and cpucount.set_target(isa) is None:
+        cpucount.set_target('')
+        raise ValueError(f'CPU backend tuning: ISA {isa!r} unknown or unavailable; '
+                         f'available: {cpucount.available_targets()}')
+    try:
+        counts, (mesh_seconds, pair_seconds) = cpucount.count2(
+            pos1, w1, pos2, w2, sedges,
+            muedges=muedges,
+            boxsize=tuple(boxsize), origin=tuple(origin),
+            bin=_bin_kind(sedges), los=los,
+            periodic=bool(mattrs.periodic),
+            scatter=str(tuning.get('scatter', 'scalar')),
+            nthreads=int(tuning.get('nthreads') or nthreads()),
+            return_timings=True)
+    finally:
+        if isa is not None:
+            cpucount.set_target('')
     # The mesh build is still serial, so its share grows with thread count.
     logger.debug('cpu backend: mesh %.1f ms, pairs %.1f ms',
                  mesh_seconds * 1e3, pair_seconds * 1e3)

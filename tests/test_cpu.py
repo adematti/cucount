@@ -378,3 +378,52 @@ def test_float32_close_to_double(ndim):
     # Single precision moves pairs across bin edges, so compare loosely and
     # scale the floor to the typical bin population.
     assert np.allclose(f32, f64, rtol=2e-2, atol=1e-2 * f64.mean())
+
+
+# ---------------------------------------------------------------------------
+# Tuning plumbing: flat dict addressed to the selected backend, unknown keys
+# rejected by name, nested form for compare mode.
+# ---------------------------------------------------------------------------
+
+def test_tuning_unknown_keys_rejected():
+    particles, battrs, mattrs, _, _ = setup('lin', 1, 'z', True)
+    kw = dict(battrs=battrs, mattrs=mattrs)
+    with pytest.raises(ValueError, match='bogus'):
+        count2(*particles, backend='cpu', tuning={'bogus': 1}, **kw)
+    # The CUDA key check runs before any kernel launch, so it needs no GPU.
+    with pytest.raises(ValueError, match='isa'):
+        count2(*particles, backend='cuda', tuning={'isa': 'AVX2'}, **kw)
+    # compare mode runs both backends, so a flat dict is ambiguous there.
+    with pytest.raises(ValueError, match='nested'):
+        count2(*particles, backend='compare', tuning={'nthreads': 2}, **kw)
+
+
+def test_tuning_does_not_change_results():
+    particles, battrs, mattrs, _, _ = setup('lin', 2, 'midpoint', True)
+    kw = dict(battrs=battrs, mattrs=mattrs, backend='cpu')
+    want = count2(*particles, **kw)['weight']
+    got = count2(*particles, tuning={'nthreads': 2, 'scatter': 'binmajor'}, **kw)['weight']
+    assert np.allclose(got, want, rtol=1e-12, atol=0)
+
+
+def test_tuning_isa_pins_and_restores():
+    cpucount = _cpu.cpucount
+    particles, battrs, mattrs, _, _ = setup('lin', 1, 'z', True)
+    kw = dict(battrs=battrs, mattrs=mattrs, backend='cpu')
+    before = cpucount.current_target()
+    want = count2(*particles, **kw)['weight']
+    # The narrowest attainable target is always compiled in, so it is a safe pin.
+    isa = cpucount.available_targets()[-1]
+    got = count2(*particles, tuning={'isa': isa}, **kw)['weight']
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+    # Automatic selection must be restored after the call, error or not.
+    assert cpucount.current_target() == before
+    with pytest.raises(ValueError, match='unknown or unavailable'):
+        count2(*particles, tuning={'isa': 'NOT_AN_ISA'}, **kw)
+    assert cpucount.current_target() == before
+
+
+def test_nthreads_keyword_deprecated():
+    particles, battrs, mattrs, _, _ = setup('lin', 1, 'z', True)
+    with pytest.warns(DeprecationWarning, match='tuning'):
+        count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu', nthreads=2)
