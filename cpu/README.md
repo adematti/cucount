@@ -112,6 +112,20 @@ by name, so it never silently computes something different.
 pytest tests/test_cpu.py -q                       # correctness
 ```
 
+Performance regressions across kernel changes are checked with
+[bench.py](bench.py) (kernel-only timings on fixed synthetic catalogues;
+run once per build and compare the JSONs):
+
+```bash
+python cpu/bench.py --save base.json      # on the baseline build
+python cpu/bench.py --against base.json   # on the candidate build
+```
+
+The BinMajor row doubles as the control: it shows the noise floor of the
+measurement on that node. The dead-branch lesson is worth keeping: a
+never-taken runtime branch in the inner loop cost the plain path 2-8%
+until it became the compile-time ScalarTail split.
+
 `tests/test_cpu.py` drives the backend through the public numpy API, checking
 the full config matrix against both a numpy O(N^2) reference and the CUDA
 backend, plus thread-count invariance, cross-ISA agreement, and the scatter
