@@ -16,72 +16,6 @@
 namespace py = pybind11;
 
 
-static bool is_contiguous(py::array array) {
-    return array.flags() & py::array::c_style;
-}
-
-
-
-// Expose the Particles struct to Python
-// NB: We could have made this more Pythonic, with arguments "spin_values", "individual_weights", "bitwise_weights", etc.
-// But for simplicity, and given we also have ffi_count.cu, let's differ this to pure Python
-struct Particles_py {
-    py::array_t<FLOAT> positions;
-    py::array_t<FLOAT> values; // Optional spin values array
-    IndexValue index_value;
-
-    // Single constructor accepting optional sky_coords and spin_values (can be None)
-    Particles_py(py::array_t<FLOAT> positions_, py::array_t<FLOAT> values_ = py::none(),
-        const int size_split = 0, const int size_spin = 0, const int size_individual_weight = 0, const int size_bitwise_weight = 0, const int size_negative_weight = 0)
-        : positions(positions_), values(py::array_t<FLOAT>()) {
-
-        this->index_value = get_index_value(size_split, size_spin, size_individual_weight, size_bitwise_weight, size_negative_weight);
-        //printf("%d %d %d %d\n", this->index_value.start_spin, this->index_value.size_spin, this->index_value.start_individual_weight, this->index_value.size_individual_weight);
-
-        // Ensure positions are C-contiguous
-        if (!is_contiguous(this->positions)) this->positions = py::array_t<FLOAT>(this->positions.attr("copy")());
-        size_t npositions = this->positions.shape(0);
-
-        if (this->index_value.size) {
-            if (py::isinstance<py::none>(values_)) {
-                throw std::invalid_argument(
-                    "Particles_py: non-trivial values are indicated with size_*, but input values are empty");
-            }
-            auto array = py::cast<py::array_t<FLOAT>>(values_);
-            if (!is_contiguous(array)) array = py::array_t<FLOAT>(array.attr("copy")());
-            if (array.shape(0) != npositions) {
-                throw std::invalid_argument(
-                    "Particles_py: positions and values must have the same length, but got positions.shape(0) = " +
-                    std::to_string(npositions) + " and values.shape(0) = " + std::to_string(array.shape(0))
-                );
-            }
-            if (array.shape(1) < this->index_value.size) {
-                throw std::invalid_argument(
-                    "Particles_py: expected values with values.shape(1) >= " +
-                    std::to_string(this->index_value.size) + " but only got values.shape(1) = " + std::to_string(array.shape(1))
-                );
-            }
-            this->values = array;
-        }
-
-    }
-
-    // Method to get the number of particles automatically
-    size_t size() const {
-        return positions.shape(0);
-    }
-
-    Particles data() {
-        Particles particles;
-        particles.index_value = index_value;
-        particles.size = size();
-        particles.positions = positions.mutable_data();
-        if (values.data() != nullptr) particles.values = values.mutable_data();
-        return particles;
-    }
-};
-
-
 py::object count2_py(Particles_py& particles1, Particles_py& particles2,
                      MeshAttrs_py mattrs_py, BinAttrs_py battrs_py, WeightAttrs_py wattrs_py = WeightAttrs_py(),
                      const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
@@ -649,19 +583,6 @@ py::object count3_py(
 
 // Bind the function and structs to Python
 PYBIND11_MODULE(cucount, m) {
-    py::class_<Particles_py>(m, "Particles", py::module_local())
-    .def(py::init<py::array_t<FLOAT>, py::array_t<FLOAT>, int, int, int, int, int>(),
-         py::arg("positions"),
-         py::arg("values") = py::none(),
-         py::arg("size_split") = 0,
-         py::arg("size_spin") = 0,
-         py::arg("size_individual_weight") = 0,
-         py::arg("size_bitwise_weight") = 0,
-         py::arg("size_negative_weight") = 0)
-    .def_property_readonly("size", &Particles_py::size)
-    .def_readonly("positions", &Particles_py::positions)
-    .def_readonly("values", &Particles_py::values)
-    .def_readonly("index_value", &Particles_py::index_value);
 
     register_attrs(m);
 

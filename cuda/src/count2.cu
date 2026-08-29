@@ -12,6 +12,8 @@
 using cucount::pairmath::set_legendre;
 using cucount::pairmath::get_bessel;
 using cucount::pairmath::compute_spin_projection_cartesian;
+using cucount::pairmath::compute_pair_mu;
+using cucount::pairmath::pair_bitwise_weight;
 
 
 __device__ __constant__ SplitAttrs device_spattrs;
@@ -26,38 +28,6 @@ DEFINE_ANGULAR_WEIGHT
 // Layout helpers
 // ============================================================================
 
-size_t get_count2_weight_names(
-    IndexValue index_value1,
-    IndexValue index_value2,
-    char names[][SIZE_NAME])
-{
-    int s1 = (index_value1.size_spin > 0);
-    int s2 = (index_value2.size_spin > 0);
-    size_t n = 1 + s1 + s2;
-
-    if (names == NULL) {
-        return n;
-    }
-
-    for (size_t i = 0; i < MAX_NWEIGHT; ++i) {
-        names[i][0] = '\0';
-    }
-
-    if (s1 && s2) {
-        strncpy(names[0], "weight_plus_plus", SIZE_NAME - 1);
-        strncpy(names[1], "weight_plus_cross", SIZE_NAME - 1);
-        strncpy(names[2], "weight_cross_cross", SIZE_NAME - 1);
-    }
-    else if (s1 ^ s2) {
-        strncpy(names[0], "weight_plus", SIZE_NAME - 1);
-        strncpy(names[1], "weight_cross", SIZE_NAME - 1);
-    }
-    else {
-        strncpy(names[0], "weight", SIZE_NAME - 1);
-    }
-
-    return n;
-}
 
 
 size_t fill_ells(const BinAttrs *battrs, int index, size_t *ells)
@@ -274,68 +244,19 @@ __device__ inline void add_weight2(
     }
 
     if (REQUIRED_MU2 || REQUIRED_MU) {
-        FLOAT d = 0.;
-
-        if (los == LOS_FIRSTPOINT) {
-            d = dot(diff, sposition1);
-
-            if (REQUIRED_MU) {
-                mu = d / s;
-            }
-            else {
-                mu2 = (d * d) / s2;
-            }
-        }
-        else if (los == LOS_ENDPOINT) {
-            d = dot(diff, sposition2);
-
-            if (REQUIRED_MU) {
-                mu = d / s;
-            }
-            else {
-                mu2 = (d * d) / s2;
-            }
-        }
-        else if (los == LOS_MIDPOINT) {
-            FLOAT vlos[NDIM];
-            addition(vlos, position1, position2);
-
-            d = dot(diff, vlos);
-
-            if (REQUIRED_MU) {
-                mu = d / sqrt(dot(vlos, vlos)) / s;
-            }
-            else {
-                mu2 = d * d / dot(vlos, vlos) / s2;
-            }
-        }
-        else {
-            if (los == LOS_X) {
-                d = diff[0];
-            }
-            else if (los == LOS_Y) {
-                d = diff[1];
-            }
-            else if (los == LOS_Z) {
-                d = diff[2];
-            }
-
-            if (REQUIRED_MU) {
-                mu = d / s;
-            }
-            else {
-                mu2 = (d * d) / s2;
-            }
-        }
-
-        if (REQUIRED_MU) {
-            mu2 = mu * mu;
-        }
-
-        if (s2 == 0) {
-            mu = 0.;
-            mu2 = 0.;
-        }
+        // Shared with the CPU backend (pair_math.h); lifted verbatim.
+        compute_pair_mu(
+            diff,
+            sposition1,
+            sposition2,
+            position1,
+            position2,
+            los,
+            s,
+            s2,
+            (bool)REQUIRED_MU,
+            &mu,
+            &mu2);
     }
 
     size_t ibin = 0;
@@ -385,44 +306,15 @@ __device__ inline void add_weight2(
         pair_weight *= value2[index_value2.start_individual_weight];
     }
 
-    BitwiseWeight bitwise = wattrs.bitwise;
-
     if (index_value1.size_bitwise_weight &&
         index_value2.size_bitwise_weight) {
-        FLOAT pair_bweight = bitwise.default_value;
-
-        int nbits = bitwise.noffset;
-        int nbits1 = 0;
-        int nbits2 = 0;
-
-        for (size_t iweight = 0;
-             iweight < index_value1.size_bitwise_weight;
-             iweight++) {
-            INT bweight1 =
-                *((INT *) &(value1[index_value1.start_bitwise_weight + iweight]));
-
-            INT bweight2 =
-                *((INT *) &(value2[index_value2.start_bitwise_weight + iweight]));
-
-            nbits += POPCOUNT(bweight1 & bweight2);
-
-            if (bitwise.p_nbits) {
-                nbits1 += POPCOUNT(bweight1);
-                nbits2 += POPCOUNT(bweight2);
-            }
-        }
-
-        if (nbits != 0) {
-            pair_bweight = bitwise.nrealizations / nbits;
-
-            if (bitwise.p_nbits) {
-                pair_bweight /=
-                    bitwise.p_correction_nbits[
-                        nbits1 * bitwise.p_nbits + nbits2];
-            }
-        }
-
-        pair_weight *= pair_bweight;
+        // Shared with the CPU backend (pair_math.h); lifted verbatim.
+        pair_weight *= pair_bitwise_weight(
+            value1,
+            value2,
+            index_value1,
+            index_value2,
+            wattrs.bitwise);
     }
 
     {

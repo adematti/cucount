@@ -5,36 +5,6 @@
 #include "common.h"
 
 
-IndexValue get_index_value(int size_split, int size_spin, int size_individual_weight, int size_bitwise_weight, int size_negative_weight) {
-    // To check/modify when adding new weighting scheme
-    IndexValue index_value = {0};  // sets everything to 0
-    if (size_split) {
-        index_value.start_split = index_value.size;
-        index_value.size_split = size_split;
-        index_value.size += size_split;
-    }
-    if (size_spin) {
-        index_value.start_spin = index_value.size;
-        index_value.size_spin = size_spin;
-        index_value.size += size_spin;
-    }
-    if (size_individual_weight) {
-        index_value.start_individual_weight = index_value.size;
-        index_value.size_individual_weight = size_individual_weight;
-        index_value.size += size_individual_weight;
-    }
-    if (size_bitwise_weight) {
-        index_value.start_bitwise_weight = index_value.size;
-        index_value.size_bitwise_weight = size_bitwise_weight;
-        index_value.size += size_bitwise_weight;
-    }
-    if (size_negative_weight) {
-        index_value.start_negative_weight = index_value.size;
-        index_value.size_negative_weight = size_negative_weight;
-        index_value.size += size_negative_weight;
-    }
-    return index_value;
-}
 
 
 // Wrapper for calloc with error handling

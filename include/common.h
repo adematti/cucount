@@ -6,17 +6,20 @@
 #include <cuda.h>
 #endif
 
-#ifndef _CUCOUNT_COMMON_
-#define _CUCOUNT_COMMON_
-
+// Convenience macros live OUTSIDE the include guard: pair_math.h undefines
+// them at its end for CUDA-free SIMD translation units, and a later include
+// of this header must restore them (identical redefinition is well-formed).
 #define FLOAT double
 #define INT long
 #define POPCOUNT __popcll
-#define NDIM 3
-
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))  // maximum of two numbers
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))  // minimum of two numbers
 #define CLIP(x, low, high)  (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))  // min(max(a, low), high)
+
+#ifndef _CUCOUNT_COMMON_
+#define _CUCOUNT_COMMON_
+
+#define NDIM 3
 #define MAX_NMESH 3  // 3-pt correlation function at maximum
 #define MAX_NBIN 3  // maximum number of binning dimensions
 #define MAX_POLE 8
@@ -170,7 +173,38 @@ struct DeviceMemoryBuffer {
 };
 
 
-IndexValue get_index_value(int size_split, int size_spin, int size_individual_weight, int size_bitwise_weight, int size_negative_weight);
+// Inline (rather than defined in a CUDA-linked TU) so the CUDA-free
+// extensions can build Particles too.
+inline IndexValue get_index_value(int size_split, int size_spin, int size_individual_weight, int size_bitwise_weight, int size_negative_weight) {
+    // To check/modify when adding new weighting scheme
+    IndexValue index_value = {0};  // sets everything to 0
+    if (size_split) {
+        index_value.start_split = index_value.size;
+        index_value.size_split = size_split;
+        index_value.size += size_split;
+    }
+    if (size_spin) {
+        index_value.start_spin = index_value.size;
+        index_value.size_spin = size_spin;
+        index_value.size += size_spin;
+    }
+    if (size_individual_weight) {
+        index_value.start_individual_weight = index_value.size;
+        index_value.size_individual_weight = size_individual_weight;
+        index_value.size += size_individual_weight;
+    }
+    if (size_bitwise_weight) {
+        index_value.start_bitwise_weight = index_value.size;
+        index_value.size_bitwise_weight = size_bitwise_weight;
+        index_value.size += size_bitwise_weight;
+    }
+    if (size_negative_weight) {
+        index_value.start_negative_weight = index_value.size;
+        index_value.size_negative_weight = size_negative_weight;
+        index_value.size += size_negative_weight;
+    }
+    return index_value;
+}
 
 void* my_device_malloc(size_t nbytes, DeviceMemoryBuffer* buffer);
 

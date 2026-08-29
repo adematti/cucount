@@ -49,8 +49,9 @@ EDGES = {
 
 # LOS is meaningless without a mu axis, so only one variant is built for 1D.
 MATRIX = [c for c in itertools.product(['lin', 'log', 'edges'], [1, 2],
-                                       ['z', 'midpoint'], [False, True])
-          if not (c[1] == 1 and c[2] == 'midpoint')]
+                                       ['z', 'midpoint', 'firstpoint',
+                                        'endpoint', 'x'], [False, True])
+          if not (c[1] == 1 and c[2] != 'z')]
 MATRIX_IDS = [f'{k}-{n}d-{los}-{"per" if p else "nonper"}' for k, n, los, p in MATRIX]
 
 
@@ -82,6 +83,16 @@ def brute(pos1, w1, pos2, w2, sedges, muedges=None, los='z', periodic=False):
 
     if los == 'z':
         num, den = d[..., 2], s
+    elif los == 'x':
+        num, den = d[..., 0], s
+    elif los == 'firstpoint':
+        r1 = pos1 / np.linalg.norm(pos1, axis=1, keepdims=True)
+        num = (d * r1[:, None, :]).sum(-1)
+        den = s
+    elif los == 'endpoint':
+        r2 = pos2 / np.linalg.norm(pos2, axis=1, keepdims=True)
+        num = (d * r2[None, :, :]).sum(-1)
+        den = s
     else:  # midpoint: los = p1 + p2
         ell = pos2[None, :, :] + pos1[:, None, :]
         num = (d * ell).sum(-1)
@@ -247,14 +258,19 @@ def test_simd_targets_agree():
             f'{name} disagrees with {reached[0]}'
 
 
-@pytest.mark.parametrize('kind', ['lin', 'log', 'edges'])
-def test_bin_kind_inference(kind):
-    """The shim must not claim a fast policy for edges that are not regular."""
-    assert _cpu._bin_kind(EDGES[kind]) == kind
-    # A linear array perturbed past the tolerance has to fall back to generic.
-    perturbed = EDGES['lin'].copy()
-    perturbed[5] += 1e-3
-    assert _cpu._bin_kind(perturbed) == 'edges'
+def test_irregular_edges_still_served():
+    """A near-linear grid perturbed past tolerance must take the generic
+    policy (the classification now happens in the C++ lowering)."""
+    pos1, w1 = catalog(1)
+    pos2, w2 = catalog(2)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    sedges = EDGES['lin'].copy()
+    sedges[5] += 1e-3
+    battrs = BinAttrs(s=sedges)
+    mattrs = MeshAttrs(*particles, boxsize=BOX, battrs=battrs, periodic=True)
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    want = brute(pos1, w1, pos2, w2, sedges, periodic=True)
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
 
 
 def test_unsupported_is_declined_by_name():
@@ -269,7 +285,7 @@ def test_unsupported_is_declined_by_name():
         assert 'weight' in count2(p, p, battrs=battrs, mattrs=mattrs, backend='cuda')
 
 
-UNSUPPORTED = ['rp-pi binning', 'los x', 'los firstpoint', 'non-linear mu',
+UNSUPPORTED = ['rp-pi binning', 'non-linear mu',
                'angular mesh', 'theta selection', 'jackknife splits',
                'spin components', 'bitwise weights', 'negative weights',
                'angular weights']
@@ -287,10 +303,6 @@ def _unsupported_request(feature, n=200):
         kw['battrs'] = BinAttrs(rp=(np.linspace(1.0, 50.0, 11), 'z'),
                                 pi=(np.linspace(1.0, 50.0, 11), 'z'))
         match = 'rp'
-    elif feature in ('los x', 'los firstpoint'):
-        los = feature.split()[1]
-        kw['battrs'] = BinAttrs(s=EDGES['lin'], mu=(MU, los))
-        match = 'line of sight'
     elif feature == 'non-linear mu':
         kw['battrs'] = BinAttrs(s=EDGES['lin'],
                                 mu=(np.array([-1.0, -0.5, 0.8, 1.0]), 'z'))
@@ -382,8 +394,8 @@ def test_scatter_strategies_agree(kind, ndim):
     sedges = EDGES[kind]
     kw = dict(muedges=MU if ndim == 2 else None, boxsize=(BOX,) * 3,
               bin=kind, periodic=True, nthreads=4)
-    a = cpucount.count2(pos1, w1, pos2, w2, sedges, scatter='scalar', **kw)
-    b = cpucount.count2(pos1, w1, pos2, w2, sedges, scatter='binmajor', **kw)
+    a = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, scatter='scalar', **kw)
+    b = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, scatter='binmajor', **kw)
     assert np.allclose(a, b, rtol=1e-12, atol=0)
 
 
@@ -395,8 +407,8 @@ def test_float32_close_to_double(ndim):
     sedges = EDGES['lin']
     kw = dict(muedges=MU if ndim == 2 else None, boxsize=(BOX,) * 3,
               periodic=True, nthreads=4)
-    f64 = cpucount.count2(pos1, w1, pos2, w2, sedges, float32=False, **kw)
-    f32 = cpucount.count2(pos1, w1, pos2, w2, sedges, float32=True, **kw)
+    f64 = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, float32=False, **kw)
+    f32 = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, float32=True, **kw)
     # Single precision moves pairs across bin edges, so compare loosely and
     # scale the floor to the typical bin population.
     assert np.allclose(f32, f64, rtol=2e-2, atol=1e-2 * f64.mean())

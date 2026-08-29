@@ -23,17 +23,25 @@ Or as part of the root project: `cmake -S . -B build -DCUCOUNT_BUILD_CPU=ON`.
 
 ## Use
 
+`cpucount.count2` mirrors `cucountlib.cucount.count2`: it takes the same
+`Particles`, `MeshAttrs`, `BinAttrs`, `WeightAttrs`, ... objects (from any of
+the extensions -- pybind's foreign module_local loading casts them across) and
+returns the same dict of named, shaped channels. The lowering to the kernel
+(bin-policy classification, LOS mapping, packed-value columns) happens in C++
+in `src/bind.cpp`:
+
 ```python
-import cpucount
-counts = cpucount.count2(pos1, w1, pos2, w2, sedges,
-                         muedges=None,          # None -> 1D in s
-                         boxsize=(1000.,)*3,
-                         bin='lin',             # 'lin' | 'log' | 'edges'
-                         los='z',               # 'z' | 'midpoint'
-                         periodic=True, float32=False,
-                         scatter='scalar',      # 'scalar' | 'binmajor'
-                         nthreads=16)
+from cucountlib import cpucount
+counts = cpucount.count2(particles1, particles2, mattrs, battrs,
+                         nthreads=16,           # CPU threads
+                         float32=False,
+                         scatter='scalar')      # 'scalar' | 'binmajor'
+# counts is {'weight': array} -- or the spin channels, named as CUDA names them
 ```
+
+A low-level raw-array entry point, `cpucount.count2_arrays`, keeps the old
+`(pos1, w1, pos2, w2, sedges, ...)` signature for tests and benchmarks that
+want to bypass the attrs layer.
 
 Every ordered pair is visited, matching the CUDA backend: an autocorrelation
 counts each pair twice and includes self-pairs.
@@ -82,7 +90,7 @@ and `'scalar'`. In `compare` mode the dict nests per backend:
 `tuning={'cpu': {...}, 'cuda': {...}}`.
 
 Requests the CPU backend cannot serve — theta/pole/k binning, angular mesh,
-bitwise or angular weights, spin, jackknife splits, selections — are declined
+bitwise or angular weights, jackknife splits, selections — are declined
 by name, so it never silently computes something different.
 
 ## Verify
@@ -98,8 +106,9 @@ and precision axes that the public API does not expose.
 
 ## Scope
 
-Covered: `s` and `(s, mu)` binning; linear, log and arbitrary edges; `z` and
-midpoint LOS; periodic and non-periodic; `float`/`double`; per-object weights;
+Covered: `s` and `(s, mu)` binning; linear, log and arbitrary edges; every
+LOS (`z`, `x`, `y`, midpoint, firstpoint, endpoint); periodic and
+non-periodic; `float`/`double`; per-object weights;
 spin/shear (galaxy-shear and shear-shear channels, via the scalar projection
 shared with CUDA in `include/pair_math.h` — the SIMD distance cull is
 unchanged and surviving lanes take the shared per-pair math).

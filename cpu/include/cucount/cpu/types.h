@@ -13,7 +13,10 @@ namespace cpu {
 // Mirrors BIN_LIN / BIN_LOG / BIN_CUSTOM in include/common.h.
 enum class BinKind { Linear, Log, Edges };
 
-enum class LosKind { AxisZ, Midpoint };
+// Full parity with the CUDA LOS_TYPE choices (minus LOS_NONE).
+// FirstPoint/EndPoint project on the unit-sphere position of particle 1 / 2,
+// so those two need spositions carried through the mesh.
+enum class LosKind { AxisZ, AxisX, AxisY, Midpoint, FirstPoint, EndPoint };
 
 enum class ScatterKind { Scalar, BinMajor };
 

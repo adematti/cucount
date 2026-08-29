@@ -223,6 +223,16 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                             const auto z1 = hn::Set(d, m1.z[i]);
                             const auto w1 = hn::Set(d, m1.w[i]);
 
+                            // FirstPoint LOS: particle 1's unit-sphere
+                            // position is constant across the j vector.
+                            auto sx1 = hn::Zero(d), sy1 = hn::Zero(d),
+                                 sz1 = hn::Zero(d);
+                            if constexpr (LOS == LosKind::FirstPoint) {
+                                sx1 = hn::Set(d, m1.sx[i]);
+                                sy1 = hn::Set(d, m1.sy[i]);
+                                sz1 = hn::Set(d, m1.sz[i]);
+                            }
+
                             Float r1v[3] = {0, 0, 0};
                             Float e1v[2] = {0, 0};
                             if (has_spin) {
@@ -273,6 +283,28 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                                     hn::VFromD<decltype(d)> den;
                                     if constexpr (LOS == LosKind::AxisZ) {
                                         num = dz;
+                                        den = s;
+                                    } else if constexpr (LOS ==
+                                                         LosKind::AxisX) {
+                                        num = dx;
+                                        den = s;
+                                    } else if constexpr (LOS ==
+                                                         LosKind::AxisY) {
+                                        num = dy;
+                                        den = s;
+                                    } else if constexpr (LOS ==
+                                                         LosKind::FirstPoint) {
+                                        num = dx * sx1 + dy * sy1 + dz * sz1;
+                                        den = s;
+                                    } else if constexpr (LOS ==
+                                                         LosKind::EndPoint) {
+                                        const auto sx2 =
+                                            hn::LoadN(d, &m2.sx[j], n);
+                                        const auto sy2 =
+                                            hn::LoadN(d, &m2.sy[j], n);
+                                        const auto sz2 =
+                                            hn::LoadN(d, &m2.sz[j], n);
+                                        num = dx * sx2 + dy * sy2 + dz * sz2;
                                         den = s;
                                     } else {
                                         // Midpoint: los = p1 + p2, so
@@ -448,9 +480,19 @@ template <class Float, int NDim, class SBin>
 static void DispatchLos(const Count2Args& a, const Mesh<Float>& m1,
                         const Mesh<Float>& m2, const BinSpec<Float>& sb,
                         const BinSpec<Float>& mb) {
-    // With ndim == 1 there is no mu, so only one LOS instantiation is built.
+    // With ndim == 1 there is no mu, so AxisZ stands in for every LOS.
     if (NDim == 1 || a.cfg.los == LosKind::AxisZ) {
         DispatchPeriodic<Float, NDim, SBin, LosKind::AxisZ>(a, m1, m2, sb, mb);
+    } else if (a.cfg.los == LosKind::AxisX) {
+        DispatchPeriodic<Float, NDim, SBin, LosKind::AxisX>(a, m1, m2, sb, mb);
+    } else if (a.cfg.los == LosKind::AxisY) {
+        DispatchPeriodic<Float, NDim, SBin, LosKind::AxisY>(a, m1, m2, sb, mb);
+    } else if (a.cfg.los == LosKind::FirstPoint) {
+        DispatchPeriodic<Float, NDim, SBin, LosKind::FirstPoint>(a, m1, m2, sb,
+                                                                 mb);
+    } else if (a.cfg.los == LosKind::EndPoint) {
+        DispatchPeriodic<Float, NDim, SBin, LosKind::EndPoint>(a, m1, m2, sb,
+                                                               mb);
     } else {
         DispatchPeriodic<Float, NDim, SBin, LosKind::Midpoint>(a, m1, m2, sb, mb);
     }
@@ -500,7 +542,10 @@ static void DispatchNDim(const Count2Args& a) {
 
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
-    const bool with_spos = (a.spin1 != nullptr) || (a.spin2 != nullptr);
+    const bool with_spos =
+        (a.spin1 != nullptr) || (a.spin2 != nullptr) ||
+        (a.cfg.ndim == 2 && (a.cfg.los == LosKind::FirstPoint ||
+                             a.cfg.los == LosKind::EndPoint));
     const Mesh<Float> m1 = build_mesh<Float>(a.pos1, a.w1, a.n1, a.boxsize,
                                              a.origin, dims, a.spin1, with_spos);
     const Mesh<Float> m2 = build_mesh<Float>(a.pos2, a.w2, a.n2, a.boxsize,

@@ -6,6 +6,7 @@
 #include <cuda.h>
 #include <sm_20_atomic_functions.h>
 #include "common.h"
+#include "layout.h"
 
 
 // count2.h helpers
@@ -25,8 +26,6 @@ typedef struct DeviceCount2Layout {
 size_t fill_ells(const BinAttrs *battrs, int index, size_t *ells);
 
 
-size_t get_count2_weight_names(IndexValue index_value1, IndexValue index_value2,
-                        char names[][SIZE_NAME]);
 
 
 void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,

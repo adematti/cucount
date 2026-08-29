@@ -15,6 +15,19 @@
 #else
 #define CUCOUNT_HOST_DEVICE
 #include <cmath>
+// The shared descriptors (LOS_TYPE, IndexValue, BitwiseWeight) come from
+// common.h, whose CUDA include must be skipped in a CUDA-free consumer.
+#ifndef CUCOUNT_NO_CUDA
+#define CUCOUNT_NO_CUDA
+#endif
+#endif
+#include "common.h"
+
+// 64-bit popcount on either side of the fence.
+#if defined(__CUDA_ARCH__)
+#define CUCOUNT_POPCOUNT(x) __popcll(x)
+#else
+#define CUCOUNT_POPCOUNT(x) __builtin_popcountll((unsigned long long)(x))
 #endif
 
 namespace cucount {
@@ -179,7 +192,170 @@ CUCOUNT_HOST_DEVICE inline void compute_spin_projection_cartesian(
     }
 }
 
+// 3-vector helpers with the same accumulation order as the historical
+// macro-generated dot()/addition(), so extractions built on them are
+// bit-for-bit refactors on the CUDA side.
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline Float dot3(const Float *position1, const Float *position2) {
+    Float d = (Float)0.;
+    for (size_t axis = 0; axis < 3; axis++) {
+        d += position1[axis] * position2[axis];
+    }
+    return d;
+}
+
+
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline void add3(Float *add, const Float *position1, const Float *position2) {
+    for (size_t axis = 0; axis < 3; axis++) {
+        add[axis] = position1[axis] + position2[axis];
+    }
+}
+
+
+// The per-pair line-of-sight geometry, lifted verbatim from the CUDA
+// add_weight2: given the (already periodic-wrapped) separation diff and the
+// unit-sphere / cartesian positions, fill mu (when required_mu) and mu2.
+// Coincident points (s2 == 0) take mu = mu2 = 0 by convention.
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline void compute_pair_mu(
+    const Float *diff,
+    const Float *sposition1,
+    const Float *sposition2,
+    const Float *position1,
+    const Float *position2,
+    LOS_TYPE los,
+    Float s,
+    Float s2,
+    bool required_mu,
+    Float *mu,
+    Float *mu2)
+{
+    Float d = 0.;
+
+    if (los == LOS_FIRSTPOINT) {
+        d = dot3(diff, sposition1);
+
+        if (required_mu) {
+            *mu = d / s;
+        }
+        else {
+            *mu2 = (d * d) / s2;
+        }
+    }
+    else if (los == LOS_ENDPOINT) {
+        d = dot3(diff, sposition2);
+
+        if (required_mu) {
+            *mu = d / s;
+        }
+        else {
+            *mu2 = (d * d) / s2;
+        }
+    }
+    else if (los == LOS_MIDPOINT) {
+        Float vlos[3];
+        add3(vlos, position1, position2);
+
+        d = dot3(diff, vlos);
+
+        if (required_mu) {
+            *mu = d / sqrt(dot3(vlos, vlos)) / s;
+        }
+        else {
+            *mu2 = d * d / dot3(vlos, vlos) / s2;
+        }
+    }
+    else {
+        if (los == LOS_X) {
+            d = diff[0];
+        }
+        else if (los == LOS_Y) {
+            d = diff[1];
+        }
+        else if (los == LOS_Z) {
+            d = diff[2];
+        }
+
+        if (required_mu) {
+            *mu = d / s;
+        }
+        else {
+            *mu2 = (d * d) / s2;
+        }
+    }
+
+    if (required_mu) {
+        *mu2 = (*mu) * (*mu);
+    }
+
+    if (s2 == 0) {
+        *mu = 0.;
+        *mu2 = 0.;
+    }
+}
+
+
+// PIP pair weight from bitwise realizations, lifted verbatim from the CUDA
+// add_weight2. The values are reinterpreted as 64-bit integers, so this
+// expects Float = double (the wire format); a float32 caller must widen its
+// bitwise columns first.
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline Float pair_bitwise_weight(
+    const Float *value1,
+    const Float *value2,
+    const IndexValue index_value1,
+    const IndexValue index_value2,
+    const BitwiseWeight bitwise)
+{
+    Float pair_bweight = bitwise.default_value;
+
+    int nbits = bitwise.noffset;
+    int nbits1 = 0;
+    int nbits2 = 0;
+
+    for (size_t iweight = 0;
+         iweight < index_value1.size_bitwise_weight;
+         iweight++) {
+        long bweight1 =
+            *((const long *) &(value1[index_value1.start_bitwise_weight + iweight]));
+
+        long bweight2 =
+            *((const long *) &(value2[index_value2.start_bitwise_weight + iweight]));
+
+        nbits += CUCOUNT_POPCOUNT(bweight1 & bweight2);
+
+        if (bitwise.p_nbits) {
+            nbits1 += CUCOUNT_POPCOUNT(bweight1);
+            nbits2 += CUCOUNT_POPCOUNT(bweight2);
+        }
+    }
+
+    if (nbits != 0) {
+        pair_bweight = bitwise.nrealizations / nbits;
+
+        if (bitwise.p_nbits) {
+            pair_bweight /=
+                bitwise.p_correction_nbits[
+                    nbits1 * bitwise.p_nbits + nbits2];
+        }
+    }
+
+    return pair_bweight;
+}
+
 }  // namespace pairmath
 }  // namespace cucount
+
+#ifdef CUCOUNT_NO_CUDA
+// common.h's convenience macros are not part of the shared contract; keep
+// them from leaking into the SIMD translation units that include this header.
+#undef FLOAT
+#undef INT
+#undef POPCOUNT
+#undef MIN
+#undef MAX
+#undef CLIP
+#endif
 
 #endif  // _CUCOUNT_PAIR_MATH_

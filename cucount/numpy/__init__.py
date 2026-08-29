@@ -149,6 +149,8 @@ def _setup_cucount_logging():
     # only if it has been imported (importing it here would defeat laziness).
     if _cucount_lib is not None:
         _cucount_lib.setup_logging(level)
+    if _cpu.cpucount is not None:
+        _cpu.cpucount.setup_logging(level)
 
 
 def setup_logging(level=logging.INFO, stream=sys.stdout,  **kwargs):
@@ -945,6 +947,13 @@ class Particles(object):
         return new
 
 
+def _to_c_particles(p):
+    """Backend-neutral native Particles: the identical packed-values layout is
+    consumed by the CUDA and CPU extensions alike (through pybind's foreign
+    module_local loading)."""
+    return cucount_attrs.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c())
+
+
 def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None,
            spattrs: SplitAttrs=None, mattrs: MeshAttrs=None, nthreads: int=1, backend: str=None,
            tuning: dict=None):
@@ -1001,13 +1010,16 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     mode = _resolve_backend(backend)
     cuda_tuning, cpu_tuning = _resolve_tuning(mode, tuning, nthreads=nthreads)
 
+    # One conversion serves both backends: attrs-module Particles cast into
+    # either extension through pybind's foreign module_local loading.
+    cparticles = [_to_c_particles(p) for p in particles]
+
     def _cuda():
         lib = _get_cucount()
-        cparticles = [lib.Particles(p.positions, values=_stack_values(p.values, np=np), **p.index_value._to_c()) for p in particles]
         return lib.count2(*cparticles, mattrs._to_c(), battrs=battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs, nthreads=cuda_tuning.get('nthreads', 1))
 
     why = None if mode == 'cuda' else _cpu.unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs)
-    return _dispatch(mode, _cuda, lambda: _cpu.count2(particles, battrs, mattrs, wattrs=wattrs, tuning=cpu_tuning), why)
+    return _dispatch(mode, _cuda, lambda: _cpu.count2(cparticles, battrs, mattrs, wattrs=wattrs, tuning=cpu_tuning), why)
 
 
 def _get_ells(battrs):
@@ -1245,14 +1257,7 @@ def count3close(*particles: Particles,
         )
 
     lib = _get_cucount()
-    particles = [
-        lib.Particles(
-            p.positions,
-            values=_stack_values(p.values, np=np),
-            **p.index_value._to_c(),
-        )
-        for p in particles
-    ]
+    particles = [_to_c_particles(p) for p in particles]
 
     return lib.count3close(
         *particles,
@@ -1364,14 +1369,7 @@ def count3(*particles: Particles,
         mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13)
 
     lib = _get_cucount()
-    particles = [
-        lib.Particles(
-            p.positions,
-            values=_stack_values(p.values, np=np),
-            **p.index_value._to_c(),
-        )
-        for p in particles
-    ]
+    particles = [_to_c_particles(p) for p in particles]
 
     return lib.count3(
         *particles,

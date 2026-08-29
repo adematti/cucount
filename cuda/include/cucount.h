@@ -8,52 +8,11 @@
 #include "common.h"
 #include "count3close.h"
 #include "attrs.h"
+#include "layout.h"
 
 namespace py = pybind11;
 
 
-struct Count2Layout {
-    size_t nweights;
-    std::vector<std::string> names;
-    std::vector<ssize_t> shape;
-    size_t size;
-};
-
-
-Count2Layout get_count2_layout(
-    const IndexValue index_value1,
-    const IndexValue index_value2,
-    const BinAttrs& battrs,
-    const SplitAttrs& spattrs)
-{
-    char raw_names[MAX_NWEIGHT][SIZE_NAME];
-    const size_t nweights = get_count2_weight_names(
-        index_value1,
-        index_value2,
-        raw_names);
-
-    std::vector<std::string> names;
-    names.reserve(nweights);
-    for (size_t i = 0; i < nweights; ++i) {
-        names.emplace_back(raw_names[i]);
-    }
-
-    std::vector<ssize_t> shape;
-    if (spattrs.nsplits) {
-        shape.push_back(static_cast<ssize_t>(spattrs.size));
-    }
-
-    for (size_t idim = 0; idim < battrs.ndim; ++idim) {
-        shape.push_back(static_cast<ssize_t>(battrs.shape[idim]));
-    }
-
-    size_t size = 1;
-    for (ssize_t s : shape) {
-        size *= static_cast<size_t>(s);
-    }
-
-    return {nweights, std::move(names), std::move(shape), size};
-}
 
 
 struct Count3CloseLayout {

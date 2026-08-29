@@ -44,7 +44,9 @@ FetchContent_MakeAvailable(highway)
 find_package(OpenMP REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 
-pybind11_add_module(cpucount src/count2.cpp src/bind.cpp)
+# ../src/logger.cpp: register_attrs binds setup_logging, which needs the
+# module-local global_log_level.
+pybind11_add_module(cpucount src/count2.cpp src/bind.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp)
 # ../include for pair_math.h, the scalar per-pair math shared with CUDA (the
 # other headers there are CUDA-only and are not included from this target).
 target_include_directories(cpucount PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../include)
