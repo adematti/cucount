@@ -21,6 +21,9 @@ except ImportError:  # -DCUCOUNT_BUILD_CPU=OFF
 
 logger = logging.getLogger('cucount')
 
+# Mirrors MAX_POLE in include/common.h: the size of the kernel's Legendre cache.
+MAX_POLE = 8
+
 
 TUNING_KEYS = ('nthreads', 'isa', 'scatter')
 """Tuning keys the CPU backend accepts through the public tuning= keyword.
@@ -70,10 +73,12 @@ def unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs):
         return 'CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)'
 
     names = list(battrs.varnames)
-    if names not in (['s'], ['s', 'mu']):
-        return f'binning {names} not implemented (only s, (s, mu))'
+    if names not in (['s'], ['s', 'mu'], ['s', 'pole']):
+        return f'binning {names} not implemented (only s, (s, mu), (s, pole))'
     if names == ['s', 'mu'] and not _is_linear(battrs.array[1]):
         return 'non-linear mu binning not implemented'
+    if names == ['s', 'pole'] and len(battrs.array[1]) > MAX_POLE + 1:
+        return f'more than {MAX_POLE + 1} multipoles not implemented'
 
     if str(getattr(mattrs, 'type', 'cartesian')) != 'cartesian':
         return f'{mattrs.type} mesh not implemented (only cartesian)'
@@ -88,8 +93,9 @@ def unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs):
         if sizes.get('spin') and sizes['spin'] != 2:
             return f'spin with {sizes["spin"]} components not implemented (only 2)'
 
-    if getattr(sattrs, 'ndim', 0):
-        return 'selection attributes not implemented'
+    for name in getattr(sattrs, 'varnames', []):
+        if name not in ('s', 'theta'):
+            return f'{name} selection not implemented (only s, theta)'
     if getattr(spattrs, 'size', 0) > 1:
         return 'jackknife splits not implemented'
     angular = getattr(wattrs, 'angular', None)
@@ -98,7 +104,8 @@ def unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs):
     return None
 
 
-def count2(cparticles, battrs, mattrs, wattrs=None, tuning=None):
+def count2(cparticles, battrs, mattrs, wattrs=None, sattrs=None, spattrs=None,
+           tuning=None):
     """Run count2 on the CPU backend. Caller must have checked unsupported().
 
     ``cparticles`` are already-converted native Particles (the same objects the
@@ -112,6 +119,12 @@ def count2(cparticles, battrs, mattrs, wattrs=None, tuning=None):
                   return_timings=True)
     if wattrs is not None:
         kwargs['wattrs'] = wattrs._to_c()
+    # Selections and splits go through too: the binding lowers them, and the
+    # kernel applies the selection as a per-pair veto.
+    if sattrs is not None:
+        kwargs['sattrs'] = sattrs
+    if spattrs is not None:
+        kwargs['spattrs'] = spattrs
 
     isa = tuning.get('isa')
     if isa is not None and cpucount.set_target(isa) is None:

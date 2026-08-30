@@ -286,7 +286,7 @@ def test_unsupported_is_declined_by_name():
 
 
 UNSUPPORTED = ['rp-pi binning', 'non-linear mu',
-               'angular mesh', 'theta selection', 'jackknife splits',
+               'angular mesh', 'jackknife splits',
                'spin components', 'angular weights']
 
 
@@ -311,10 +311,6 @@ def _unsupported_request(feature, n=200):
         kw.update(sattrs=sattrs, mattrs=MeshAttrs(*particles, battrs=kw['battrs'],
                                                   sattrs=sattrs))
         match = 'angular mesh'
-    elif feature == 'theta selection':
-        # A cartesian mesh, so the decline must name the selection itself.
-        kw['sattrs'] = SelectionAttrs(theta=(0.0, 1.0))
-        match = 'selection'
     elif feature == 'jackknife splits':
         particles = (Particles(pos1, w1, splits=rng.integers(0, 4, n)),
                      Particles(pos2, w2, splits=rng.integers(0, 4, n)))
@@ -389,6 +385,9 @@ def test_scatter_strategies_agree(kind, ndim):
               bin=kind, periodic=True, nthreads=4)
     a = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, scatter='scalar', **kw)
     b = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, scatter='binmajor', **kw)
+    # Non-triviality first: two dead kernels agree on all-zeros, which is how a
+    # stale build once passed this test.
+    assert a.sum() > 0
     assert np.allclose(a, b, rtol=1e-12, atol=0)
 
 
@@ -402,6 +401,7 @@ def test_float32_close_to_double(ndim):
               periodic=True, nthreads=4)
     f64 = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, float32=False, **kw)
     f32 = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, float32=True, **kw)
+    assert f64.sum() > 0  # see test_scatter_strategies_agree
     # Single precision moves pairs across bin edges, so compare loosely and
     # scale the floor to the typical bin population.
     assert np.allclose(f32, f64, rtol=2e-2, atol=1e-2 * f64.mean())
@@ -731,3 +731,176 @@ def test_all_weight_schemes_combined_match_cuda():
     mattrs = MeshAttrs(*particles, battrs=battrs)
     count2(*particles, battrs=battrs, mattrs=mattrs, wattrs=wattrs,
            backend='compare')
+
+
+# ---------------------------------------------------------------------------
+# Multipole (pole) binning: mu is computed but not binned, and each pair adds
+# (2 ell + 1) P_ell(mu) into the nells bins that follow its s bin, using the
+# set_legendre shared with CUDA (include/pair_math.h).
+# ---------------------------------------------------------------------------
+
+def _pole_reference(pos1, w1, pos2, w2, sedges, ells, los='firstpoint'):
+    """(nsbins, nells) multipole counts, non-periodic."""
+    d = pos2[None, :, :] - pos1[:, None, :]
+    s = np.sqrt((d * d).sum(-1))
+    if los == 'firstpoint':
+        hat = pos1 / np.linalg.norm(pos1, axis=-1, keepdims=True)
+        num = np.einsum('ijk,ik->ij', d, hat)
+    elif los == 'endpoint':
+        hat = pos2 / np.linalg.norm(pos2, axis=-1, keepdims=True)
+        num = np.einsum('ijk,jk->ij', d, hat)
+    else:  # midpoint
+        ell_ = pos2[None, :, :] + pos1[:, None, :]
+        num = (d * ell_).sum(-1)
+        s = s * 1.0
+    with np.errstate(invalid='ignore', divide='ignore'):
+        if los == 'midpoint':
+            ell_ = pos2[None, :, :] + pos1[:, None, :]
+            den = s * np.sqrt((ell_ * ell_).sum(-1))
+        else:
+            den = s
+        mu = np.where(den > 0, num / np.where(den > 0, den, 1.0), 0.0)
+    mu[s == 0] = 0.0
+
+    si, ok = _bin_index(s, sedges)
+    w = w1[:, None] * w2[None, :]
+    nb = len(sedges) - 1
+    out = np.zeros((nb, len(ells)))
+    for ill, ell in enumerate(ells):
+        c = np.zeros(ell + 1)
+        c[ell] = 1.
+        leg = np.polynomial.legendre.legval(mu, c)
+        out[:, ill] = np.bincount(si[ok], weights=(w * (2 * ell + 1) * leg)[ok],
+                                  minlength=nb)
+    return out
+
+
+def _pole_setup(ells, los='firstpoint', n=400):
+    pos1, w1 = catalog(1, n)
+    pos2, w2 = catalog(2, n)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    sedges = np.linspace(1., 60., 13)
+    battrs = BinAttrs(s=sedges, pole=(np.array(ells), los))
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    kw = dict(battrs=battrs, mattrs=mattrs)
+    return particles, kw, (pos1, w1, pos2, w2, sedges)
+
+
+@pytest.mark.parametrize('ells', [[0, 2, 4], [0], [1, 2, 3]])
+def test_poles_match_brute_force(ells):
+    particles, kw, raw = _pole_setup(ells)
+    got = count2(*particles, backend='cpu', **kw)['weight']
+    want = _pole_reference(*raw, ells)
+    assert got.shape == want.shape
+    scale = np.abs(want).max()
+    assert np.allclose(got, want, rtol=1e-9, atol=1e-12 * scale)
+
+
+@needs_cuda
+@pytest.mark.parametrize('los', ['firstpoint', 'endpoint', 'midpoint'])
+def test_poles_match_cuda(los):
+    """Both backends run the same set_legendre, so compare mode's rtol holds."""
+    particles, kw, _ = _pole_setup([0, 2, 4], los=los)
+    count2(*particles, backend='compare', **kw)
+
+
+@needs_cuda
+def test_poles_with_weights_match_cuda():
+    """Multipoles compose with the scalar-tail weights (bitwise + negative)."""
+    rng = np.random.default_rng(41)
+    n = 300
+    pos1, w1 = catalog(1, n)
+    pos2, w2 = catalog(2, n)
+    bits1 = [rng.integers(0, 0xffffffff, n, dtype=np.uint64)]
+    bits2 = [rng.integers(0, 0xffffffff, n, dtype=np.uint64)]
+    nw1, nw2 = rng.uniform(0., 0.1, n), rng.uniform(0., 0.1, n)
+    particles = (Particles(pos1, [w1] + bits1 + [nw1]),
+                 Particles(pos2, [w2] + bits2 + [nw2]))
+    wattrs = WeightAttrs(bitwise=dict(weights=bits1))
+    battrs = BinAttrs(s=np.linspace(1., 60., 13),
+                      pole=(np.array([0, 2]), 'firstpoint'))
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    count2(*particles, battrs=battrs, mattrs=mattrs, wattrs=wattrs,
+           backend='compare')
+
+
+def test_k_pole_binning_is_declined():
+    """(k, pole) has no s binning and is not implemented; decline by name."""
+    particles, _, _ = _pole_setup([0, 2])
+    battrs = BinAttrs(k=np.linspace(0.01, 0.2, 10),
+                      pole=(np.array([0, 2]), 'firstpoint'))
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    with pytest.raises(NotImplementedError, match='binning'):
+        count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')
+
+
+# ---------------------------------------------------------------------------
+# Pair selections (s, theta): a per-pair veto, applied in the scalar tail so
+# the plain vector path carries no extra compare. Bounds are inclusive on both
+# ends, matching is_selected_pair in the CUDA kernel.
+# ---------------------------------------------------------------------------
+
+# Unit-sphere catalogues: separations and angular separations then span the
+# full range, so a theta cut actually removes pairs. (With points spread over
+# a 1000^3 box and s < 80, every pair sits within ~9 deg and any sane theta
+# selection is a no-op -- a test that cannot fail.)
+SEL_S = (0.5, 1.2)
+SEL_THETA = (0., 60.)
+
+
+def _selection_setup(kind, n=400):
+    pos1, w1, _ = _unit_catalog(1, n)
+    pos2, w2, _ = _unit_catalog(2, n)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    sedges = np.linspace(0.05, 2.0, 11)
+    battrs = BinAttrs(s=sedges)
+    if kind == 's':
+        sattrs = SelectionAttrs(s=SEL_S)
+    elif kind == 'theta':
+        sattrs = SelectionAttrs(theta=SEL_THETA)
+    else:
+        sattrs = SelectionAttrs(s=SEL_S, theta=SEL_THETA)
+    # A cartesian mesh: MeshAttrs would switch to the angular mesh if it saw
+    # the theta selection, and that mesh is a separate (declined) feature.
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    return particles, dict(battrs=battrs, mattrs=mattrs, sattrs=sattrs), \
+        (pos1, w1, pos2, w2, sedges)
+
+
+def _selection_reference(pos1, w1, pos2, w2, sedges, kind):
+    """Bounds are INCLUSIVE on both ends, matching is_selected_pair."""
+    d = pos2[None, :, :] - pos1[:, None, :]
+    s = np.sqrt((d * d).sum(-1))
+    keep = np.ones(s.shape, dtype=bool)
+    if kind in ('s', 'both'):
+        keep &= (s >= SEL_S[0]) & (s <= SEL_S[1])
+    if kind in ('theta', 'both'):
+        h1 = pos1 / np.linalg.norm(pos1, axis=-1, keepdims=True)
+        h2 = pos2 / np.linalg.norm(pos2, axis=-1, keepdims=True)
+        ct = h1 @ h2.T
+        # cos decreases with theta, so the bounds swap.
+        keep &= (ct >= np.cos(np.radians(SEL_THETA[1]))) & \
+                (ct <= np.cos(np.radians(SEL_THETA[0])))
+    si, ok = _bin_index(s, sedges)
+    w = w1[:, None] * w2[None, :]
+    sel = np.bincount(si[ok & keep], weights=w[ok & keep],
+                      minlength=len(sedges) - 1)
+    allp = np.bincount(si[ok], weights=w[ok], minlength=len(sedges) - 1)
+    return sel, allp
+
+
+@pytest.mark.parametrize('kind', ['s', 'theta', 'both'])
+def test_selections_match_brute_force(kind):
+    particles, kw, raw = _selection_setup(kind)
+    got = count2(*particles, backend='cpu', **kw)['weight']
+    want, unselected = _selection_reference(*raw, kind)
+    # The selection must actually bite, or this test proves nothing.
+    assert want.sum() > 0 and want.sum() < 0.95 * unselected.sum()
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+
+
+@needs_cuda
+@pytest.mark.parametrize('kind', ['s', 'theta', 'both'])
+def test_selections_match_cuda(kind):
+    particles, kw, _ = _selection_setup(kind)
+    count2(*particles, backend='compare', **kw)

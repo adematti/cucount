@@ -1002,7 +1002,8 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         mode,
         lambda: _cuda.count2(cparticles, battrs, mattrs, wattrs=wattrs, sattrs=sattrs,
                              spattrs=spattrs, tuning=cuda_tuning),
-        lambda: _cpu.count2(cparticles, battrs, mattrs, wattrs=wattrs, tuning=cpu_tuning),
+        lambda: _cpu.count2(cparticles, battrs, mattrs, wattrs=wattrs, sattrs=sattrs,
+                            spattrs=spattrs, tuning=cpu_tuning),
         why)
 
 

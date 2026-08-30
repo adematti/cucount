@@ -143,6 +143,11 @@ negative and 1D angular weights (same scalar-tail pattern, via the shared
 `pair_bitwise_weight` and `lookup_angular_weight`; the bit patterns ride
 double storage whatever the working precision).
 
-Not covered, deliberately: triplet counts, angular mesh, theta/rp/pi/pole/k
+Multipoles: `(s, pole)` binning, with mu computed but not binned and
+`(2 ell + 1) P_ell(mu)` accumulated into the pole axis (the fastest one),
+through the `set_legendre` shared with CUDA. Pair selections on `s` and
+`theta` ride the same scalar tail as a per-pair veto.
+
+Not covered, deliberately: triplet counts, angular mesh, theta/rp/pi/k
 binning, N-dimensional angular weights, jackknife splits, JAX FFI,
 multi-device.

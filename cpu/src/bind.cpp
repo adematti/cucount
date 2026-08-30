@@ -70,12 +70,19 @@ void validate(const Particles& p1, const Particles& p2, const BinAttrs& battrs,
         throw std::invalid_argument("cpu backend: only the cartesian mesh is implemented");
     const bool ok1 = (battrs.ndim == 1 && battrs.var[0] == VAR_S);
     const bool ok2 = (battrs.ndim == 2 && battrs.var[0] == VAR_S && battrs.var[1] == VAR_MU);
-    if (!ok1 && !ok2)
-        throw std::invalid_argument("cpu backend: only s and (s, mu) binning are implemented");
+    const bool okp = (battrs.ndim == 2 && battrs.var[0] == VAR_S && battrs.var[1] == VAR_POLE);
+    if (!ok1 && !ok2 && !okp)
+        throw std::invalid_argument(
+            "cpu backend: only s, (s, mu) and (s, pole) binning are implemented");
     if (ok2 && battrs.bin[1] != BIN_LIN)
         throw std::invalid_argument("cpu backend: non-linear mu binning not implemented");
-    if (sattrs.ndim)
-        throw std::invalid_argument("cpu backend: selections not implemented");
+    if (okp && battrs.shape[1] > MAX_POLE + 1)
+        throw std::invalid_argument("cpu backend: too many multipoles requested");
+    for (size_t i = 0; i < sattrs.ndim; i++) {
+        if (sattrs.var[i] != VAR_S && sattrs.var[i] != VAR_THETA)
+            throw std::invalid_argument(
+                "cpu backend: only s and theta selections are implemented");
+    }
     if (spattrs.nsplits)
         throw std::invalid_argument("cpu backend: jackknife splits not implemented");
     if (wattrs.angular.size && wattrs.angular.ndim != 1)
@@ -145,7 +152,10 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     Particles p2 = particles2.data();
 
     validate(p1, p2, battrs, mattrs, wattrs, sattrs, spattrs);
-    const bool ok2 = (battrs.ndim == 2);
+    // Which second axis: mu bins, or the multipole channel axis. (ndim == 2
+    // alone is ambiguous -- (s, pole) has ndim 2 as well.)
+    const bool ok2 = (battrs.ndim == 2 && battrs.var[1] == VAR_MU);
+    const bool okp = (battrs.ndim == 2 && battrs.var[1] == VAR_POLE);
 
     Count2Args a;
     a.pos1 = p1.positions;
@@ -181,6 +191,19 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
         a.nw1 = nw1.data();
         a.nw2 = nw2.data();
     }
+    for (size_t i = 0; i < sattrs.ndim; i++) {
+        // smin/smax are already the comparison bounds: s for VAR_S, and
+        // cos(theta) (max/min swapped) for VAR_THETA, per SelectionAttrs::data.
+        if (sattrs.var[i] == VAR_S) {
+            a.sel_s = true;
+            a.sel_s_min = sattrs.smin[i];
+            a.sel_s_max = sattrs.smax[i];
+        } else {
+            a.sel_theta = true;
+            a.sel_ct_min = sattrs.smin[i];
+            a.sel_ct_max = sattrs.smax[i];
+        }
+    }
     if (wattrs.angular.size) {
         // 1D only (validated above); points into arrays wattrs_py keeps
         // alive for the call, axes already ascending cos(theta).
@@ -198,6 +221,18 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
         a.muedges = battrs.array[1];
         a.nmubins = battrs.shape[1];
     }
+    // Multipoles: the array holds the ell VALUES (not edges), and they are the
+    // fastest output axis. ells_even picks set_legendre's even-only closed
+    // forms; anything else takes the full recursion, exactly as on the GPU.
+    std::vector<int> ells;
+    if (okp) {
+        for (size_t i = 0; i < battrs.shape[1]; i++)
+            ells.push_back(static_cast<int>(battrs.array[1][i]));
+        a.ells = ells.data();
+        a.nells = ells.size();
+        a.ells_even = true;
+        for (int ell : ells) if (ell % 2) a.ells_even = false;
+    }
 
     // s-bin policy from the shared classification: data() marks BIN_LIN via
     // is_linear, but flags BIN_LOG only above 1000 bins; re-check smaller
@@ -214,7 +249,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     }
 
     a.cfg.ndim = ok2 ? 2 : 1;
-    a.cfg.los = ok2 ? los_from_type(battrs.los[1]) : LosKind::AxisZ;
+    a.cfg.los = (ok2 || okp) ? los_from_type(battrs.los[1]) : LosKind::AxisZ;
     a.cfg.periodic = mattrs.periodic;
     a.cfg.float32 = float32;
     a.cfg.scatter = parse_scatter(scatter);

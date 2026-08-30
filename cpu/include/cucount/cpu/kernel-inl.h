@@ -146,8 +146,8 @@ inline AxisRange axis_range(int i, int n, bool periodic) {
 // per-lane tail below is compiled OUT of the inner loop, keeping its codegen
 // identical to the pre-spin kernel -- carrying the dead branch cost the plain
 // path 2-8% in the A/B benchmark.
-template <class Float, int NDim, class SBin, LosKind LOS, bool Periodic,
-          ScatterKind SC, bool ScalarTail>
+template <class Float, int NDim, bool Poles, class SBin, LosKind LOS,
+          bool Periodic, ScatterKind SC, bool ScalarTail>
 void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                 const Mesh<Float>& m2, const BinSpec<Float>& sb,
                 const BinSpec<Float>& mb) {
@@ -156,7 +156,20 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
     const size_t L = hn::Lanes(d);
 
     const size_t nmu = (NDim == 2) ? mb.nbins : 1;
-    const size_t nbins_total = sb.nbins * nmu;
+    const size_t nbins_geom = sb.nbins * nmu;
+
+    // Multipole axis (VAR_POLE): the fastest bin axis. mu is then computed
+    // but never binned, and each pair adds (2 ell + 1) P_ell(mu) into nells
+    // consecutive bins -- per channel, so poles and spin compose.
+    const size_t nells = Poles ? a.nells : 1;
+    const int* ells = a.ells;
+    const int ellstep_legendre = a.ells_even ? 2 : 1;
+    const int ellmin = (Poles && a.nells) ? ells[0] : 0;
+    const int ellmax = (Poles && a.nells) ? ells[a.nells - 1] : 0;
+    const size_t nbins_total = nbins_geom * nells;
+
+    // mu is needed for the mu axis and for the multipoles alike.
+    constexpr bool NeedMu = (NDim == 2) || Poles;
 
     // Spin channels replace the plain weight, matching the CUDA layout:
     // (plus, cross) for one spinning side, (plus*plus, cross*plus,
@@ -176,7 +189,14 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
     const bool has_bitwise = !m1.bw.empty() && !m2.bw.empty() && nbit;
     const bool has_negative = !m1.nw.empty() && !m2.nw.empty();
     const bool has_angular = a.angular_weight && a.angular_shape;
-    (void)(has_spin || has_bitwise || has_negative || has_angular);  // dispatch chose ScalarTail
+    // Pair selections veto a pair outright; they ride the tail so the plain
+    // vector path needs no extra compare (and no extra instantiation).
+    const bool sel_s = a.sel_s;
+    const bool sel_theta = a.sel_theta;
+    const double sel_s2_min = a.sel_s_min * a.sel_s_min;
+    const double sel_s2_max = a.sel_s_max * a.sel_s_max;
+    (void)(has_spin || has_bitwise || has_negative || has_angular ||
+           sel_s || sel_theta);  // dispatch chose ScalarTail
     BitwiseWeight bitwise = {};
     IndexValue iv_bw = {};  // synthetic: columns at offset 0, stride nbit
     if (has_bitwise) {
@@ -223,8 +243,8 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
         // std::vector does not provide.
         hwy::AlignedFreeUniquePtr<Float[]> acc;
         if constexpr (SC == ScatterKind::BinMajor) {
-            acc = hwy::AllocateAligned<Float>(nbins_total * L);
-            std::fill(acc.get(), acc.get() + nbins_total * L, Float(0));
+            acc = hwy::AllocateAligned<Float>(nbins_geom * L);
+            std::fill(acc.get(), acc.get() + nbins_geom * L, Float(0));
         }
 
 #ifdef _OPENMP
@@ -259,6 +279,7 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                             const auto z1 = hn::Set(d, m1.z[i]);
                             const auto w1 = hn::Set(d, m1.w[i]);
 
+
                             // FirstPoint LOS: particle 1's unit-sphere
                             // position is constant across the j vector.
                             auto sx1 = hn::Zero(d), sy1 = hn::Zero(d),
@@ -272,7 +293,7 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                             Float r1v[3] = {0, 0, 0};
                             Float e1v[2] = {0, 0};
                             if constexpr (ScalarTail) {
-                                if (has_spin || has_angular) {
+                                if (has_spin || has_angular || sel_theta) {
                                     r1v[0] = m1.sx[i];
                                     r1v[1] = m1.sy[i];
                                     r1v[2] = m1.sz[i];
@@ -309,14 +330,20 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                                 const auto s2 = dx * dx + dy * dy + dz * dz;
 
                                 auto s = hn::Zero(d);
-                                if constexpr (SBin::needs_s || NDim == 2)
+                                if constexpr (SBin::needs_s || NeedMu)
                                     s = hn::Sqrt(s2);
 
                                 const auto sres = SBin::Index(d, s, s2, sb);
                                 auto ok = hn::And(active, sres.ok);
                                 auto idx = sres.idx;
 
-                                if constexpr (NDim == 2) {
+                                // Declared unconditionally but written only
+                                // for poles; the compiler elides it entirely
+                                // otherwise. Hoisting `mu` itself out of this
+                                // block instead cost the 2D path 4-5%.
+                                HWY_ALIGN Float
+                                    mubuf[HWY_MAX_LANES_D(decltype(d))];
+                                if constexpr (NeedMu) {
                                     hn::VFromD<decltype(d)> num;
                                     hn::VFromD<decltype(d)> den;
                                     if constexpr (LOS == LosKind::AxisZ) {
@@ -365,12 +392,16 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                                         hn::Set(d, Float(-2)));
                                     mu = hn::IfThenElse(hn::Eq(s2, hn::Zero(d)),
                                                         hn::Zero(d), mu);
-                                    const auto mres = MuIndex(d, mu, mb);
-                                    ok = hn::And(ok, mres.ok);
-                                    idx = idx * hn::Set(di, static_cast<
-                                                        hn::TFromD<decltype(di)>>(
-                                                        mb.nbins)) +
-                                          mres.idx;
+
+                                    if constexpr (NDim == 2) {
+                                        const auto mres = MuIndex(d, mu, mb);
+                                        ok = hn::And(ok, mres.ok);
+                                        idx = idx * hn::Set(di, static_cast<
+                                                            hn::TFromD<decltype(di)>>(
+                                                            mb.nbins)) +
+                                              mres.idx;
+                                    }
+                                    if constexpr (Poles) hn::Store(mu, d, mubuf);
                                 }
 
                                 const auto wpair = w1 * w2;
@@ -405,9 +436,26 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                                         hn::Store(hn::IfThenElseZero(
                                                       ok, hn::Set(d, Float(1))),
                                                   d, mbuf);
+                                        HWY_ALIGN Float
+                                            s2buf[HWY_MAX_LANES_D(decltype(d))];
+                                        if (sel_s) hn::Store(s2, d, s2buf);
                                         for (size_t k = 0; k < n; ++k) {
                                             if (mbuf[k] == Float(0)) continue;
                                             const size_t jj = j + k;
+                                            if (sel_s) {
+                                                const double s2k =
+                                                    static_cast<double>(s2buf[k]);
+                                                if (s2k < sel_s2_min ||
+                                                    s2k > sel_s2_max) continue;
+                                            }
+                                            if (sel_theta) {
+                                                const double ct =
+                                                    double(r1v[0]) * m2.sx[jj] +
+                                                    double(r1v[1]) * m2.sy[jj] +
+                                                    double(r1v[2]) * m2.sz[jj];
+                                                if (ct < a.sel_ct_min ||
+                                                    ct > a.sel_ct_max) continue;
+                                            }
                                             const size_t b =
                                                 static_cast<size_t>(ibuf[k]);
                                             double w =
@@ -430,49 +478,74 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
                                                 w -= static_cast<double>(m1.nw[i]) *
                                                      static_cast<double>(m2.nw[jj]);
                                             }
-                                            if (!has_spin) {
-                                                local[b] += w;
-                                                continue;
+                                            // Per-channel pair weights, in
+                                            // the CUDA add_weight2 order
+                                            // (cross*plus included).
+                                            double chan[3] = {w, 0., 0.};
+                                            size_t nchan = 1;
+                                            if (has_spin) {
+                                                const Float r2v[3] = {
+                                                    m2.sx[jj], m2.sy[jj],
+                                                    m2.sz[jj]};
+                                                Float splus1 = 0, scross1 = 0;
+                                                Float splus2 = 0, scross2 = 0;
+                                                if (sp1) {
+                                                    pairmath::compute_spin_projection_cartesian(
+                                                        r1v, r2v, e1v,
+                                                        a.spin_order1,
+                                                        &splus1, &scross1);
+                                                }
+                                                if (sp2) {
+                                                    const Float e2v[2] = {
+                                                        m2.e1[jj], m2.e2[jj]};
+                                                    pairmath::compute_spin_projection_cartesian(
+                                                        r1v, r2v, e2v,
+                                                        a.spin_order2,
+                                                        &splus2, &scross2);
+                                                }
+                                                if (sp1 && sp2) {
+                                                    chan[0] = w * splus1 * splus2;
+                                                    chan[1] = w * scross1 * splus2;
+                                                    chan[2] = w * scross1 * scross2;
+                                                    nchan = 3;
+                                                } else if (sp1) {
+                                                    chan[0] = w * splus1;
+                                                    chan[1] = w * scross1;
+                                                    nchan = 2;
+                                                } else {
+                                                    chan[0] = w * splus2;
+                                                    chan[1] = w * scross2;
+                                                    nchan = 2;
+                                                }
                                             }
-                                            const Float r2v[3] = {
-                                                m2.sx[jj], m2.sy[jj], m2.sz[jj]};
-                                            Float splus1 = 0, scross1 = 0;
-                                            Float splus2 = 0, scross2 = 0;
-                                            if (sp1) {
-                                                pairmath::compute_spin_projection_cartesian(
-                                                    r1v, r2v, e1v, a.spin_order1,
-                                                    &splus1, &scross1);
-                                            }
-                                            if (sp2) {
-                                                const Float e2v[2] = {
-                                                    m2.e1[jj], m2.e2[jj]};
-                                                pairmath::compute_spin_projection_cartesian(
-                                                    r1v, r2v, e2v, a.spin_order2,
-                                                    &splus2, &scross2);
-                                            }
-                                            // Channel formulas mirror the CUDA
-                                            // add_weight2, cross*plus ordering
-                                            // included.
-                                            if (sp1 && sp2) {
-                                                local[b] += w * splus1 * splus2;
-                                                local[nbins_total + b] +=
-                                                    w * scross1 * splus2;
-                                                local[2 * nbins_total + b] +=
-                                                    w * scross1 * scross2;
-                                            } else if (sp1) {
-                                                local[b] += w * splus1;
-                                                local[nbins_total + b] +=
-                                                    w * scross1;
+
+                                            if constexpr (!Poles) {
+                                                for (size_t c = 0; c < nchan; ++c)
+                                                    local[c * nbins_total + b] += chan[c];
                                             } else {
-                                                local[b] += w * splus2;
-                                                local[nbins_total + b] +=
-                                                    w * scross2;
+                                                // (2 ell + 1) P_ell(mu) into
+                                                // the nells bins that follow b.
+                                                const double muk = mubuf[k];
+                                                double leg[MAX_POLE + 1];
+                                                pairmath::set_legendre(
+                                                    leg, ellmin, ellmax,
+                                                    ellstep_legendre, muk,
+                                                    muk * muk);
+                                                for (size_t ill = 0; ill < nells; ++ill) {
+                                                    const int ell = ells[ill];
+                                                    const double f =
+                                                        (2 * ell + 1) * leg[ell];
+                                                    const size_t bl = b * nells + ill;
+                                                    for (size_t c = 0; c < nchan; ++c)
+                                                        local[c * nbins_total + bl] +=
+                                                            chan[c] * f;
+                                                }
                                             }
                                         }
                                     }
                                 } else {
                                     const auto wv = hn::IfThenElseZero(ok, wpair);
-                                    for (size_t b = 0; b < nbins_total; ++b) {
+                                    for (size_t b = 0; b < nbins_geom; ++b) {
                                         const auto hit = hn::RebindMask(
                                             d, hn::Eq(idx, hn::Set(di, static_cast<
                                                           hn::TFromD<decltype(di)>>(
@@ -492,7 +565,7 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
             // accumulated there span one cell's pairs only, so Float precision
             // is ample before widening into the double accumulator.
             if constexpr (SC == ScatterKind::BinMajor) {
-                for (size_t b = 0; b < nbins_total; ++b) {
+                for (size_t b = 0; b < nbins_geom; ++b) {
                     local[b] += static_cast<double>(
                         hn::ReduceSum(d, hn::Load(d, &acc[b * L])));
                     hn::Store(hn::Zero(d), d, &acc[b * L]);
@@ -511,75 +584,100 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
 // Highway does the SIMD dispatch at the outermost level; here, we're just dispatching
 // on our own config parameters.
 
-template <class Float, int NDim, class SBin, LosKind LOS, bool Periodic>
+template <class Float, int NDim, bool Poles, class SBin, LosKind LOS,
+          bool Periodic>
 static void DispatchScatter(const Count2Args& a, const Mesh<Float>& m1,
                             const Mesh<Float>& m2, const BinSpec<Float>& sb,
                             const BinSpec<Float>& mb) {
-    // Spin/bitwise/negative accumulation is scalar per surviving lane, so
-    // BinMajor's replicated histogram has nothing to offer; those requests
+    // Spin/bitwise/negative/angular accumulation is scalar per surviving lane,
+    // so BinMajor's replicated histogram has nothing to offer; those requests
     // always take Scalar, with the per-lane tail compiled in (ScalarTail).
-    const bool tail = a.spin1 || a.spin2 || (a.bw1 && a.bw2) || (a.nw1 && a.nw2) ||
-                      a.angular_weight;
-    if (tail) {
-        Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::Scalar, true>(
-            a, m1, m2, sb, mb);
-    } else if (a.cfg.scatter == ScatterKind::Scalar) {
-        Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::Scalar, false>(
-            a, m1, m2, sb, mb);
+    // Multipoles are per-lane by construction, and `if constexpr` keeps the
+    // other three combinations out of the Poles build entirely.
+    if constexpr (Poles) {
+        Count2Impl<Float, NDim, true, SBin, LOS, Periodic, ScatterKind::Scalar,
+                   true>(a, m1, m2, sb, mb);
     } else {
-        Count2Impl<Float, NDim, SBin, LOS, Periodic, ScatterKind::BinMajor, false>(
-            a, m1, m2, sb, mb);
+        const bool tail = a.spin1 || a.spin2 || (a.bw1 && a.bw2) ||
+                          (a.nw1 && a.nw2) || a.angular_weight ||
+                          a.sel_s || a.sel_theta;
+        if (tail) {
+            Count2Impl<Float, NDim, false, SBin, LOS, Periodic,
+                       ScatterKind::Scalar, true>(a, m1, m2, sb, mb);
+        } else if (a.cfg.scatter == ScatterKind::Scalar) {
+            Count2Impl<Float, NDim, false, SBin, LOS, Periodic,
+                       ScatterKind::Scalar, false>(a, m1, m2, sb, mb);
+        } else {
+            Count2Impl<Float, NDim, false, SBin, LOS, Periodic,
+                       ScatterKind::BinMajor, false>(a, m1, m2, sb, mb);
+        }
     }
 }
 
-template <class Float, int NDim, class SBin, LosKind LOS>
+template <class Float, int NDim, bool Poles, class SBin, LosKind LOS>
 static void DispatchPeriodic(const Count2Args& a, const Mesh<Float>& m1,
                              const Mesh<Float>& m2, const BinSpec<Float>& sb,
                              const BinSpec<Float>& mb) {
     if (a.cfg.periodic) {
-        DispatchScatter<Float, NDim, SBin, LOS, true>(a, m1, m2, sb, mb);
+        DispatchScatter<Float, NDim, Poles, SBin, LOS, true>(a, m1, m2, sb, mb);
     } else {
-        DispatchScatter<Float, NDim, SBin, LOS, false>(a, m1, m2, sb, mb);
+        DispatchScatter<Float, NDim, Poles, SBin, LOS, false>(a, m1, m2, sb, mb);
     }
 }
 
-template <class Float, int NDim, class SBin>
+template <class Float, int NDim, bool Poles, class SBin>
 static void DispatchLos(const Count2Args& a, const Mesh<Float>& m1,
                         const Mesh<Float>& m2, const BinSpec<Float>& sb,
                         const BinSpec<Float>& mb) {
-    // With ndim == 1 there is no mu, so AxisZ stands in for every LOS.
-    if (NDim == 1 || a.cfg.los == LosKind::AxisZ) {
-        DispatchPeriodic<Float, NDim, SBin, LosKind::AxisZ>(a, m1, m2, sb, mb);
+    // Without a mu axis and without multipoles there is no mu at all, so
+    // AxisZ stands in for every LOS.
+    constexpr bool need_mu = (NDim == 2) || Poles;
+    if (!need_mu || a.cfg.los == LosKind::AxisZ) {
+        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::AxisZ>(a, m1, m2, sb, mb);
     } else if (a.cfg.los == LosKind::AxisX) {
-        DispatchPeriodic<Float, NDim, SBin, LosKind::AxisX>(a, m1, m2, sb, mb);
+        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::AxisX>(a, m1, m2, sb, mb);
     } else if (a.cfg.los == LosKind::AxisY) {
-        DispatchPeriodic<Float, NDim, SBin, LosKind::AxisY>(a, m1, m2, sb, mb);
+        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::AxisY>(a, m1, m2, sb, mb);
     } else if (a.cfg.los == LosKind::FirstPoint) {
-        DispatchPeriodic<Float, NDim, SBin, LosKind::FirstPoint>(a, m1, m2, sb,
-                                                                 mb);
+        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::FirstPoint>(a, m1, m2, sb, mb);
     } else if (a.cfg.los == LosKind::EndPoint) {
-        DispatchPeriodic<Float, NDim, SBin, LosKind::EndPoint>(a, m1, m2, sb,
-                                                               mb);
+        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::EndPoint>(a, m1, m2, sb, mb);
     } else {
-        DispatchPeriodic<Float, NDim, SBin, LosKind::Midpoint>(a, m1, m2, sb, mb);
+        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::Midpoint>(a, m1, m2, sb, mb);
     }
 }
 
-template <class Float, int NDim>
+template <class Float, int NDim, bool Poles>
 static void DispatchSBin(const Count2Args& a, const Mesh<Float>& m1,
                          const Mesh<Float>& m2, const BinSpec<Float>& sb,
                          const BinSpec<Float>& mb) {
     switch (a.cfg.sbin) {
         case BinKind::Linear:
-            DispatchLos<Float, NDim, BinLinear>(a, m1, m2, sb, mb);
+            DispatchLos<Float, NDim, Poles, BinLinear>(a, m1, m2, sb, mb);
             break;
         case BinKind::Log:
-            DispatchLos<Float, NDim, BinLog>(a, m1, m2, sb, mb);
+            DispatchLos<Float, NDim, Poles, BinLog>(a, m1, m2, sb, mb);
             break;
         case BinKind::Edges:
-            DispatchLos<Float, NDim, BinEdges>(a, m1, m2, sb, mb);
+            DispatchLos<Float, NDim, Poles, BinEdges>(a, m1, m2, sb, mb);
             break;
     }
+}
+
+
+// Multipoles ride the s axis only ((s, pole)); the binding declines any other
+// combination, so Poles=true is never instantiated for NDim == 2.
+template <class Float, int NDim>
+static void DispatchPoles(const Count2Args& a, const Mesh<Float>& m1,
+                          const Mesh<Float>& m2, const BinSpec<Float>& sb,
+                          const BinSpec<Float>& mb) {
+    if constexpr (NDim == 1) {
+        if (a.nells) {
+            DispatchSBin<Float, NDim, true>(a, m1, m2, sb, mb);
+            return;
+        }
+    }
+    DispatchSBin<Float, NDim, false>(a, m1, m2, sb, mb);
 }
 
 template <class Float>
@@ -609,11 +707,12 @@ static void DispatchNDim(const Count2Args& a) {
 
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
+    const bool needs_mu = (a.cfg.ndim == 2) || a.nells;
     const bool with_spos =
         (a.spin1 != nullptr) || (a.spin2 != nullptr) ||
-        (a.angular_weight != nullptr) ||
-        (a.cfg.ndim == 2 && (a.cfg.los == LosKind::FirstPoint ||
-                             a.cfg.los == LosKind::EndPoint));
+        (a.angular_weight != nullptr) || a.sel_theta ||
+        (needs_mu && (a.cfg.los == LosKind::FirstPoint ||
+                      a.cfg.los == LosKind::EndPoint));
     const Mesh<Float> m1 = build_mesh<Float>(a.pos1, a.w1, a.n1, a.boxsize,
                                              a.origin, dims, a.spin1, with_spos,
                                              a.bw1, a.nbitwise, a.nw1);
@@ -623,9 +722,9 @@ static void DispatchNDim(const Count2Args& a) {
     const auto t1 = Clock::now();
 
     if (a.cfg.ndim == 1) {
-        DispatchSBin<Float, 1>(a, m1, m2, sb, mb);
+        DispatchPoles<Float, 1>(a, m1, m2, sb, mb);
     } else {
-        DispatchSBin<Float, 2>(a, m1, m2, sb, mb);
+        DispatchPoles<Float, 2>(a, m1, m2, sb, mb);
     }
 
     if (a.timings) {

@@ -126,6 +126,22 @@ struct Count2Args {
     const double* nw1 = nullptr;
     const double* nw2 = nullptr;
 
+    // Optional pair selections (VAR_S / VAR_THETA), INCLUSIVE on both ends
+    // like is_selected_pair. A selection routes the request through the
+    // scalar tail, so the plain vector path stays untouched.
+    bool sel_s = false;
+    double sel_s_min = 0., sel_s_max = 0.;
+    bool sel_theta = false;
+    double sel_ct_min = 0., sel_ct_max = 0.;
+
+    // Optional multipole axis (VAR_POLE). It is the FASTEST bin axis: for
+    // each pair the kernel adds (2 ell + 1) P_ell(mu) into nells consecutive
+    // bins, so mu is computed but never binned. ells_even picks the
+    // even-only closed forms in set_legendre (else the full recursion).
+    const int* ells = nullptr;
+    size_t nells = 0;
+    bool ells_even = false;
+
     // Optional 1D angular (PIP) upweight, tabulated against ascending
     // cos(theta) (the Python layer converts from degrees): interpolation
     // points or bin edges per angular_sep_is_edges, policy angular_bin
