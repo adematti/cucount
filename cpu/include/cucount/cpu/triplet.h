@@ -36,7 +36,7 @@ struct Count3Args {
     // The accumulators get_count3_layout describes. Zeroed by the caller.
     double* out = nullptr;
 
-    // Optional [mesh_seconds, triplet_seconds].
+    // Optional [mesh_seconds, count_seconds], to separate setup from the counting.
     double* timings = nullptr;
 };
 

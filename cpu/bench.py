@@ -1,6 +1,6 @@
 """Kernel benchmark for the CPU backend, for A/B checks across builds.
 
-The metric is kernel-only pair_seconds (mesh build excluded), best of
+The metric is kernel-only count_seconds (mesh build excluded), best of
 --repeats per config, on fixed synthetic catalogues. Run it once per build
 and compare the saved JSONs; two builds of the same-named module cannot be
 loaded into one process, hence the two-step flow:

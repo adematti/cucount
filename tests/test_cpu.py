@@ -235,22 +235,22 @@ def test_thread_count_invariance(monkeypatch):
 
 def test_simd_targets_agree():
     """Every compiled ISA must produce the same answer."""
-    cpucount = _cpu.cpucount
+    cpulib = _cpu.cpulib
     particles, battrs, mattrs, _, _ = setup('log', 2, 'midpoint', True)
 
     reached, results = [], []
     try:
-        for name in cpucount.available_targets():
-            if cpucount.set_target(name) is None:
+        for name in cpulib.available_targets():
+            if cpulib.set_target(name) is None:
                 continue
-            actual = cpucount.current_target()
+            actual = cpulib.current_target()
             if actual in reached:
                 continue  # not compiled in; dispatch fell back to one already seen
             reached.append(actual)
             results.append(count2(*particles, battrs=battrs, mattrs=mattrs,
                                   backend='cpu')['weight'])
     finally:
-        cpucount.set_target('')
+        cpulib.set_target('')
 
     assert len(reached) >= 2, f'need >=2 targets to compare, got {reached}'
     for name, res in zip(reached[1:], results[1:]):
@@ -343,7 +343,7 @@ def test_unbuilt_backend_is_declined(monkeypatch):
     p = Particles(pos, w)
     battrs = BinAttrs(s=EDGES['lin'])
     mattrs = MeshAttrs(p, p, battrs=battrs)
-    monkeypatch.setattr(_cpu, 'cpucount', None)
+    monkeypatch.setattr(_cpu, 'cpulib', None)
     with pytest.raises(NotImplementedError, match='not built'):
         count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')
 
@@ -374,14 +374,14 @@ def test_backend_env_var(monkeypatch):
                                        ('lin', 2), ('log', 2)])
 def test_scatter_strategies_agree(kind, ndim):
     """Both histogram strategies must give identical answers."""
-    cpucount = _cpu.cpucount
+    cpulib = _cpu.cpulib
     pos1, w1 = catalog(1)
     pos2, w2 = catalog(2)
     sedges = EDGES[kind]
     kw = dict(muedges=MU if ndim == 2 else None, boxsize=(BOX,) * 3,
               bin=kind, periodic=True, nthreads=4)
-    a = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, scatter='scalar', **kw)
-    b = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, scatter='binmajor', **kw)
+    a = cpulib.count2_arrays(pos1, w1, pos2, w2, sedges, scatter='scalar', **kw)
+    b = cpulib.count2_arrays(pos1, w1, pos2, w2, sedges, scatter='binmajor', **kw)
     # Non-triviality first: two dead kernels agree on all-zeros, which is how a
     # stale build once passed this test.
     assert a.sum() > 0
@@ -390,14 +390,14 @@ def test_scatter_strategies_agree(kind, ndim):
 
 @pytest.mark.parametrize('ndim', [1, 2])
 def test_float32_close_to_double(ndim):
-    cpucount = _cpu.cpucount
+    cpulib = _cpu.cpulib
     pos1, w1 = catalog(1)
     pos2, w2 = catalog(2)
     sedges = EDGES['lin']
     kw = dict(muedges=MU if ndim == 2 else None, boxsize=(BOX,) * 3,
               periodic=True, nthreads=4)
-    f64 = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, float32=False, **kw)
-    f32 = cpucount.count2_arrays(pos1, w1, pos2, w2, sedges, float32=True, **kw)
+    f64 = cpulib.count2_arrays(pos1, w1, pos2, w2, sedges, float32=False, **kw)
+    f32 = cpulib.count2_arrays(pos1, w1, pos2, w2, sedges, float32=True, **kw)
     assert f64.sum() > 0  # see test_scatter_strategies_agree
     # Single precision moves pairs across bin edges, so compare loosely and
     # scale the floor to the typical bin population.
@@ -431,20 +431,20 @@ def test_tuning_does_not_change_results():
 
 
 def test_tuning_isa_pins_and_restores():
-    cpucount = _cpu.cpucount
+    cpulib = _cpu.cpulib
     particles, battrs, mattrs, _, _ = setup('lin', 1, 'z', True)
     kw = dict(battrs=battrs, mattrs=mattrs, backend='cpu')
-    before = cpucount.current_target()
+    before = cpulib.current_target()
     want = count2(*particles, **kw)['weight']
     # The narrowest attainable target is always compiled in, so it is a safe pin.
-    isa = cpucount.available_targets()[-1]
+    isa = cpulib.available_targets()[-1]
     got = count2(*particles, tuning={'isa': isa}, **kw)['weight']
     assert np.allclose(got, want, rtol=1e-9, atol=0)
     # Automatic selection must be restored after the call, error or not.
-    assert cpucount.current_target() == before
+    assert cpulib.current_target() == before
     with pytest.raises(ValueError, match='unknown or unavailable'):
         count2(*particles, tuning={'isa': 'NOT_AN_ISA'}, **kw)
-    assert cpucount.current_target() == before
+    assert cpulib.current_target() == before
 
 
 def test_nthreads_keyword_deprecated():

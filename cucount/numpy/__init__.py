@@ -1110,7 +1110,21 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         GPUs); the CPU backend accepts ``nthreads`` (CPU threads), ``isa``
         (e.g. 'AVX2', pinning Highway for this call) and ``scatter``
         ('scalar' or 'binmajor'). With ``backend='compare'``, nest per backend:
-        ``{'cpu': {...}, 'cuda': {...}}``.
+        ``{'cpu': {...}, 'cuda': {...}}``. None of them changes the result.
+
+        On ``scatter``: SIMD can compute a vector of bin indices but cannot
+        scatter-accumulate into a histogram, since two lanes may fall in the
+        same bin. 'scalar' (the default) spills the vector to a buffer and adds
+        the lanes one at a time, costing O(lanes) per vector whatever the bin
+        count. 'binmajor' instead keeps a per-lane replica of the whole
+        histogram and sweeps it with masked vector adds, costing O(nbins) per
+        vector and never leaving SIMD. So 'binmajor' pays only when there are
+        fewer bins than lanes -- a handful of ``s`` bins and nothing else --
+        and loses on anything wider, which is why it is not the default. It
+        also applies to the plain ``w1 * w2`` path only: spin, PIP, negative or
+        angular weights, a selection and multipoles all give a pair its own
+        weight, which one number per (bin, lane) cannot hold, so those go to
+        'scalar' regardless of what is asked for.
 
     Returns
     -------

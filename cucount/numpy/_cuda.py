@@ -13,7 +13,7 @@ import numpy as np
 
 logger = logging.getLogger('cucount')
 
-_lib = None
+_cudalib = None
 
 
 TUNING_KEYS = ('nthreads',)
@@ -36,10 +36,10 @@ def _level_name():
     return logging.getLevelName(logger.getEffectiveLevel()).lower()
 
 
-def lib():
+def cudalib():
     """Return the CUDA extension, importing it on first use."""
-    global _lib
-    if _lib is None:
+    global _cudalib
+    if _cudalib is None:
         try:
             import cucountlib.cuda
         except ImportError as exc:
@@ -47,15 +47,15 @@ def lib():
                 "the cucount CUDA extension is not available (was cucount built with "
                 "-DCUCOUNT_BUILD_CUDA=OFF, or is CUDA missing?); only backend='cpu' "
                 "can be served") from exc
-        _lib = cucountlib.cuda
-        _lib.setup_logging(_level_name())
-    return _lib
+        _cudalib = cucountlib.cuda
+        _cudalib.setup_logging(_level_name())
+    return _cudalib
 
 
 def available():
     """Whether the extension can be imported -- WITHOUT importing it, so that
     asking the question does not pull in the CUDA libraries."""
-    if _lib is not None:
+    if _cudalib is not None:
         return True
     import importlib.util
     try:
@@ -67,8 +67,8 @@ def available():
 def setup_logging(level):
     """Sync the level into the extension, but only once it has been imported:
     importing it here would defeat the laziness this module exists for."""
-    if _lib is not None:
-        _lib.setup_logging(level)
+    if _cudalib is not None:
+        _cudalib.setup_logging(level)
 
 
 def _check_tuning(tuning):
@@ -124,9 +124,15 @@ def count2(cparticles, battrs, mattrs, wattrs=None, sattrs=None, spattrs=None,
     foreign module_local loading.
     """
     tuning = _check_tuning(tuning)
-    return lib().count2(*cparticles, mattrs._to_c(), battrs=battrs,
-                        wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs,
-                        nthreads=tuning.get('nthreads', 1))
+    result, (mesh_seconds, count_seconds) = cudalib().count2(
+        *cparticles, mattrs._to_c(), battrs=battrs,
+        wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs,
+        nthreads=tuning.get('nthreads', 1), return_timings=True)
+    # The devices run concurrently, so these are the slowest of them, not the
+    # sum -- the same two numbers, in the same order, as the CPU adapter logs.
+    logger.debug('cuda backend: mesh %.1f ms, count %.1f ms',
+                 mesh_seconds * 1e3, count_seconds * 1e3)
+    return result
 
 
 def count3close(cparticles, mattrs1, mattrs2, mattrs3, battrs12, battrs13,
@@ -135,7 +141,7 @@ def count3close(cparticles, mattrs1, mattrs2, mattrs3, battrs12, battrs13,
                 close_pair=(1, 2), tuning=None):
     """Run count3close on the CUDA backend (the CPU backend has no triplets)."""
     tuning = _check_tuning(tuning)
-    return lib().count3close(
+    result, (mesh_seconds, count_seconds) = cudalib().count3close(
         *cparticles,
         mattrs1._to_c(),
         mattrs2._to_c(),
@@ -152,7 +158,13 @@ def count3close(cparticles, mattrs1, mattrs2, mattrs3, battrs12, battrs13,
         veto23=veto23,
         close_pair=close_pair,
         nthreads=tuning.get('nthreads', 1),
+        return_timings=True,
     )
+    # The devices run concurrently, so these are the slowest of them, not the
+    # sum -- the same two numbers, in the same order, as the CPU adapter logs.
+    logger.debug('cuda backend: mesh %.1f ms, count %.1f ms',
+                 mesh_seconds * 1e3, count_seconds * 1e3)
+    return result
 
 
 def count3(cparticles, mattrs1, mattrs2, mattrs3, battrs12, battrs13,
@@ -160,7 +172,7 @@ def count3(cparticles, mattrs1, mattrs2, mattrs3, battrs12, battrs13,
            tuning=None):
     """Run count3 on the CUDA backend (the CPU backend has no triplets)."""
     tuning = _check_tuning(tuning)
-    return lib().count3(
+    result, (mesh_seconds, count_seconds) = cudalib().count3(
         *cparticles,
         mattrs1._to_c(),
         mattrs2._to_c(),
@@ -173,4 +185,10 @@ def count3(cparticles, mattrs1, mattrs2, mattrs3, battrs12, battrs13,
         veto12=veto12,
         veto13=veto13,
         nthreads=tuning.get('nthreads', 1),
+        return_timings=True,
     )
+    # The devices run concurrently, so these are the slowest of them, not the
+    # sum -- the same two numbers, in the same order, as the CPU adapter logs.
+    logger.debug('cuda backend: mesh %.1f ms, count %.1f ms',
+                 mesh_seconds * 1e3, count_seconds * 1e3)
+    return result

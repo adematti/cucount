@@ -29,7 +29,7 @@ from cucount.numpy import (BinAttrs, MeshAttrs, Particles, SelectionAttrs,  # no
 
 try:
     import cucount.jax as cj
-    HAS_FFI_CPU = cj.ffi_cpucount is not None
+    HAS_FFI_CPU = cj.ffi_cpulib is not None
 except ImportError:
     cj = None
     HAS_FFI_CPU = False

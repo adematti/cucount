@@ -172,7 +172,7 @@ struct Count2KernelArgs {
     // accumulator.
     double* out = nullptr;
 
-    // Optional [mesh_seconds, pair_seconds], to separate setup from pair work.
+    // Optional [mesh_seconds, count_seconds], to separate setup from the counting.
     double* timings = nullptr;
 };
 

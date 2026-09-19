@@ -14,9 +14,9 @@ import os
 # lands the module in a build-tree cucountlib/ (a namespace package that
 # merges with the installed one), so PYTHONPATH=<build dir> suffices.
 try:
-    from cucountlib import cpu as cpucount
+    from cucountlib import cpu as cpulib
 except ImportError:  # -DCUCOUNT_BUILD_CPU=OFF
-    cpucount = None
+    cpulib = None
 
 logger = logging.getLogger('cucount')
 
@@ -30,13 +30,13 @@ scatter   'scalar' (default) or 'binmajor' accumulation strategy
 
 
 def available():
-    return cpucount is not None
+    return cpulib is not None
 
 
 def setup_logging(level):
     """Sync the level into the extension (a no-op when it is not built)."""
-    if cpucount is not None:
-        cpucount.setup_logging(level)
+    if cpulib is not None:
+        cpulib.setup_logging(level)
 
 
 def nthreads():
@@ -63,7 +63,7 @@ def unavailable():
     CPU backend reports a limit by name while CUDA goes ahead and computes
     something else.
     """
-    if cpucount is None:
+    if cpulib is None:
         return 'CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)'
     return None
 
@@ -79,14 +79,12 @@ def count3(cparticles, mattrs, battrs12, battrs13, wattrs=None, sattrs=None,
     kwargs = dict(sattrs12=sattrs[0], sattrs13=sattrs[1],
                   veto12=vetos[0], veto13=vetos[1],
                   nthreads=int(tuning.get('nthreads') or nthreads()),
-                  return_timings=True)
-    if wattrs is not None:
-        kwargs['wattrs'] = wattrs._to_c()
+                  return_timings=True, wattrs=wattrs._to_c())
 
-    result, (mesh_seconds, triplet_seconds) = cpucount.count3(
+    result, (mesh_seconds, count_seconds) = cpulib.count3(
         *cparticles, *[m._to_c() for m in mattrs], battrs12, battrs13, **kwargs)
-    logger.debug('cpu backend: mesh %.1f ms, triplets %.1f ms',
-                 mesh_seconds * 1e3, triplet_seconds * 1e3)
+    logger.debug('cpu backend: mesh %.1f ms, count %.1f ms',
+                 mesh_seconds * 1e3, count_seconds * 1e3)
     return result
 
 
@@ -98,19 +96,18 @@ def count3close(cparticles, mattrs, battrs, wattrs=None, sattrs=None, vetos=None
     if unknown:
         raise ValueError(f'CPU backend tuning: count3close accepts only nthreads, got {sorted(unknown)}')
 
+    # battrs23 is the one that really can be None: the (2, 3) axis is optional.
     kwargs = dict(battrs23=battrs[2],
                   sattrs12=sattrs[0], sattrs13=sattrs[1], sattrs23=sattrs[2],
                   veto12=vetos[0], veto13=vetos[1], veto23=vetos[2],
                   close_pair=str(close_pair),
                   nthreads=int(tuning.get('nthreads') or nthreads()),
-                  return_timings=True)
-    if wattrs is not None:
-        kwargs['wattrs'] = wattrs._to_c()
+                  return_timings=True, wattrs=wattrs._to_c())
 
-    result, (mesh_seconds, triplet_seconds) = cpucount.count3close(
+    result, (mesh_seconds, count_seconds) = cpulib.count3close(
         *cparticles, *[m._to_c() for m in mattrs], battrs[0], battrs[1], **kwargs)
-    logger.debug('cpu backend: mesh %.1f ms, triplets %.1f ms',
-                 mesh_seconds * 1e3, triplet_seconds * 1e3)
+    logger.debug('cpu backend: mesh %.1f ms, count %.1f ms',
+                 mesh_seconds * 1e3, count_seconds * 1e3)
     return result
 
 
@@ -124,30 +121,25 @@ def count2(cparticles, battrs, mattrs, wattrs=None, sattrs=None, spattrs=None,
     """
     tuning = _check_tuning(tuning)
 
-    kwargs = dict(scatter=str(tuning.get('scatter', 'scalar')),
-                  nthreads=int(tuning.get('nthreads') or nthreads()),
-                  return_timings=True)
-    if wattrs is not None:
-        kwargs['wattrs'] = wattrs._to_c()
     # Selections and splits go through too: the binding lowers them, and the
     # kernel applies the selection as a per-pair veto.
-    if sattrs is not None:
-        kwargs['sattrs'] = sattrs
-    if spattrs is not None:
-        kwargs['spattrs'] = spattrs
+    kwargs = dict(scatter=str(tuning.get('scatter', 'scalar')),
+                  nthreads=int(tuning.get('nthreads') or nthreads()),
+                  return_timings=True,
+                  wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs)
 
     isa = tuning.get('isa')
-    if isa is not None and cpucount.set_target(isa) is None:
-        cpucount.set_target('')
+    if isa is not None and cpulib.set_target(isa) is None:
+        cpulib.set_target('')
         raise ValueError(f'CPU backend tuning: ISA {isa!r} unknown or unavailable; '
-                         f'available: {cpucount.available_targets()}')
+                         f'available: {cpulib.available_targets()}')
     try:
-        result, (mesh_seconds, pair_seconds) = cpucount.count2(
+        result, (mesh_seconds, count_seconds) = cpulib.count2(
             *cparticles, mattrs._to_c(), battrs, **kwargs)
     finally:
         if isa is not None:
-            cpucount.set_target('')
+            cpulib.set_target('')
     # The mesh build is still serial, so its share grows with thread count.
-    logger.debug('cpu backend: mesh %.1f ms, pairs %.1f ms',
-                 mesh_seconds * 1e3, pair_seconds * 1e3)
+    logger.debug('cpu backend: mesh %.1f ms, count %.1f ms',
+                 mesh_seconds * 1e3, count_seconds * 1e3)
     return result

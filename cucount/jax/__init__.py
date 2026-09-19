@@ -18,13 +18,13 @@ import os
 # -DCUCOUNT_BUILD_CUDA=OFF drops ffi_cuda, -DCUCOUNT_BUILD_CPU=OFF drops
 # ffi_cpu, and a build without jax's headers drops both.
 try:
-    from cucountlib import ffi_cuda as ffi_cucount
+    from cucountlib import ffi_cuda as ffi_cudalib
 except ImportError:
-    ffi_cucount = None
+    ffi_cudalib = None
 try:
-    from cucountlib import ffi_cpu as ffi_cpucount
+    from cucountlib import ffi_cpu as ffi_cpulib
 except ImportError:
-    ffi_cpucount = None
+    ffi_cpulib = None
 from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weights, _format_positions, _format_values, _stack_values, count2_analytic, setup_logging, _setup_cucount_logging, _get_ells
 from cucount import numpy
 
@@ -41,17 +41,24 @@ against inside a traced computation, so a run picks one backend and stays on
 it. No backend is ever chosen implicitly.
 """
 
-# One FFI target per (entry point, backend). The CUDA targets keep their
-# historical unqualified names, so existing lowered computations still resolve.
-_FFI_SUFFIX = {'cuda': '', 'cpu': '_cpu'}
+# One FFI target per (entry point, backend), named alike: count2_cuda and
+# count2_cpu, never a bare count2. A computation lowered before this carried
+# the unqualified CUDA name and will not resolve against this build; jax lowers
+# per process, so that only reaches an ahead-of-time export.
+#
+# The suffix, the module and the XLA platform name for each backend, in one
+# place: the registration below and _resolve_ffi_backend both read it, so a
+# target cannot be registered under one name and called under another.
+_FFI_SUFFIX = {'cuda': '_cuda', 'cpu': '_cpu'}
+_FFI_BACKENDS = {'cuda': (ffi_cudalib, 'CUDA'), 'cpu': (ffi_cpulib, 'cpu')}
 
 for _name in ('count2', 'count3', 'count3close'):
-    if ffi_cucount is not None:
-        jax.ffi.register_ffi_target(_name, getattr(ffi_cucount, _name)(), platform='CUDA')
-    if ffi_cpucount is not None:
-        jax.ffi.register_ffi_target(_name + '_cpu', getattr(ffi_cpucount, _name)(),
-                                    platform='cpu')
-del _name
+    for _mode, (_module, _platform) in _FFI_BACKENDS.items():
+        if _module is None:
+            continue
+        jax.ffi.register_ffi_target(_name + _FFI_SUFFIX[_mode],
+                                    getattr(_module, _name)(), platform=_platform)
+del _name, _mode, _module, _platform
 
 
 def _resolve_ffi_backend(backend=None):
@@ -62,7 +69,7 @@ def _resolve_ffi_backend(backend=None):
                          "frontend runs one backend per computation")
     if mode not in BACKENDS:
         raise ValueError(f'backend must be one of {BACKENDS}, got {mode!r}')
-    module = ffi_cucount if mode == 'cuda' else ffi_cpucount
+    module = _FFI_BACKENDS[mode][0]
     if module is None:
         raise NotImplementedError(
             f'the {mode} JAX FFI module is not built; it needs the matching backend '
@@ -76,9 +83,9 @@ def set_cpu_nthreads(nthreads: int):
     This is per device, so under shard_map over N jax CPU devices there are N
     such calls in flight and the machine sees N * nthreads threads.
     """
-    if ffi_cpucount is None:
+    if ffi_cpulib is None:
         raise NotImplementedError('the cpu JAX FFI module is not built')
-    ffi_cpucount.set_nthreads(int(nthreads))
+    ffi_cpulib.set_nthreads(int(nthreads))
 
 
 def create_sharding_mesh(device_mesh_shape=None):
@@ -293,7 +300,7 @@ def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs,
     bufsize += nblocks * len(names) * size
 
     buffer_type = jax.ShapeDtypeStruct((bufsize,), dtype)
-    call = jax.ffi.ffi_call("count2", (res_type, buffer_type))
+    call = jax.ffi.ffi_call("count2" + suffix, (res_type, buffer_type))
 
     args = sum(
         ([particle.positions, _stack_values(particle.values, np=jnp)] for particle in particles),
