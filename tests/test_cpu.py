@@ -16,11 +16,13 @@ import itertools
 
 import numpy as np
 import pytest
+
+import cucount.numpy
 from cucount.numpy import (BinAttrs, MeshAttrs, Particles, SelectionAttrs,
-                           SplitAttrs, WeightAttrs, _cpu, count2)
+                           SplitAttrs, WeightAttrs, count2, cpu_available, cpulib)
 
 pytestmark = pytest.mark.skipif(
-    not _cpu.available(), reason='CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)')
+    not cpu_available(), reason='CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)')
 
 
 def _cuda_available():
@@ -235,7 +237,6 @@ def test_thread_count_invariance(monkeypatch):
 
 def test_simd_targets_agree():
     """Every compiled ISA must produce the same answer."""
-    cpulib = _cpu.cpulib
     particles, battrs, mattrs, _, _ = setup('log', 2, 'midpoint', True)
 
     reached, results = [], []
@@ -343,7 +344,7 @@ def test_unbuilt_backend_is_declined(monkeypatch):
     p = Particles(pos, w)
     battrs = BinAttrs(s=EDGES['lin'])
     mattrs = MeshAttrs(p, p, battrs=battrs)
-    monkeypatch.setattr(_cpu, 'cpulib', None)
+    monkeypatch.setattr(cucount.numpy, 'cpulib', None)
     with pytest.raises(NotImplementedError, match='not built'):
         count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')
 
@@ -374,7 +375,6 @@ def test_backend_env_var(monkeypatch):
                                        ('lin', 2), ('log', 2)])
 def test_scatter_strategies_agree(kind, ndim):
     """Both histogram strategies must give identical answers."""
-    cpulib = _cpu.cpulib
     pos1, w1 = catalog(1)
     pos2, w2 = catalog(2)
     sedges = EDGES[kind]
@@ -390,7 +390,6 @@ def test_scatter_strategies_agree(kind, ndim):
 
 @pytest.mark.parametrize('ndim', [1, 2])
 def test_float32_close_to_double(ndim):
-    cpulib = _cpu.cpulib
     pos1, w1 = catalog(1)
     pos2, w2 = catalog(2)
     sedges = EDGES['lin']
@@ -431,7 +430,6 @@ def test_tuning_does_not_change_results():
 
 
 def test_tuning_isa_pins_and_restores():
-    cpulib = _cpu.cpulib
     particles, battrs, mattrs, _, _ = setup('lin', 1, 'z', True)
     kw = dict(battrs=battrs, mattrs=mattrs, backend='cpu')
     before = cpulib.current_target()

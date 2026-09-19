@@ -14,17 +14,6 @@ import numpy as np
 # / .ffi_cuda; local aliases keep the frontend text stable.
 from cucountlib import attrs as cucount_attrs
 
-# One adapter module per backend, same shape on both sides (available,
-# setup_logging, TUNING_KEYS, unsupported, count2, ...); this module keeps the
-# backend-neutral API: the attribute classes, Particles, the utilities and the
-# dispatch between them. _cuda imports its extension lazily, so a CUDA-less
-# build still imports this module and serves backend='cpu'.
-from . import _cpu, _cuda
-
-# Kernel limits and checks that belong to the CUDA kernels, re-exported here
-# for the public API (cucount.jax uses check_kernel_ells).
-from ._cuda import KERNEL_ELLMAX, check_kernel_ells  # noqa: F401
-
 logger = logging.getLogger('cucount')
 
 
@@ -45,8 +34,243 @@ compare  run both and raise if they disagree
 # contract; this is. One knob, applied everywhere compare mode compares.
 COMPARE_RTOL = float(os.environ.get('CUCOUNT_COMPARE_RTOL', 1e-9))
 
-CUDA_TUNING_KEYS = _cuda.TUNING_KEYS
-CPU_TUNING_KEYS = _cpu.TUNING_KEYS
+# ---------------------------------------------------------------------------
+# Backends
+# ---------------------------------------------------------------------------
+# Both backends against the same three entry points, side by side rather than
+# in an adapter module each: after the two converged, what is left per backend
+# is the extension handle, its tuning keys and the call itself, and everything
+# else -- what a request may ask for, how it is dispatched, how a disagreement
+# is reported -- is backend-neutral and lives below.
+#
+# The CUDA extension is imported lazily and nothing outside cudalib() may touch
+# cucountlib.cuda, so a -DCUCOUNT_BUILD_CUDA=OFF build (or a machine with no
+# CUDA libraries) still imports this module and serves backend='cpu'.
+
+try:
+    from cucountlib import cpu as cpulib
+except ImportError:  # -DCUCOUNT_BUILD_CPU=OFF
+    cpulib = None
+
+_cudalib = None
+
+
+def cudalib():
+    """Return the CUDA extension, importing it on first use."""
+    global _cudalib
+    if _cudalib is None:
+        try:
+            import cucountlib.cuda
+        except ImportError as exc:
+            raise ImportError(
+                "the cucount CUDA extension is not available (was cucount built with "
+                "-DCUCOUNT_BUILD_CUDA=OFF, or is CUDA missing?); only backend='cpu' "
+                "can be served") from exc
+        _cudalib = cucountlib.cuda
+        _cudalib.setup_logging(_log_level_name())
+    return _cudalib
+
+
+def cuda_available():
+    """Whether the CUDA extension can be imported -- without importing it, so
+    that asking the question does not pull in the CUDA libraries."""
+    if _cudalib is not None:
+        return True
+    import importlib.util
+    try:
+        return importlib.util.find_spec('cucountlib.cuda') is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def cpu_available():
+    return cpulib is not None
+
+
+def cpu_nthreads():
+    """CPU threads, which is not what CUDA's nthreads means (that is GPUs)."""
+    n = os.environ.get('CUCOUNT_CPU_NTHREADS')
+    return int(n) if n else len(os.sched_getaffinity(0))
+
+
+CUDA_TUNING_KEYS = ('nthreads',)
+"""Tuning keys the CUDA backend accepts through the public tuning= keyword.
+
+nthreads  number of GPUs (within the same node) to run in parallel on
+
+Kernel launch geometry is chosen by occupancy (CONFIGURE_KERNEL_LAUNCH) and
+is not exposed.
+"""
+
+CPU_TUNING_KEYS = ('nthreads', 'isa', 'scatter')
+"""Tuning keys the CPU backend accepts through the public tuning= keyword.
+
+nthreads  CPU threads (default: CUCOUNT_CPU_NTHREADS, else the affinity mask)
+isa       Highway target to pin for this call, e.g. 'AVX2' (default: automatic)
+scatter   'scalar' (default) or 'binmajor' accumulation strategy
+"""
+
+_TUNING_KEYS = {'cuda': CUDA_TUNING_KEYS, 'cpu': CPU_TUNING_KEYS}
+
+
+# Mirrors ELLMAX in cuda/include/count3close.h. The kernel applies it as
+# `ellmax = MIN(ellmax, ELLMAX)`, i.e. it clamps silently: asking for higher
+# orders returns fewer poles than the binning describes, with no error. Keep in
+# sync with the header (raising it also needs MMAX_SIZE = ELLMAX + 1).
+KERNEL_ELLMAX = 5
+
+
+def _check_tuning(backend, tuning):
+    """Validate a tuning dict for one backend, rejecting unknown keys by name."""
+    tuning = dict(tuning or {})
+    unknown = set(tuning) - set(_TUNING_KEYS[backend])
+    if unknown:
+        extra = (' (kernel launch geometry is chosen by occupancy and is not exposed yet)'
+                 if backend == 'cuda' else '')
+        raise ValueError(f'{backend.upper()} backend tuning: unknown keys {sorted(unknown)}; '
+                         f'accepted: {list(_TUNING_KEYS[backend])}{extra}')
+    return tuning
+
+
+def _unavailable(backend):
+    """Return a reason string if a backend cannot run at all, else None.
+
+    Nothing else is declined per backend. What neither kernel can serve is the
+    same for both, so it is checked once in _check_count2 / _check_count3
+    before either is chosen -- otherwise one backend would report a limit by
+    name while the other went ahead and computed something else.
+    """
+    if backend == 'cpu' and cpulib is None:
+        return 'CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)'
+    if backend == 'cuda' and not cuda_available():
+        return 'CUDA backend not built (-DCUCOUNT_BUILD_CUDA=ON)'
+    return None
+
+
+def _log_timings(backend, mesh_seconds, count_seconds):
+    """The mesh/count split both bindings return, logged the same way.
+
+    On CUDA the devices run concurrently, so these are the slowest of them
+    rather than the sum; on the CPU the mesh build is still serial, so its
+    share grows with the thread count.
+    """
+    logger.debug('%s backend: mesh %.1f ms, count %.1f ms',
+                 backend, mesh_seconds * 1e3, count_seconds * 1e3)
+
+
+def check_kernel_ells(*battrs_or_ells):
+    """
+    Raise if any requested multipole exceeds what the count3 kernel can compute.
+
+    Without this the kernel clamps silently, and the mismatch surfaces far downstream -- as an
+    opaque IndexError while packing the poles, or, worse, as counts quietly built from the wrong
+    multipoles.
+    """
+    ells = [_get_ells(x) for x in battrs_or_ells if x is not None]  # battrs23 is optional
+    ells = [ell for ell in ells if ell is not None and len(ell)]
+    if not ells: return
+    requested = max(max(np.ravel(ell)) for ell in ells)
+    if requested > KERNEL_ELLMAX:
+        raise ValueError(
+            f'requested multipoles up to ell = {requested}, but the count3/count3close cucount kernel supports only '
+            f'ell <= {KERNEL_ELLMAX} (ELLMAX in cuda/include/count3close.h) and would clamp silently. '
+            f'Lower the requested multipoles, or rebuild cucount with a larger ELLMAX '
+            f'(and MMAX_SIZE = ELLMAX + 1).')
+
+
+# --- the calls themselves --------------------------------------------------
+# ``cparticles`` are already-converted native Particles, one conversion serving
+# both backends; the attrs cross into either extension through pybind's foreign
+# module_local loading.
+
+def _cuda_count2(cparticles, battrs, mattrs, wattrs=None, sattrs=None, spattrs=None,
+                 tuning=None):
+    tuning = _check_tuning('cuda', tuning)
+    result, timings = cudalib().count2(
+        *cparticles, mattrs._to_c(), battrs=battrs,
+        wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs,
+        nthreads=tuning.get('nthreads', 1), return_timings=True)
+    _log_timings('cuda', *timings)
+    return result
+
+
+def _cpu_count2(cparticles, battrs, mattrs, wattrs=None, sattrs=None, spattrs=None,
+                tuning=None):
+    tuning = _check_tuning('cpu', tuning)
+    # Selections and splits go through too: the binding lowers them, and the
+    # kernel applies the selection as a per-pair veto.
+    kwargs = dict(scatter=str(tuning.get('scatter', 'scalar')),
+                  nthreads=int(tuning.get('nthreads') or cpu_nthreads()),
+                  return_timings=True,
+                  wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs)
+
+    isa = tuning.get('isa')
+    if isa is not None and cpulib.set_target(isa) is None:
+        cpulib.set_target('')
+        raise ValueError(f'CPU backend tuning: ISA {isa!r} unknown or unavailable; '
+                         f'available: {cpulib.available_targets()}')
+    try:
+        result, timings = cpulib.count2(*cparticles, mattrs._to_c(), battrs, **kwargs)
+    finally:
+        if isa is not None:
+            cpulib.set_target('')
+    _log_timings('cpu', *timings)
+    return result
+
+
+def _cuda_count3(cparticles, mattrs, battrs12, battrs13, wattrs=None, sattrs=None,
+                 vetos=None, tuning=None):
+    tuning = _check_tuning('cuda', tuning)
+    result, timings = cudalib().count3(
+        *cparticles, *[m._to_c() for m in mattrs],
+        battrs12=battrs12, battrs13=battrs13, wattrs=wattrs._to_c(),
+        sattrs12=sattrs[0], sattrs13=sattrs[1], veto12=vetos[0], veto13=vetos[1],
+        nthreads=tuning.get('nthreads', 1), return_timings=True)
+    _log_timings('cuda', *timings)
+    return result
+
+
+def _cpu_count3(cparticles, mattrs, battrs12, battrs13, wattrs=None, sattrs=None,
+                vetos=None, tuning=None):
+    tuning = _check_tuning('cpu', tuning)
+    result, timings = cpulib.count3(
+        *cparticles, *[m._to_c() for m in mattrs], battrs12, battrs13,
+        wattrs=wattrs._to_c(),
+        sattrs12=sattrs[0], sattrs13=sattrs[1], veto12=vetos[0], veto13=vetos[1],
+        nthreads=int(tuning.get('nthreads') or cpu_nthreads()), return_timings=True)
+    _log_timings('cpu', *timings)
+    return result
+
+
+def _cuda_count3close(cparticles, mattrs, battrs, wattrs=None, sattrs=None, vetos=None,
+                      close_pair=(1, 2), tuning=None):
+    tuning = _check_tuning('cuda', tuning)
+    result, timings = cudalib().count3close(
+        *cparticles, *[m._to_c() for m in mattrs],
+        battrs12=battrs[0], battrs13=battrs[1], battrs23=battrs[2],
+        wattrs=wattrs._to_c(),
+        sattrs12=sattrs[0], sattrs13=sattrs[1], sattrs23=sattrs[2],
+        veto12=vetos[0], veto13=vetos[1], veto23=vetos[2],
+        close_pair=close_pair,
+        nthreads=tuning.get('nthreads', 1), return_timings=True)
+    _log_timings('cuda', *timings)
+    return result
+
+
+def _cpu_count3close(cparticles, mattrs, battrs, wattrs=None, sattrs=None, vetos=None,
+                     close_pair=(1, 2), tuning=None):
+    tuning = _check_tuning('cpu', tuning)
+    # battrs[2] is the one that really can be None: the (2, 3) axis is optional.
+    result, timings = cpulib.count3close(
+        *cparticles, *[m._to_c() for m in mattrs], battrs[0], battrs[1],
+        battrs23=battrs[2], wattrs=wattrs._to_c(),
+        sattrs12=sattrs[0], sattrs13=sattrs[1], sattrs23=sattrs[2],
+        veto12=vetos[0], veto13=vetos[1], veto23=vetos[2],
+        close_pair=''.join(str(i) for i in close_pair),
+        nthreads=int(tuning.get('nthreads') or cpu_nthreads()), return_timings=True)
+    _log_timings('cpu', *timings)
+    return result
+
 
 
 def _resolve_backend(backend=None):
@@ -82,8 +306,8 @@ def _resolve_tuning(mode, tuning, nthreads=1):
                       "(addressed to the selected backend, so it no longer only means GPUs)",
                       DeprecationWarning, stacklevel=3)
         cuda.setdefault('nthreads', nthreads)
-    _cuda._check_tuning(cuda)
-    _cpu._check_tuning(cpu)
+    _check_tuning('cuda', cuda)
+    _check_tuning('cpu', cpu)
     return cuda, cpu
 
 
@@ -236,8 +460,12 @@ def _setup_cucount_logging():
     # theirs if (and only if) they are loaded.
     level = _log_level_name()
     cucount_attrs.setup_logging(level)
-    for backend in (_cuda, _cpu):
-        backend.setup_logging(level)
+    # Each extension holds its own copy; sync the ones that are loaded. Asking
+    # the CUDA one would import it, which is what cudalib() exists to defer.
+    if _cudalib is not None:
+        _cudalib.setup_logging(level)
+    if cpulib is not None:
+        cpulib.setup_logging(level)
 
 
 def setup_logging(level=logging.INFO, stream=sys.stdout,  **kwargs):
@@ -1152,12 +1380,12 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     # either extension through pybind's foreign module_local loading.
     cparticles = [_to_c_particles(p) for p in particles]
 
-    why = None if mode == 'cuda' else _cpu.unavailable()
+    why = _unavailable(mode) if mode in ('cuda', 'cpu') else _unavailable('cpu')
     return _dispatch(
         mode,
-        lambda: _cuda.count2(cparticles, battrs, mattrs, wattrs=wattrs, sattrs=sattrs,
+        lambda: _cuda_count2(cparticles, battrs, mattrs, wattrs=wattrs, sattrs=sattrs,
                              spattrs=spattrs, tuning=cuda_tuning),
-        lambda: _cpu.count2(cparticles, battrs, mattrs, wattrs=wattrs, sattrs=sattrs,
+        lambda: _cpu_count2(cparticles, battrs, mattrs, wattrs=wattrs, sattrs=sattrs,
                             spattrs=spattrs, tuning=cpu_tuning),
         why)
 
@@ -1380,18 +1608,15 @@ def count3close(*particles: Particles,
     sattrs = (sattrs12, sattrs13, sattrs23)
     vetos = (veto12, veto13, veto23)
 
-    why = None if mode == 'cuda' else _cpu.unavailable()
+    why = _unavailable(mode) if mode in ('cuda', 'cpu') else _unavailable('cpu')
     return _dispatch(
         mode,
-        lambda: _cuda.count3close(
-            cparticles, mattrs1, mattrs2, mattrs3,
-            battrs12=battrs12, battrs13=battrs13, battrs23=battrs23,
-            wattrs=wattrs, sattrs12=sattrs12, sattrs13=sattrs13, sattrs23=sattrs23,
-            veto12=veto12, veto13=veto13, veto23=veto23,
-            close_pair=close_pair, tuning=cuda_tuning),
-        lambda: _cpu.count3close(
-            cparticles, mattrs, battrs, wattrs=wattrs, sattrs=sattrs, vetos=vetos,
-            close_pair=''.join(str(i) for i in close_pair), tuning=cpu_tuning),
+        lambda: _cuda_count3close(cparticles, mattrs, battrs, wattrs=wattrs,
+                                  sattrs=sattrs, vetos=vetos,
+                                  close_pair=close_pair, tuning=cuda_tuning),
+        lambda: _cpu_count3close(cparticles, mattrs, battrs, wattrs=wattrs,
+                                 sattrs=sattrs, vetos=vetos,
+                                 close_pair=close_pair, tuning=cpu_tuning),
         why)
 
 
@@ -1488,14 +1713,13 @@ def count3(*particles: Particles,
     cparticles = [_to_c_particles(p) for p in particles]
     mattrs = (mattrs1, mattrs2, mattrs3)
 
-    why = None if mode == 'cuda' else _cpu.unavailable()
+    why = _unavailable(mode) if mode in ('cuda', 'cpu') else _unavailable('cpu')
     return _dispatch(
         mode,
-        lambda: _cuda.count3(cparticles, mattrs1, mattrs2, mattrs3,
-                             battrs12=battrs12, battrs13=battrs13, wattrs=wattrs,
-                             sattrs12=sattrs12, sattrs13=sattrs13,
-                             veto12=veto12, veto13=veto13, tuning=cuda_tuning),
-        lambda: _cpu.count3(cparticles, mattrs, battrs12, battrs13, wattrs=wattrs,
+        lambda: _cuda_count3(cparticles, mattrs, battrs12, battrs13, wattrs=wattrs,
+                             sattrs=(sattrs12, sattrs13), vetos=(veto12, veto13),
+                             tuning=cuda_tuning),
+        lambda: _cpu_count3(cparticles, mattrs, battrs12, battrs13, wattrs=wattrs,
                             sattrs=(sattrs12, sattrs13), vetos=(veto12, veto13),
                             tuning=cpu_tuning),
         why)

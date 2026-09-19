@@ -114,12 +114,12 @@ Highway backend) — while backend-neutral code lives at the root: `include/attr
 `include/common.h` (type definitions). `-DCUCOUNT_BUILD_CUDA=OFF` /
 `-DCUCOUNT_BUILD_CPU=OFF` skip either backend.
 
-The Python frontend mirrors that split: `cucount/numpy/_cuda.py` and
-`cucount/numpy/_cpu.py` are one adapter per backend (same shape on both:
-`available`, `unavailable`, `setup_logging`, `TUNING_KEYS`, `count2`, ...),
-and `cucount/numpy/__init__.py` holds the backend-neutral API — the
-attribute classes, `Particles`, the utilities, and the dispatch between the
-backends.
+The Python frontend does not mirror that split, because after the two
+backends converged there was little left to separate: `cucount/numpy/` and
+`cucount/jax/` each hold both backends in one module, side by side. What is
+per backend is the extension handle, its tuning keys and the call itself;
+everything else — the attribute classes, `Particles`, what a request may ask
+for, the dispatch, how a disagreement is reported — is backend-neutral.
 
 ---
 

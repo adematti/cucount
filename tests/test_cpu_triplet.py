@@ -10,10 +10,10 @@ the port. The CUDA backend is used as a second oracle where it is built.
 import numpy as np
 import pytest
 from cucount.numpy import (BinAttrs, MeshAttrs, Particles, SelectionAttrs,
-                           _cpu, count3)
+                           cpu_available, cpulib, count3)
 
 pytestmark = pytest.mark.skipif(
-    not _cpu.available(), reason='CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)')
+    not cpu_available(), reason='CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)')
 
 
 def _cuda_available():

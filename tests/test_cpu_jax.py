@@ -25,7 +25,7 @@ jax = pytest.importorskip('jax')
 jax.config.update('jax_enable_x64', True)
 
 from cucount.numpy import (BinAttrs, MeshAttrs, Particles, SelectionAttrs,  # noqa: E402
-                           WeightAttrs, _cpu, count2, count3, count3close)
+                           WeightAttrs, count2, count3, count3close, cpu_available)
 
 try:
     import cucount.jax as cj
@@ -35,7 +35,7 @@ except ImportError:
     HAS_FFI_CPU = False
 
 pytestmark = pytest.mark.skipif(
-    not (_cpu.available() and HAS_FFI_CPU),
+    not (cpu_available() and HAS_FFI_CPU),
     reason='the CPU backend and its JAX FFI module are both needed')
 
 BOX = 1000.
