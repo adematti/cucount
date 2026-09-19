@@ -20,21 +20,19 @@
 // common.h's convenience macros on its way out, and attrs.h's own include of
 // common.h then restores them.
 #include "pair_math.h"
+// The shared request bundle: what to count, identical on both backends.
+#include "args.h"
 
 namespace cucount {
 namespace cpu {
 
-// Everything the generic entry point needs, mirroring the CUDA count2()
-// signature. The structs are plain descriptors holding borrowed pointers into
+// What the scalar entry point needs: the shared request bundle, plus what
+// this backend runs it with. Plain descriptors holding borrowed pointers into
 // buffers the caller keeps alive for the duration of the call.
-struct Count2GenericArgs {
+struct Count2Args {
     Particles p1;
     Particles p2;
-    MeshAttrs mattrs;
-    BinAttrs battrs;
-    WeightAttrs wattrs;
-    SelectionAttrs sattrs;
-    SplitAttrs spattrs;
+    Count2Attrs attrs;
 
     int nthreads = 1;
 
@@ -46,7 +44,7 @@ struct Count2GenericArgs {
     double* timings = nullptr;
 };
 
-void Count2Generic(const Count2GenericArgs& args);
+void Count2(const Count2Args& args);
 
 }  // namespace cpu
 }  // namespace cucount

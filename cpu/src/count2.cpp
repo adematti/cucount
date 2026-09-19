@@ -24,7 +24,7 @@ namespace cpu {
 HWY_EXPORT(Count2Dispatch);
 HWY_EXPORT(KernelTarget);  // for querying the SIMD target
 
-void Count2(const Count2Args& args) {
+void Count2Kernel(const Count2KernelArgs& args) {
     HWY_DYNAMIC_DISPATCH(Count2Dispatch)(args);
 }
 

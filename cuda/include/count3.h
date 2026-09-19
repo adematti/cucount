@@ -6,6 +6,7 @@
 #include <cuda.h>
 #include <sm_20_atomic_functions.h>
 #include "common.h"
+#include "args.h"
 
 
 void count3(
@@ -13,15 +14,7 @@ void count3(
     Mesh mesh1,
     Mesh mesh2,
     Mesh mesh3,
-    MeshAttrs mattrs2,
-    MeshAttrs mattrs3,
-    SelectionAttrs sattrs12,
-    SelectionAttrs sattrs13,
-    SelectionAttrs veto12,
-    SelectionAttrs veto13,
-    BinAttrs battrs12,
-    BinAttrs battrs13,
-    WeightAttrs wattrs,
+    const Count3Attrs &attrs,
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream);
 

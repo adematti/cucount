@@ -43,55 +43,9 @@ using pairmath::set_legendre;
 // Per-pair accumulation
 // ---------------------------------------------------------------------------
 
-// The ell values the multipole axis asks for, and whether they are all even
-// (which picks set_legendre's closed forms). Ported from fill_ells and
-// make_device_count2_layout so the two backends agree on the ell ordering.
-struct Layout {
-    size_t nbins = 1;
-    size_t split_size = 1;
-    size_t nells = 0;
-    size_t ells[MAX_POLE + 2] = {0};
-    bool ells_even = false;
-};
-
-size_t fill_ells(const BinAttrs& battrs, int index, size_t* ells) {
-    const size_t ellmin = static_cast<size_t>(battrs.min[index]);
-    const size_t ellmax = static_cast<size_t>(battrs.max[index]);
-    const size_t ellstep = (battrs.bin[index] == BIN_LIN)
-        ? static_cast<size_t>(battrs.step[index]) : size_t{1};
-
-    if (ellstep == 0) return 0;
-    size_t nells = 0;
-    for (size_t ell = ellmin; ell <= ellmax; ell += ellstep) ells[nells++] = ell;
-    return nells;
-}
-
-Layout make_layout(const BinAttrs& battrs, const SplitAttrs& spattrs) {
-    Layout layout;
-    layout.nbins = battrs.size;
-    layout.split_size = spattrs.size;
-
-    if (battrs.ndim > 0 && battrs.var[battrs.ndim - 1] == VAR_POLE) {
-        const int ipole = static_cast<int>(battrs.ndim) - 1;
-        layout.nells = fill_ells(battrs, ipole, layout.ells);
-
-        if (layout.nells > 0) {
-            if (layout.nells == 1) {
-                layout.ells_even = (layout.ells[0] % 2 == 0);
-            }
-            else {
-                const size_t ellstep = (battrs.asize[ipole] == 0)
-                    ? static_cast<size_t>(battrs.step[ipole]) : size_t{1};
-                layout.ells_even = ((layout.ells[0] % 2 == 0) && (ellstep % 2 == 0));
-            }
-        }
-    }
-    return layout;
-}
-
 inline void accumulate_weight2(double* counts, const double* weight, size_t wsize,
                                size_t bin_loc, int nsplit_targets,
-                               const size_t* split_targets, const Layout& layout,
+                               const size_t* split_targets, const Count2PoleLayout& layout,
                                double factor) {
     if (nsplit_targets == 0) {
         for (size_t iweight = 0; iweight < wsize; iweight++)
@@ -116,7 +70,7 @@ void add_weight2(double* counts,
                  const IndexValue& index_value1, const IndexValue& index_value2,
                  const BinAttrs& battrs, const WeightAttrs& wattrs,
                  const MeshAttrs& mattrs, const SplitAttrs& spattrs,
-                 const Layout& layout) {
+                 const Count2PoleLayout& layout) {
     int nsplit_targets = 0;
     size_t split_targets[2] = {0, 0};
 
@@ -307,17 +261,18 @@ void add_weight2(double* counts,
 // Entry point
 // ---------------------------------------------------------------------------
 
-void Count2Generic(const Count2GenericArgs& args) {
+void Count2(const Count2Args& args) {
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
 
-    const MeshAttrs& mattrs = args.mattrs;
+    const MeshAttrs& mattrs = args.attrs.mattrs;
     const ScalarMesh m1 = build_mesh(args.p1, mattrs);
     const ScalarMesh m2 = build_mesh(args.p2, mattrs);
 
     const auto t1 = Clock::now();
 
-    const Layout layout = make_layout(args.battrs, args.spattrs);
+    const Count2PoleLayout layout =
+        make_count2_pole_layout(m1.iv, m2.iv, args.attrs.battrs, args.attrs.spattrs);
     char raw_names[MAX_NWEIGHT][SIZE_NAME];
     const size_t nweights = get_count2_weight_names(m1.iv, m2.iv, raw_names);
     const size_t csize = nweights * layout.split_size * layout.nbins;
@@ -344,12 +299,12 @@ void Count2Generic(const Count2GenericArgs& args) {
                 const double* value2 = m2.value(jj);
 
                 if (!is_selected_pair(sposition1, sposition2, position1, position2,
-                                      args.sattrs, mattrs))
+                                      args.attrs.sattrs, mattrs))
                     return;
 
                 add_weight2(local.data(), sposition1, sposition2, position1, position2,
-                            value1, value2, m1.iv, m2.iv, args.battrs, args.wattrs,
-                            mattrs, args.spattrs, layout);
+                            value1, value2, m1.iv, m2.iv, args.attrs.battrs, args.attrs.wattrs,
+                            mattrs, args.attrs.spattrs, layout);
             });
         }
 

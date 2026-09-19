@@ -45,7 +45,7 @@ void add_weight3(double* counts, const double local_frame[3][3],
                  const MeshAttrs& mattrs2, const MeshAttrs& mattrs3,
                  const BinAttrs& battrs12, const BinAttrs& battrs13,
                  const BinAttrs& battrs23, const WeightAttrs& wattrs,
-                 const Count3ProjLayout& layout) {
+                 const Count3PoleLayout& layout) {
     if (battrs12.ndim == 0 || battrs13.ndim == 0) return;
     const bool has_third = (battrs23.ndim > 0);
     const int ncoords = has_third ? 3 : 2;
@@ -202,21 +202,21 @@ void add_weight3(double* counts, const double local_frame[3][3],
 
 }  // namespace
 
-void Count3Close(const Count3CloseArgs& args) {
+void Count3Close(const Count3Args& args) {
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
 
-    const ScalarMesh m1 = build_mesh(args.p1, args.mattrs1);
-    const ScalarMesh m2 = build_mesh(args.p2, args.mattrs2);
-    const ScalarMesh m3 = build_mesh(args.p3, args.mattrs3);
+    const ScalarMesh m1 = build_mesh(args.p1, args.attrs.mattrs1);
+    const ScalarMesh m2 = build_mesh(args.p2, args.attrs.mattrs2);
+    const ScalarMesh m3 = build_mesh(args.p3, args.attrs.mattrs3);
 
     const auto t1 = Clock::now();
 
-    const Count3ProjLayout layout =
-        make_count3_proj_layout(args.battrs12, args.battrs13, args.battrs23);
+    const Count3PoleLayout layout =
+        make_count3_pole_layout(args.attrs.battrs12, args.attrs.battrs13, args.attrs.battrs23);
     const size_t csize = layout.csize;
 
-    const LOS_TYPE los = get_count3_los(args.battrs12, args.battrs13);
+    const LOS_TYPE los = get_count3_los(args.attrs.battrs12, args.attrs.battrs13);
     const long total1 = static_cast<long>(m1.total);
 
 #ifdef _OPENMP
@@ -243,29 +243,29 @@ void Count3Close(const Count3CloseArgs& args) {
             // the accumulation order is too. Centred on particle 1, like the
             // CUDA traversal: the (1, 3) window bounds this leg, not (2, 3).
             cand3.clear();
-            for_each_candidate(args.mattrs3, m3, position1, sposition1, [&](size_t i3) {
+            for_each_candidate(args.attrs.mattrs3, m3, position1, sposition1, [&](size_t i3) {
                 const double* position3 = m3.position(i3);
                 const double* sposition3 = m3.sposition(i3);
 
                 if (!is_selected_pair(sposition1, sposition3, position1, position3,
-                                      args.sattrs13, args.mattrs3)) return;
-                if (args.veto13.ndim &&
+                                      args.attrs.sattrs13, args.attrs.mattrs3)) return;
+                if (args.attrs.veto13.ndim &&
                     is_selected_pair(sposition1, sposition3, position1, position3,
-                                     args.veto13, args.mattrs3)) return;
+                                     args.attrs.veto13, args.attrs.mattrs3)) return;
                 cand3.push_back(i3);
             });
             if (cand3.empty()) continue;
 
-            for_each_candidate(args.mattrs2, m2, position1, sposition1, [&](size_t i2) {
+            for_each_candidate(args.attrs.mattrs2, m2, position1, sposition1, [&](size_t i2) {
                 const double* position2 = m2.position(i2);
                 const double* sposition2 = m2.sposition(i2);
                 const double* value2 = m2.value(i2);
 
                 if (!is_selected_pair(sposition1, sposition2, position1, position2,
-                                      args.sattrs12, args.mattrs2)) return;
-                if (args.veto12.ndim &&
+                                      args.attrs.sattrs12, args.attrs.mattrs2)) return;
+                if (args.attrs.veto12.ndim &&
                     is_selected_pair(sposition1, sposition2, position1, position2,
-                                     args.veto12, args.mattrs2)) return;
+                                     args.attrs.veto12, args.attrs.mattrs2)) return;
 
                 for (size_t i3 : cand3) {
                     const double* position3 = m3.position(i3);
@@ -273,16 +273,16 @@ void Count3Close(const Count3CloseArgs& args) {
                     const double* value3 = m3.value(i3);
 
                     if (!is_selected_pair(sposition2, sposition3, position2, position3,
-                                          args.sattrs23, args.mattrs3)) continue;
-                    if (args.veto23.ndim &&
+                                          args.attrs.sattrs23, args.attrs.mattrs3)) continue;
+                    if (args.attrs.veto23.ndim &&
                         is_selected_pair(sposition2, sposition3, position2, position3,
-                                         args.veto23, args.mattrs3)) continue;
+                                         args.attrs.veto23, args.attrs.mattrs3)) continue;
 
                     add_weight3(local.data(), local_frame, sposition1, sposition2,
                                 sposition3, position1, position2, position3,
                                 value1, value2, value3, m1.iv, m2.iv, m3.iv,
-                                args.mattrs2, args.mattrs3, args.battrs12,
-                                args.battrs13, args.battrs23, args.wattrs, layout);
+                                args.attrs.mattrs2, args.attrs.mattrs3, args.attrs.battrs12,
+                                args.attrs.battrs13, args.attrs.battrs23, args.attrs.wattrs, layout);
                 }
             });
         }

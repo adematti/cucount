@@ -15,38 +15,31 @@
 // Before attrs.h in any translation unit that needs both: pair_math.h
 // undefines common.h's convenience macros on its way out.
 #include "pair_math.h"
+// The shared request bundle: what to count, identical on both backends.
+#include "args.h"
 
 namespace cucount {
 namespace cpu {
 
+// What both triplet entry points need. One struct for the two, because
+// count3 is count3close without a (2, 3) axis: it simply leaves the (2, 3)
+// members of Count3Attrs default.
 struct Count3Args {
     Particles p1;
     Particles p2;
     Particles p3;
 
-    MeshAttrs mattrs1;
-    MeshAttrs mattrs2;
-    MeshAttrs mattrs3;
-
-    BinAttrs battrs12;
-    BinAttrs battrs13;
-
-    WeightAttrs wattrs;
-
-    SelectionAttrs sattrs12;
-    SelectionAttrs sattrs13;
-    SelectionAttrs veto12;
-    SelectionAttrs veto13;
+    Count3Attrs attrs;
 
     int nthreads = 1;
 
-    // nbins * nprojs accumulators, the layout get_count3_out_layout
-    // describes. Zeroed by the caller.
+    // The accumulators get_count3_layout describes. Zeroed by the caller.
     double* out = nullptr;
 
     // Optional [mesh_seconds, triplet_seconds].
     double* timings = nullptr;
 };
+
 
 void Count3(const Count3Args& args);
 
@@ -61,35 +54,7 @@ void Count3(const Count3Args& args);
 // hint. This backend has one strategy -- walk catalogue 2 and then catalogue 3
 // from each primary -- so `close_pair` is accepted and ignored. A request that
 // only bounds the (2, 3) separation will therefore be slow here, not wrong.
-struct Count3CloseArgs {
-    Particles p1;
-    Particles p2;
-    Particles p3;
-
-    MeshAttrs mattrs1;
-    MeshAttrs mattrs2;
-    MeshAttrs mattrs3;
-
-    BinAttrs battrs12;
-    BinAttrs battrs13;
-    BinAttrs battrs23;  // ndim == 0 when there is no (2, 3) axis
-
-    WeightAttrs wattrs;
-
-    SelectionAttrs sattrs12;
-    SelectionAttrs sattrs13;
-    SelectionAttrs sattrs23;
-    SelectionAttrs veto12;
-    SelectionAttrs veto13;
-    SelectionAttrs veto23;
-
-    int nthreads = 1;
-
-    double* out = nullptr;
-    double* timings = nullptr;
-};
-
-void Count3Close(const Count3CloseArgs& args);
+void Count3Close(const Count3Args& args);
 
 }  // namespace cpu
 }  // namespace cucount

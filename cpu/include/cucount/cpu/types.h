@@ -86,7 +86,7 @@ struct Mesh {
 
 // Everything the entry point needs, in double regardless of the working
 // precision; conversion happens once the Float type has been chosen.
-struct Count2Args {
+struct Count2KernelArgs {
     const double* pos1 = nullptr;  // interleaved xyz, n1 * 3
     const double* w1 = nullptr;
     size_t n1 = 0;
@@ -176,7 +176,7 @@ struct Count2Args {
     double* timings = nullptr;
 };
 
-void Count2(const Count2Args& args);
+void Count2Kernel(const Count2KernelArgs& args);
 
 // Force Highway to a specific ISA, for the cross-target determinism check and
 // the SIMD-width scaling measurement. Empty string restores the default.

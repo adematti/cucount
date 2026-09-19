@@ -150,7 +150,7 @@ inline AxisRange axis_range(int i, int n, bool periodic, int delta) {
 // path 2-8% in the A/B benchmark.
 template <class Float, int NDim, bool Poles, class SBin, LosKind LOS,
           bool Periodic, ScatterKind SC, bool ScalarTail>
-void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
+void Count2Impl(const Count2KernelArgs& a, const Mesh<Float>& m1,
                 const Mesh<Float>& m2, const BinSpec<Float>& sb,
                 const BinSpec<Float>& mb) {
     const hn::ScalableTag<Float> d;
@@ -597,7 +597,7 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
 
 template <class Float, int NDim, bool Poles, class SBin, LosKind LOS,
           bool Periodic>
-static void DispatchScatter(const Count2Args& a, const Mesh<Float>& m1,
+static void DispatchScatter(const Count2KernelArgs& a, const Mesh<Float>& m1,
                             const Mesh<Float>& m2, const BinSpec<Float>& sb,
                             const BinSpec<Float>& mb) {
     // Spin/bitwise/negative/angular accumulation is scalar per surviving lane,
@@ -626,7 +626,7 @@ static void DispatchScatter(const Count2Args& a, const Mesh<Float>& m1,
 }
 
 template <class Float, int NDim, bool Poles, class SBin, LosKind LOS>
-static void DispatchPeriodic(const Count2Args& a, const Mesh<Float>& m1,
+static void DispatchPeriodic(const Count2KernelArgs& a, const Mesh<Float>& m1,
                              const Mesh<Float>& m2, const BinSpec<Float>& sb,
                              const BinSpec<Float>& mb) {
     if (a.cfg.periodic) {
@@ -637,7 +637,7 @@ static void DispatchPeriodic(const Count2Args& a, const Mesh<Float>& m1,
 }
 
 template <class Float, int NDim, bool Poles, class SBin>
-static void DispatchLos(const Count2Args& a, const Mesh<Float>& m1,
+static void DispatchLos(const Count2KernelArgs& a, const Mesh<Float>& m1,
                         const Mesh<Float>& m2, const BinSpec<Float>& sb,
                         const BinSpec<Float>& mb) {
     // Without a mu axis and without multipoles there is no mu at all, so
@@ -659,7 +659,7 @@ static void DispatchLos(const Count2Args& a, const Mesh<Float>& m1,
 }
 
 template <class Float, int NDim, bool Poles>
-static void DispatchSBin(const Count2Args& a, const Mesh<Float>& m1,
+static void DispatchSBin(const Count2KernelArgs& a, const Mesh<Float>& m1,
                          const Mesh<Float>& m2, const BinSpec<Float>& sb,
                          const BinSpec<Float>& mb) {
     switch (a.cfg.sbin) {
@@ -679,7 +679,7 @@ static void DispatchSBin(const Count2Args& a, const Mesh<Float>& m1,
 // Multipoles ride the s axis only ((s, pole)); the binding declines any other
 // combination, so Poles=true is never instantiated for NDim == 2.
 template <class Float, int NDim>
-static void DispatchPoles(const Count2Args& a, const Mesh<Float>& m1,
+static void DispatchPoles(const Count2KernelArgs& a, const Mesh<Float>& m1,
                           const Mesh<Float>& m2, const BinSpec<Float>& sb,
                           const BinSpec<Float>& mb) {
     if constexpr (NDim == 1) {
@@ -692,7 +692,7 @@ static void DispatchPoles(const Count2Args& a, const Mesh<Float>& m1,
 }
 
 template <class Float>
-static void DispatchNDim(const Count2Args& a) {
+static void DispatchNDim(const Count2KernelArgs& a) {
     const double smax = a.sedges[a.nsbins];
 
     BinSpec<Float> sb, mb;
@@ -758,7 +758,7 @@ static void DispatchNDim(const Count2Args& a) {
     }
 }
 
-void Count2Dispatch(const Count2Args& a) {
+void Count2Dispatch(const Count2KernelArgs& a) {
     if (a.cfg.float32) {
         DispatchNDim<float>(a);
     } else {

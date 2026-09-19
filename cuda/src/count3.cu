@@ -24,7 +24,7 @@ DEFINE_FOR_EACH_CANDIDATE_CARTESIAN
 DEFINE_FOR_EACH_CANDIDATE
 
 
-static __device__ __constant__ DeviceCount3Layout device_layout;
+static __device__ __constant__ Count3PoleLayout device_layout;
 
 
 enum Count3Leg {
@@ -442,22 +442,26 @@ void count3(
     Mesh mesh1,
     Mesh mesh2,
     Mesh mesh3,
-    MeshAttrs mattrs2,
-    MeshAttrs mattrs3,
-    SelectionAttrs sattrs12,
-    SelectionAttrs sattrs13,
-    SelectionAttrs veto12,
-    SelectionAttrs veto13,
-    BinAttrs battrs12,
-    BinAttrs battrs13,
-    WeightAttrs wattrs,
+    const Count3Attrs &attrs,
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream)
 {
+    // Unpacked here so the body below reads as it always has: the bundle is
+    // the API, these are its members.
+    MeshAttrs mattrs2 = attrs.mattrs2;
+    MeshAttrs mattrs3 = attrs.mattrs3;
+    SelectionAttrs sattrs12 = attrs.sattrs12;
+    SelectionAttrs sattrs13 = attrs.sattrs13;
+    SelectionAttrs veto12 = attrs.veto12;
+    SelectionAttrs veto13 = attrs.veto13;
+    BinAttrs battrs12 = attrs.battrs12;
+    BinAttrs battrs13 = attrs.battrs13;
+    WeightAttrs wattrs = attrs.wattrs;
+
     BinAttrs battrs23;
     memset(&battrs23, 0, sizeof(BinAttrs));
 
-    DeviceCount3Layout layout = make_device_count3_layout(battrs12, battrs13, battrs23);
+    Count3PoleLayout layout = make_count3_pole_layout(battrs12, battrs13, battrs23);
 
     size_t csize = layout.csize;
 
@@ -491,7 +495,7 @@ void count3(
     unsigned char *seen3_all = (unsigned char *)my_device_malloc(nthreads * nbin13 * sizeof(unsigned char), buffer);
 
     CUDA_CHECK(cudaMemsetAsync(counts, 0, csize * sizeof(FLOAT), stream));
-    CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(DeviceCount3Layout)));
+    CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(Count3PoleLayout)));
 
     if (mattrs2.type == MESH_ANGULAR && mattrs3.type == MESH_ANGULAR) {
         LAUNCH_COUNT3_KERNEL(MESH_ANGULAR, MESH_ANGULAR);

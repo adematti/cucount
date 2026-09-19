@@ -18,78 +18,14 @@ DEFINE_COMPUTE_SPHERICAL_HARMONICS
 // Count3 layout + constant device state
 // ============================================================================
 
-static __device__ __constant__ DeviceCount3Layout device_layout;
+static __device__ __constant__ Count3PoleLayout device_layout;
 
 
 // ============================================================================
 // Host helpers
 // ============================================================================
 
-DeviceCount3Layout make_device_count3_layout(
-    const BinAttrs battrs12,
-    const BinAttrs battrs13,
-    const BinAttrs battrs23)
-{
-    DeviceCount3Layout layout;
-    memset(&layout, 0, sizeof(DeviceCount3Layout));
-
-    layout.ellmax1 = 0;
-    layout.ellmax2 = 0;
-
-    if (battrs12.ndim == 0 || battrs13.ndim == 0) return layout;
-
-    layout.nbins = (size_t)battrs12.shape[0] * (size_t)battrs13.shape[0];
-
-    if (battrs23.ndim > 0) {
-        layout.nbins *= (size_t)battrs23.shape[0];
-        layout.nprojs  = 0;
-        layout.nprojs1 = 0;
-        layout.nprojs2 = 0;
-        layout.csize   = layout.nbins;
-        return layout;
-    }
-
-    if (battrs12.var[1] == VAR_POLE && battrs13.var[1] == VAR_POLE) {
-
-        layout.nells1 = fill_ells(&battrs12, 1, layout.ells1);
-        layout.nells2 = fill_ells(&battrs13, 1, layout.ells2);
-
-        layout.nprojs  = 0;
-        layout.nprojs1 = 0;
-        layout.nprojs2 = 0;
-
-        for (size_t ill1 = 0; ill1 < layout.nells1; ill1++) {
-
-            int ell1 = (int)layout.ells1[ill1];
-
-            layout.ellmax1 = MAX(layout.ellmax1, ell1);
-            layout.nprojs1 += (size_t)(2 * ell1 + 1);
-
-            for (size_t ill2 = 0; ill2 < layout.nells2; ill2++) {
-
-                int ell2 = (int)layout.ells2[ill2];
-
-                layout.ellmax2 = MAX(layout.ellmax2, ell2);
-                layout.nprojs += (size_t)(2 * MIN(ell1, ell2) + 1);
-            }
-        }
-
-        for (size_t ill2 = 0; ill2 < layout.nells2; ill2++) {
-            int ell2 = (int)layout.ells2[ill2];
-            layout.nprojs2 += (size_t)(2 * ell2 + 1);
-        }
-
-        layout.csize = layout.nbins * layout.nprojs;
-    }
-    else {
-        layout.nprojs  = 0;
-        layout.nprojs1 = 0;
-        layout.nprojs2 = 0;
-        layout.csize   = layout.nbins;
-    }
-
-    return layout;
-}
+// make_count3_pole_layout is shared, in include/layout.h.
 
 
 // ============================================================================
@@ -819,7 +755,7 @@ struct Count3Close23From2Op {
 // cartesian one exited the process -- so a close-triplet count with no theta
 // selection anywhere could not run at all.
 template <MESH_TYPE CLOSE_MESH_TYPE, MESH_TYPE OTHER_MESH_TYPE>
-__global__ void count3_close_kernel(
+__global__ void count3close_kernel(
     FLOAT *block_counts,
     size_t csize,
     Mesh mesh1,
@@ -940,7 +876,7 @@ __global__ void count3_close_kernel(
 // ============================================================================
 
 #define LAUNCH_COUNT3_CLOSE_KERNEL(CLOSE_MESH_TYPE, OTHER_MESH_TYPE)              \
-    count3_close_kernel<CLOSE_MESH_TYPE, OTHER_MESH_TYPE>                         \
+    count3close_kernel<CLOSE_MESH_TYPE, OTHER_MESH_TYPE>                         \
         <<<nblocks, nthreads_per_block, 0, stream>>>(                             \
         block_counts,                                                            \
         csize,                                                                   \
@@ -958,28 +894,32 @@ __global__ void count3_close_kernel(
 // Higher-level wrapper
 // ============================================================================
 
-void count3_close(
+void count3close(
     FLOAT *counts,
     Mesh mesh1,
     Mesh mesh2,
     Mesh mesh3,
-    MeshAttrs mattrs1,
-    MeshAttrs mattrs2,
-    MeshAttrs mattrs3,
-    SelectionAttrs sattrs12,
-    SelectionAttrs sattrs13,
-    SelectionAttrs sattrs23,
-    SelectionAttrs veto12,
-    SelectionAttrs veto13,
-    SelectionAttrs veto23,
-    BinAttrs battrs12,
-    BinAttrs battrs13,
-    BinAttrs battrs23,
-    WeightAttrs wattrs,
+    const Count3Attrs &attrs,
     CLOSE_PAIR close_pair,
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream)
 {
+    // Unpacked here so the body below reads as it always has: the bundle is
+    // the API, these are its members.
+    MeshAttrs mattrs1 = attrs.mattrs1;
+    MeshAttrs mattrs2 = attrs.mattrs2;
+    MeshAttrs mattrs3 = attrs.mattrs3;
+    SelectionAttrs sattrs12 = attrs.sattrs12;
+    SelectionAttrs sattrs13 = attrs.sattrs13;
+    SelectionAttrs sattrs23 = attrs.sattrs23;
+    SelectionAttrs veto12 = attrs.veto12;
+    SelectionAttrs veto13 = attrs.veto13;
+    SelectionAttrs veto23 = attrs.veto23;
+    BinAttrs battrs12 = attrs.battrs12;
+    BinAttrs battrs13 = attrs.battrs13;
+    BinAttrs battrs23 = attrs.battrs23;
+    WeightAttrs wattrs = attrs.wattrs;
+
     // The mesh the close pair is searched on, and the one the remaining leg
     // is searched on. Each is now a template parameter, so either may be
     // cartesian; the close pair used to have to be angular, and was not
@@ -1000,7 +940,7 @@ void count3_close(
         other_mattrs = &mattrs1;
     }
 
-    DeviceCount3Layout layout = make_device_count3_layout(
+    Count3PoleLayout layout = make_count3_pole_layout(
         battrs12, battrs13, battrs23);
     size_t csize = layout.csize;
 
@@ -1016,13 +956,13 @@ void count3_close(
     copy_weight_attrs_to_device(&device_wattrs, &wattrs, buffer);
 
     int nblocks, nthreads_per_block;
-    CONFIGURE_KERNEL_LAUNCH((count3_close_kernel<MESH_ANGULAR, MESH_ANGULAR>), nblocks, nthreads_per_block, buffer);
+    CONFIGURE_KERNEL_LAUNCH((count3close_kernel<MESH_ANGULAR, MESH_ANGULAR>), nblocks, nthreads_per_block, buffer);
 
     FLOAT *block_counts = (FLOAT *) my_device_malloc(
         nblocks * csize * sizeof(FLOAT), buffer);
 
     CUDA_CHECK(cudaMemsetAsync(counts, 0, csize * sizeof(FLOAT), stream));
-    CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(DeviceCount3Layout)));
+    CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(Count3PoleLayout)));
 
     // Four instantiations: each leg's mesh is cartesian or angular.
     if (close_mattrs->type == MESH_ANGULAR) {

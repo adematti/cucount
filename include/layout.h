@@ -92,14 +92,73 @@ inline Count2Layout get_count2_layout(
 }
 
 
+// The ell values a multipole axis names. Equivalent to the CUDA fill_ells,
+// kept here so the layout is computable without linking a CUDA object.
+inline size_t fill_ells(const BinAttrs& battrs, int index, size_t* ells) {
+    const size_t ellmin = static_cast<size_t>(battrs.min[index]);
+    const size_t ellmax = static_cast<size_t>(battrs.max[index]);
+    const size_t ellstep = (battrs.bin[index] == BIN_LIN)
+        ? static_cast<size_t>(battrs.step[index]) : size_t{1};
+
+    if (ellstep == 0) return 0;
+    size_t nells = 0;
+    for (size_t ell = ellmin; ell <= ellmax; ell += ellstep) ells[nells++] = ell;
+    return nells;
+}
+
+
+// Which multipoles a count2 asks for, and where they land. The kernels want
+// this resolved once on the host rather than re-derived per pair: the CUDA
+// backend copies it to constant memory, the CPU backend passes it down.
+struct Count2PoleLayout {
+    size_t nbins = 0;
+    size_t csize = 0;
+    size_t split_size = 1;
+    size_t nells = 0;
+    size_t ells[MAX_POLE + 2] = {0};
+    bool ells_even = false;
+};
+
+
+inline Count2PoleLayout make_count2_pole_layout(const IndexValue index_value1,
+                                                const IndexValue index_value2,
+                                                const BinAttrs& battrs,
+                                                const SplitAttrs& spattrs) {
+    Count2PoleLayout layout;
+    layout.nbins = battrs.size;
+    layout.split_size = spattrs.size;
+    layout.csize = get_count2_weight_names(index_value1, index_value2, NULL) *
+                   spattrs.size * battrs.size;
+
+    if (battrs.ndim > 0 && battrs.var[battrs.ndim - 1] == VAR_POLE) {
+        const int ipole = static_cast<int>(battrs.ndim) - 1;
+        layout.nells = fill_ells(battrs, ipole, layout.ells);
+
+        if (layout.nells > 0) {
+            if (layout.nells == 1) {
+                layout.ells_even = (layout.ells[0] % 2 == 0);
+            }
+            else {
+                // A listed set of ells is stepped by one; only a (min, max,
+                // step) axis can promise an even step.
+                const size_t ellstep = (battrs.asize[ipole] == 0)
+                    ? static_cast<size_t>(battrs.step[ipole]) : size_t{1};
+                layout.ells_even = ((layout.ells[0] % 2 == 0) && (ellstep % 2 == 0));
+            }
+        }
+    }
+    return layout;
+}
+
+
 // ---------------------------------------------------------------------------
 // Triplet counts
 // ---------------------------------------------------------------------------
 
-// Mirrors the CUDA DeviceCount3Layout: the ell values each leg projects onto,
-// how many real spherical-harmonic coefficients that is per leg, and how many
-// survive the contraction over m. nprojs == 0 means the plain, unprojected
-// outer product of the two separation histograms.
+// Which multipoles each leg of a triplet count projects onto: how many real
+// spherical-harmonic coefficients that is per leg, and how many survive the
+// contraction over m. nprojs == 0 means the plain, unprojected outer product
+// of the two separation histograms.
 #ifndef ELLMAX
 #define ELLMAX 5
 #endif
@@ -107,7 +166,7 @@ inline Count2Layout get_count2_layout(
 #define MMAX_SIZE 6
 #endif
 
-struct Count3ProjLayout {
+struct Count3PoleLayout {
     size_t nbins = 0;
     size_t nprojs1 = 0;
     size_t nprojs2 = 0;
@@ -122,25 +181,12 @@ struct Count3ProjLayout {
 };
 
 
-// The ell values a multipole axis names. Equivalent to the CUDA fill_ells,
-// kept here so the layout is computable without linking a CUDA object.
-inline size_t layout_fill_ells(const BinAttrs& battrs, int index, size_t* ells) {
-    const size_t ellmin = static_cast<size_t>(battrs.min[index]);
-    const size_t ellmax = static_cast<size_t>(battrs.max[index]);
-    const size_t ellstep = (battrs.bin[index] == BIN_LIN)
-        ? static_cast<size_t>(battrs.step[index]) : size_t{1};
-
-    if (ellstep == 0) return 0;
-    size_t nells = 0;
-    for (size_t ell = ellmin; ell <= ellmax; ell += ellstep) ells[nells++] = ell;
-    return nells;
-}
 
 
-inline Count3ProjLayout make_count3_proj_layout(const BinAttrs& battrs12,
+inline Count3PoleLayout make_count3_pole_layout(const BinAttrs& battrs12,
                                                 const BinAttrs& battrs13,
                                                 const BinAttrs& battrs23) {
-    Count3ProjLayout layout;
+    Count3PoleLayout layout;
 
     if (battrs12.ndim == 0 || battrs13.ndim == 0) return layout;
 
@@ -153,8 +199,8 @@ inline Count3ProjLayout make_count3_proj_layout(const BinAttrs& battrs12,
     }
 
     if (battrs12.var[1] == VAR_POLE && battrs13.var[1] == VAR_POLE) {
-        layout.nells1 = layout_fill_ells(battrs12, 1, layout.ells1);
-        layout.nells2 = layout_fill_ells(battrs13, 1, layout.ells2);
+        layout.nells1 = fill_ells(battrs12, 1, layout.ells1);
+        layout.nells2 = fill_ells(battrs13, 1, layout.ells2);
 
         for (size_t ill1 = 0; ill1 < layout.nells1; ill1++) {
             const int ell1 = static_cast<int>(layout.ells1[ill1]);
@@ -191,10 +237,10 @@ struct Count3Layout {
 };
 
 
-inline Count3Layout get_count3_out_layout(const BinAttrs& battrs12,
+inline Count3Layout get_count3_layout(const BinAttrs& battrs12,
                                           const BinAttrs& battrs13,
                                           const BinAttrs& battrs23) {
-    const Count3ProjLayout proj = make_count3_proj_layout(battrs12, battrs13, battrs23);
+    const Count3PoleLayout proj = make_count3_pole_layout(battrs12, battrs13, battrs23);
 
     std::vector<ssize_t> shape;
     for (const BinAttrs* b : {&battrs12, &battrs13, &battrs23}) {

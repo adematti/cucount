@@ -285,7 +285,7 @@ py::tuple get_count2_layout_py()
 
 py::tuple get_count3close_layout_py()
 {
-    Count3CloseLayout layout = get_count3close_layout(
+    Count3Layout layout = get_count3_layout(
         battrs3_12,
         battrs3_13,
         battrs3_23);
@@ -301,9 +301,11 @@ py::tuple get_count3close_layout_py()
 
 py::tuple get_count3_layout_py()
 {
-    Count3CloseLayout layout = get_count3_layout(
+    BinAttrs battrs23{};
+    Count3Layout layout = get_count3_layout(
         battrs3_12,
-        battrs3_13);
+        battrs3_13,
+        battrs23);
 
     py::tuple shape(layout.shape.size());
     for (size_t i = 0; i < layout.shape.size(); ++i) {
@@ -367,7 +369,8 @@ ffi::Error count2Impl(
     membuffer.nthreads_per_block = MAX_NTHREADS_PER_BLOCK * 16;  // not used in memory allocation
 
     set_mesh(list_particles, list_mesh, mattrs2, &membuffer, stream);
-    count2(counts->typed_data(), list_mesh, mattrs2, sattrs2, battrs2, wattrs2, spattrs2, &membuffer, stream);
+    const Count2Attrs attrs{mattrs2, battrs2, wattrs2, sattrs2, spattrs2};
+    count2(counts->typed_data(), list_mesh, attrs, &membuffer, stream);
 
     cudaError_t last_error = cudaGetLastError();
     if (last_error != cudaSuccess) {
@@ -443,12 +446,15 @@ ffi::Error count3closeImpl(
     set_mesh(plist, mlist, mattrs3_3, &membuffer, stream);
     mesh3 = mlist[0];
 
-    count3_close(counts->typed_data(), mesh1,mesh2, mesh3,
-                mattrs3_1, mattrs3_2, mattrs3_3,
-                sattrs3_12, sattrs3_13, sattrs3_23,
-                veto3_12, veto3_13, veto3_23,
-                battrs3_12, battrs3_13, battrs3_23,
-                wattrs3, close_pair_3, &membuffer, stream);
+    const Count3Attrs attrs{
+        mattrs3_1, mattrs3_2, mattrs3_3,
+        battrs3_12, battrs3_13, battrs3_23,
+        wattrs3,
+        sattrs3_12, sattrs3_13, sattrs3_23,
+        veto3_12, veto3_13, veto3_23};
+
+    count3close(counts->typed_data(), mesh1, mesh2, mesh3,
+                attrs, close_pair_3, &membuffer, stream);
 
     cudaError_t last_error = cudaGetLastError();
     if (last_error != cudaSuccess) {
@@ -526,20 +532,20 @@ ffi::Error count3Impl(
     set_mesh(plist, mlist, mattrs3_3, &membuffer, stream);
     mesh3 = mlist[0];
 
+    // count3 has no (2, 3) axis, so those members stay default.
+    const Count3Attrs attrs{
+        MeshAttrs{}, mattrs3_2, mattrs3_3,
+        battrs3_12, battrs3_13, BinAttrs{},
+        wattrs3,
+        sattrs3_12, sattrs3_13, SelectionAttrs{},
+        veto3_12, veto3_13, SelectionAttrs{}};
+
     count3(
         counts->typed_data(),
         mesh1,
         mesh2,
         mesh3,
-        mattrs3_2,
-        mattrs3_3,
-        sattrs3_12,
-        sattrs3_13,
-        veto3_12,
-        veto3_13,
-        battrs3_12,
-        battrs3_13,
-        wattrs3,
+        attrs,
         &membuffer,
         stream);
 

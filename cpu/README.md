@@ -234,3 +234,33 @@ imaginary ones, because `add_weight3` takes `sin(dphi)` from the cross product
 of the two transverse parts -- `sin(phi13 - phi12)` -- while `count3`'s
 m-contraction produces `sin(phi12 - phi13)`. `tests/test_cpu_triplet.py` pins
 the relationship so a change to either convention has to be deliberate.
+
+## Shared structures
+
+What the two backends hold in common lives in `include/`, so neither can drift:
+
+| | shared header | used by |
+|---|---|---|
+| descriptors | `common.h` — `Particles`, `Mesh`, `BinAttrs`, `MeshAttrs`, `WeightAttrs`, `SelectionAttrs`, `SplitAttrs`, `IndexValue` | both |
+| request | `args.h` — `Count2Attrs`, `Count3Attrs` | both |
+| output layout | `layout.h` — `Count2Layout`, `Count3Layout` | both bindings |
+| multipole layout | `layout.h` — `Count2PoleLayout`, `Count3PoleLayout`, `fill_ells` | both kernels |
+| per-pair math | `pair_math.h` | both kernels |
+
+`Count2Attrs` and `Count3Attrs` are what an entry point is asked to count. Each
+backend adds what it needs to *run* it: this one takes `Count2Args` /
+`Count3Args` (particles, the bundle, a thread count, where to write), CUDA
+takes an already-built mesh plus a device buffer and stream. One `Count3Args`
+serves both triplet entry points, because `count3` is `count3close` without a
+(2, 3) axis and simply leaves those members default.
+
+The one structure with no counterpart is `Count2KernelArgs`: the Highway kernel
+is re-compiled per SIMD target and wants plain pointers and scalars, so the
+binding flattens the attrs into it. CUDA passes the attrs straight through --
+they are already POD and copy to the device by value.
+
+Three mesh representations, for the same reason: `Mesh` in `common.h` (AoS,
+CUDA), `cpu::ScalarMesh` in `walk.h` (a host port of it, for the scalar paths),
+and `cpu::Mesh<Float>` in `types.h` (SoA), which is the deliberate divergence --
+it is what lets the candidate loop load whole vectors of `x`, then `y`, then
+`z` without a gather.

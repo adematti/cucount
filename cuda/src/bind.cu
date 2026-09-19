@@ -104,7 +104,8 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
             CUDA_CHECK(cudaMemsetAsync(device_counts, 0, csize * sizeof(FLOAT), stream));
 
             // run count2
-            count2(device_counts, list_mesh_dev, mattrs, sattrs, battrs, wattrs, spattrs, membuffer, stream);
+            const Count2Attrs attrs{mattrs, battrs, wattrs, sattrs, spattrs};
+            count2(device_counts, list_mesh_dev, attrs, membuffer, stream);
 
             CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -201,7 +202,7 @@ py::object count3close_py(
     CUDA_CHECK(cudaGetDeviceCount(&ngpus));
     ngpus = MIN(nthreads, ngpus);
 
-    Count3CloseLayout layout = get_count3close_layout(
+    Count3Layout layout = get_count3_layout(
         battrs12,
         battrs13,
         battrs23);
@@ -306,24 +307,19 @@ py::object count3close_py(
                 csize * sizeof(FLOAT),
                 stream));
 
-            count3_close(
+            const Count3Attrs attrs{
+                mattrs1, mattrs2, mattrs3,
+                battrs12, battrs13, has23 ? battrs23 : BinAttrs{},
+                wattrs,
+                sattrs12, sattrs13, sattrs23,
+                veto12, veto13, veto23};
+
+            count3close(
                 device_counts,
                 mesh1,
                 mesh2,
                 mesh3,
-                mattrs1,
-                mattrs2,
-                mattrs3,
-                sattrs12,
-                sattrs13,
-                sattrs23,
-                veto12,
-                veto13,
-                veto23,
-                battrs12,
-                battrs13,
-                has23 ? battrs23 : BinAttrs{},
-                wattrs,
+                attrs,
                 close_pair_value,
                 membuffer,
                 stream);
@@ -414,9 +410,11 @@ py::object count3_py(
     CUDA_CHECK(cudaGetDeviceCount(&ngpus));
     ngpus = MIN(nthreads, ngpus);
 
-    Count3CloseLayout layout = get_count3_layout(
+    BinAttrs battrs23{};
+    Count3Layout layout = get_count3_layout(
         battrs12,
-        battrs13);
+        battrs13,
+        battrs23);
 
     size_t csize = layout.nweights * layout.size;
 
@@ -517,20 +515,20 @@ py::object count3_py(
                 csize * sizeof(FLOAT),
                 stream));
 
+            // count3 has no (2, 3) axis, so those members stay default.
+            const Count3Attrs attrs{
+                MeshAttrs{}, mattrs2, mattrs3,
+                battrs12, battrs13, BinAttrs{},
+                wattrs,
+                sattrs12, sattrs13, SelectionAttrs{},
+                veto12, veto13, SelectionAttrs{}};
+
             count3(
                 device_counts,
                 mesh1,
                 mesh2,
                 mesh3,
-                mattrs2,
-                mattrs3,
-                sattrs12,
-                sattrs13,
-                veto12,
-                veto13,
-                battrs12,
-                battrs13,
-                wattrs,
+                attrs,
                 membuffer,
                 stream);
 

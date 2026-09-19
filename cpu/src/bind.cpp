@@ -14,9 +14,10 @@
 #include "cucount/cpu/generic.h"
 #include "cucount/cpu/triplet.h"
 
-// The shared attrs/layout layer (CUDA-free flavour): the binding takes the
-// same Particles/BinAttrs/MeshAttrs/... objects as the CUDA backend and
-// lowers them to the kernel's Count2Args here, in C++.
+// The shared attrs/layout/args layer (CUDA-free flavour): the binding takes
+// the same Particles/BinAttrs/MeshAttrs/... objects as the CUDA backend,
+// bundles them into the shared Count2Attrs / Count3Attrs, and lowers them to
+// the kernel's flattened Count2KernelArgs here, in C++.
 #define CUCOUNT_NO_CUDA
 #include "attrs.h"
 #include "layout.h"
@@ -217,20 +218,20 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     // path, which walks the same mesh one pair at a time. float32 and the
     // scatter strategy are kernel tuning and have no effect there.
     if (!vectorized(p1, p2, battrs, mattrs, spattrs)) {
-        Count2GenericArgs g;
+        Count2Args g;
         g.p1 = p1;
         g.p2 = p2;
-        g.mattrs = mattrs;
-        g.battrs = battrs;
-        g.wattrs = wattrs;
-        g.sattrs = sattrs;
-        g.spattrs = spattrs;
+        g.attrs.mattrs = mattrs;
+        g.attrs.battrs = battrs;
+        g.attrs.wattrs = wattrs;
+        g.attrs.sattrs = sattrs;
+        g.attrs.spattrs = spattrs;
         g.nthreads = nthreads;
         g.out = counts_py.mutable_data();
         g.timings = timings_ptr;
         {
             py::gil_scoped_release unlock;
-            Count2Generic(g);
+            Count2(g);
         }
         return finish(counts_py, layout, timings, return_timings);
     }
@@ -240,7 +241,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     const bool ok2 = (battrs.ndim == 2 && battrs.var[1] == VAR_MU);
     const bool okp = (battrs.ndim == 2 && battrs.var[1] == VAR_POLE);
 
-    Count2Args a;
+    Count2KernelArgs a;
     a.pos1 = p1.positions;
     a.n1 = p1.size;
     a.pos2 = p2.positions;
@@ -352,7 +353,7 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
 
     {
         py::gil_scoped_release unlock;
-        Count2(a);
+        Count2Kernel(a);
     }
 
     return finish(counts_py, layout, timings, return_timings);
@@ -406,25 +407,25 @@ py::object count3_py(Particles_py& particles1, Particles_py& particles2,
                      const SelectionAttrs_py veto13_py,
                      const int nthreads, const bool return_timings) {
     Count3Args a;
-    a.mattrs1 = mattrs1_py.data();
-    a.mattrs2 = mattrs2_py.data();
-    a.mattrs3 = mattrs3_py.data();
-    a.battrs12 = battrs12_py.data();
-    a.battrs13 = battrs13_py.data();
-    a.wattrs = wattrs_py.data();
-    a.sattrs12 = sattrs12_py.data();
-    a.sattrs13 = sattrs13_py.data();
-    a.veto12 = veto12_py.data();
-    a.veto13 = veto13_py.data();
+    a.attrs.mattrs1 = mattrs1_py.data();
+    a.attrs.mattrs2 = mattrs2_py.data();
+    a.attrs.mattrs3 = mattrs3_py.data();
+    a.attrs.battrs12 = battrs12_py.data();
+    a.attrs.battrs13 = battrs13_py.data();
+    a.attrs.wattrs = wattrs_py.data();
+    a.attrs.sattrs12 = sattrs12_py.data();
+    a.attrs.sattrs13 = sattrs13_py.data();
+    a.attrs.veto12 = veto12_py.data();
+    a.attrs.veto13 = veto13_py.data();
     a.p1 = particles1.data();
     a.p2 = particles2.data();
     a.p3 = particles3.data();
     a.nthreads = nthreads;
 
-    validate3(a.battrs12, a.battrs13, a.mattrs1, a.mattrs2, a.mattrs3);
+    validate3(a.attrs.battrs12, a.attrs.battrs13, a.attrs.mattrs1, a.attrs.mattrs2, a.attrs.mattrs3);
 
     BinAttrs battrs23{};
-    Count3Layout layout = get_count3_out_layout(a.battrs12, a.battrs13, battrs23);
+    Count3Layout layout = get_count3_layout(a.attrs.battrs12, a.attrs.battrs13, battrs23);
     const size_t csize = layout.nweights * layout.size;
     py::array_t<double> counts_py(csize);
     std::memset(counts_py.mutable_data(), 0, csize * sizeof(double));
@@ -468,39 +469,39 @@ py::object count3close_py(Particles_py& particles1, Particles_py& particles2,
                           const int nthreads, const bool return_timings) {
     (void)close_pair;
 
-    Count3CloseArgs a;
-    a.mattrs1 = mattrs1_py.data();
-    a.mattrs2 = mattrs2_py.data();
-    a.mattrs3 = mattrs3_py.data();
-    a.battrs12 = battrs12_py.data();
-    a.battrs13 = battrs13_py.data();
-    std::memset(&a.battrs23, 0, sizeof(BinAttrs));
+    Count3Args a;
+    a.attrs.mattrs1 = mattrs1_py.data();
+    a.attrs.mattrs2 = mattrs2_py.data();
+    a.attrs.mattrs3 = mattrs3_py.data();
+    a.attrs.battrs12 = battrs12_py.data();
+    a.attrs.battrs13 = battrs13_py.data();
+    std::memset(&a.attrs.battrs23, 0, sizeof(BinAttrs));
     // Held for the duration of the call, so battrs23.array stays valid.
     BinAttrs_py battrs23_held = battrs23_py.is_none()
         ? BinAttrs_py(py::kwargs()) : battrs23_py.cast<BinAttrs_py>();
-    if (!battrs23_py.is_none()) a.battrs23 = battrs23_held.data();
+    if (!battrs23_py.is_none()) a.attrs.battrs23 = battrs23_held.data();
 
-    a.wattrs = wattrs_py.data();
-    a.sattrs12 = sattrs12_py.data();
-    a.sattrs13 = sattrs13_py.data();
-    a.sattrs23 = sattrs23_py.data();
-    a.veto12 = veto12_py.data();
-    a.veto13 = veto13_py.data();
-    a.veto23 = veto23_py.data();
+    a.attrs.wattrs = wattrs_py.data();
+    a.attrs.sattrs12 = sattrs12_py.data();
+    a.attrs.sattrs13 = sattrs13_py.data();
+    a.attrs.sattrs23 = sattrs23_py.data();
+    a.attrs.veto12 = veto12_py.data();
+    a.attrs.veto13 = veto13_py.data();
+    a.attrs.veto23 = veto23_py.data();
     a.p1 = particles1.data();
     a.p2 = particles2.data();
     a.p3 = particles3.data();
     a.nthreads = nthreads;
 
-    validate3(a.battrs12, a.battrs13, a.mattrs1, a.mattrs2, a.mattrs3);
-    if (a.battrs23.ndim > 0) {
-        if (a.battrs23.ndim != 1 ||
-            (a.battrs23.var[0] != VAR_S && a.battrs23.var[0] != VAR_THETA))
+    validate3(a.attrs.battrs12, a.attrs.battrs13, a.attrs.mattrs1, a.attrs.mattrs2, a.attrs.mattrs3);
+    if (a.attrs.battrs23.ndim > 0) {
+        if (a.attrs.battrs23.ndim != 1 ||
+            (a.attrs.battrs23.var[0] != VAR_S && a.attrs.battrs23.var[0] != VAR_THETA))
             throw std::invalid_argument(
                 "cpu backend: the (2, 3) triplet axis bins in s or theta only");
     }
 
-    Count3Layout layout = get_count3_out_layout(a.battrs12, a.battrs13, a.battrs23);
+    Count3Layout layout = get_count3_layout(a.attrs.battrs12, a.attrs.battrs13, a.attrs.battrs23);
     const size_t csize = layout.nweights * layout.size;
     py::array_t<double> counts_py(csize);
     std::memset(counts_py.mutable_data(), 0, csize * sizeof(double));
@@ -540,7 +541,7 @@ py::object count2_arrays_py(Arr positions1, Arr weights1, Arr positions2,
     if (positions2.ndim() != 2 || positions2.shape(1) != 3)
         throw std::invalid_argument("positions2 must have shape (n, 3)");
 
-    Count2Args a;
+    Count2KernelArgs a;
     a.pos1 = positions1.data();
     a.w1 = weights1.size() ? weights1.data() : nullptr;
     a.n1 = static_cast<size_t>(positions1.shape(0));
@@ -611,7 +612,7 @@ py::object count2_arrays_py(Arr positions1, Arr weights1, Arr positions2,
     // Zero requested bins is served as the empty result, like the CUDA backend.
     if (out.size() != 0) {
         py::gil_scoped_release unlock;
-        Count2(a);
+        Count2Kernel(a);
     }
     if (return_timings) {
         return py::make_tuple(out, py::make_tuple(timings[0], timings[1]));

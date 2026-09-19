@@ -160,23 +160,23 @@ void Count3(const Count3Args& args) {
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
 
-    const ScalarMesh m1 = build_mesh(args.p1, args.mattrs1);
-    const ScalarMesh m2 = build_mesh(args.p2, args.mattrs2);
-    const ScalarMesh m3 = build_mesh(args.p3, args.mattrs3);
+    const ScalarMesh m1 = build_mesh(args.p1, args.attrs.mattrs1);
+    const ScalarMesh m2 = build_mesh(args.p2, args.attrs.mattrs2);
+    const ScalarMesh m3 = build_mesh(args.p3, args.attrs.mattrs3);
 
     const auto t1 = Clock::now();
 
     BinAttrs battrs23{};
-    const Count3ProjLayout layout =
-        make_count3_proj_layout(args.battrs12, args.battrs13, battrs23);
+    const Count3PoleLayout layout =
+        make_count3_pole_layout(args.attrs.battrs12, args.attrs.battrs13, battrs23);
 
-    const size_t nbin12 = args.battrs12.shape[0];
-    const size_t nbin13 = args.battrs13.shape[0];
+    const size_t nbin12 = args.attrs.battrs12.shape[0];
+    const size_t nbin13 = args.attrs.battrs13.shape[0];
     const size_t hsize2 = nbin12 * (layout.nprojs1 ? layout.nprojs1 : 1);
     const size_t hsize3 = nbin13 * (layout.nprojs2 ? layout.nprojs2 : 1);
     const size_t csize = layout.csize;
 
-    const LOS_TYPE los = get_count3_los(args.battrs12, args.battrs13);
+    const LOS_TYPE los = get_count3_los(args.attrs.battrs12, args.attrs.battrs13);
     const long total1 = static_cast<long>(m1.total);
 
 #ifdef _OPENMP
@@ -210,24 +210,24 @@ void Count3(const Count3Args& args) {
             double local_frame[3][3];
             build_los_frame(sposition1, los, local_frame);
 
-            sweep_leg(args.mattrs2, m2, position1, sposition1, args.sattrs12, args.veto12,
+            sweep_leg(args.attrs.mattrs2, m2, position1, sposition1, args.attrs.sattrs12, args.attrs.veto12,
                       [&](size_t, const double* position, const double* sposition,
                           const double* value) {
                           add_pair_weight(hist2.data(), seen2.data(), local_frame,
                                           sposition1, sposition, position1, position,
-                                          value, m2.iv, args.battrs12, layout.nprojs1,
+                                          value, m2.iv, args.attrs.battrs12, layout.nprojs1,
                                           layout.nells1, layout.ells1, layout.ellmax1,
-                                          args.mattrs2);
+                                          args.attrs.mattrs2);
                       });
 
-            sweep_leg(args.mattrs3, m3, position1, sposition1, args.sattrs13, args.veto13,
+            sweep_leg(args.attrs.mattrs3, m3, position1, sposition1, args.attrs.sattrs13, args.attrs.veto13,
                       [&](size_t, const double* position, const double* sposition,
                           const double* value) {
                           add_pair_weight(hist3.data(), seen3.data(), local_frame,
                                           sposition1, sposition, position1, position,
-                                          value, m3.iv, args.battrs13, layout.nprojs2,
+                                          value, m3.iv, args.attrs.battrs13, layout.nprojs2,
                                           layout.nells2, layout.ells2, layout.ellmax2,
-                                          args.mattrs3);
+                                          args.attrs.mattrs3);
                       });
 
             if (layout.nprojs == 0) {

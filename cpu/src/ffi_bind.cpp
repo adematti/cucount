@@ -199,12 +199,12 @@ py::tuple get_count2_layout_py() {
 
 py::tuple get_count3_layout_py() {
     BinAttrs none{};
-    Count3Layout layout = get_count3_out_layout(battrs3_12, battrs3_13, none);
+    Count3Layout layout = get_count3_layout(battrs3_12, battrs3_13, none);
     return py::make_tuple(layout.names, shape_tuple(layout.shape));
 }
 
 py::tuple get_count3close_layout_py() {
-    Count3Layout layout = get_count3_out_layout(battrs3_12, battrs3_13, battrs3_23);
+    Count3Layout layout = get_count3_layout(battrs3_12, battrs3_13, battrs3_23);
     return py::make_tuple(layout.names, shape_tuple(layout.shape));
 }
 
@@ -244,23 +244,23 @@ ffi::Error count2Impl(ffi::Buffer<ffi::F64> positions1, ffi::Buffer<ffi::F64> va
     if (layout.size == 0) return ffi::Error::Success();
 
     if (!count2_vectorized()) {
-        Count2GenericArgs g;
+        Count2Args g;
         g.p1 = p1;
         g.p2 = p2;
-        g.mattrs = mattrs2;
-        g.battrs = battrs2;
-        g.wattrs = wattrs2;
-        g.sattrs = sattrs2;
-        g.spattrs = spattrs2;
+        g.attrs.mattrs = mattrs2;
+        g.attrs.battrs = battrs2;
+        g.attrs.wattrs = wattrs2;
+        g.attrs.sattrs = sattrs2;
+        g.attrs.spattrs = spattrs2;
         g.nthreads = staged_nthreads;
         g.out = out;
-        Count2Generic(g);
+        Count2(g);
         return ffi::Error::Success();
     }
 
     // The vectorised kernel wants its own flattened columns; the pybind
     // binding does this too, and it is O(n) beside the pair loop.
-    Count2Args a;
+    Count2KernelArgs a;
     a.pos1 = p1.positions;
     a.n1 = p1.size;
     a.pos2 = p2.positions;
@@ -383,7 +383,7 @@ ffi::Error count2Impl(ffi::Buffer<ffi::F64> positions1, ffi::Buffer<ffi::F64> va
     }
     a.out = out;
 
-    Count2(a);
+    Count2Kernel(a);
     return ffi::Error::Success();
 }
 
@@ -409,20 +409,20 @@ ffi::Error count3Impl(ffi::Buffer<ffi::F64> positions1, ffi::Buffer<ffi::F64> va
     a.p1 = ffi_particles(positions1, values1, index_value3[0]);
     a.p2 = ffi_particles(positions2, values2, index_value3[1]);
     a.p3 = ffi_particles(positions3, values3, index_value3[2]);
-    a.mattrs1 = mattrs3_1;
-    a.mattrs2 = mattrs3_2;
-    a.mattrs3 = mattrs3_3;
-    a.battrs12 = battrs3_12;
-    a.battrs13 = battrs3_13;
-    a.wattrs = wattrs3;
-    a.sattrs12 = sattrs3_12;
-    a.sattrs13 = sattrs3_13;
-    a.veto12 = veto3_12;
-    a.veto13 = veto3_13;
+    a.attrs.mattrs1 = mattrs3_1;
+    a.attrs.mattrs2 = mattrs3_2;
+    a.attrs.mattrs3 = mattrs3_3;
+    a.attrs.battrs12 = battrs3_12;
+    a.attrs.battrs13 = battrs3_13;
+    a.attrs.wattrs = wattrs3;
+    a.attrs.sattrs12 = sattrs3_12;
+    a.attrs.sattrs13 = sattrs3_13;
+    a.attrs.veto12 = veto3_12;
+    a.attrs.veto13 = veto3_13;
     a.nthreads = staged_nthreads;
 
     BinAttrs none{};
-    Count3Layout layout = get_count3_out_layout(battrs3_12, battrs3_13, none);
+    Count3Layout layout = get_count3_layout(battrs3_12, battrs3_13, none);
     a.out = counts->typed_data();
     std::memset(a.out, 0, layout.nweights * layout.size * sizeof(double));
     if (layout.size == 0) return ffi::Error::Success();
@@ -451,26 +451,26 @@ ffi::Error count3closeImpl(ffi::Buffer<ffi::F64> positions1, ffi::Buffer<ffi::F6
                            ffi::ResultBuffer<ffi::F64> buffer) {
     (void)buffer;
 
-    Count3CloseArgs a;
+    Count3Args a;
     a.p1 = ffi_particles(positions1, values1, index_value3[0]);
     a.p2 = ffi_particles(positions2, values2, index_value3[1]);
     a.p3 = ffi_particles(positions3, values3, index_value3[2]);
-    a.mattrs1 = mattrs3_1;
-    a.mattrs2 = mattrs3_2;
-    a.mattrs3 = mattrs3_3;
-    a.battrs12 = battrs3_12;
-    a.battrs13 = battrs3_13;
-    a.battrs23 = battrs3_23;
-    a.wattrs = wattrs3;
-    a.sattrs12 = sattrs3_12;
-    a.sattrs13 = sattrs3_13;
-    a.sattrs23 = sattrs3_23;
-    a.veto12 = veto3_12;
-    a.veto13 = veto3_13;
-    a.veto23 = veto3_23;
+    a.attrs.mattrs1 = mattrs3_1;
+    a.attrs.mattrs2 = mattrs3_2;
+    a.attrs.mattrs3 = mattrs3_3;
+    a.attrs.battrs12 = battrs3_12;
+    a.attrs.battrs13 = battrs3_13;
+    a.attrs.battrs23 = battrs3_23;
+    a.attrs.wattrs = wattrs3;
+    a.attrs.sattrs12 = sattrs3_12;
+    a.attrs.sattrs13 = sattrs3_13;
+    a.attrs.sattrs23 = sattrs3_23;
+    a.attrs.veto12 = veto3_12;
+    a.attrs.veto13 = veto3_13;
+    a.attrs.veto23 = veto3_23;
     a.nthreads = staged_nthreads;
 
-    Count3Layout layout = get_count3_out_layout(battrs3_12, battrs3_13, battrs3_23);
+    Count3Layout layout = get_count3_layout(battrs3_12, battrs3_13, battrs3_23);
     a.out = counts->typed_data();
     std::memset(a.out, 0, layout.nweights * layout.size * sizeof(double));
     if (layout.size == 0) return ffi::Error::Success();

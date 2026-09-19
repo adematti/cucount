@@ -7,6 +7,7 @@
 #include <sm_20_atomic_functions.h>
 #include "common.h"
 #include "layout.h"
+#include "args.h"
 
 
 // count2.h helpers
@@ -14,22 +15,12 @@
 // so strategy is to define inline functions in macros
 
 
-typedef struct DeviceCount2Layout {
-    size_t nbins;
-    size_t csize;
-    size_t nells;
-    size_t ells[10];
-    bool ells_even;
-} DeviceCount2Layout;
-
-
-size_t fill_ells(const BinAttrs *battrs, int index, size_t *ells);
+// Count2PoleLayout and fill_ells live in the shared include/layout.h.
 
 
 
 
-void count2(FLOAT* counts, const Mesh *list_mesh, const MeshAttrs mattrs,
-    const SelectionAttrs sattrs, BinAttrs battrs, WeightAttrs wattrs, SplitAttrs spattrs,
+void count2(FLOAT* counts, const Mesh *list_mesh, const Count2Attrs &attrs,
     DeviceMemoryBuffer *buffer, cudaStream_t stream);
 
 

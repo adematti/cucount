@@ -17,7 +17,7 @@ using cucount::pairmath::pair_bitwise_weight;
 
 
 __device__ __constant__ SplitAttrs device_spattrs;
-static __device__ __constant__ DeviceCount2Layout device_layout;
+static __device__ __constant__ Count2PoleLayout device_layout;
 
 
 using cucount::pairmath::search_bin_index;
@@ -33,67 +33,7 @@ DEFINE_COMPUTE_UTILS
 
 
 
-size_t fill_ells(const BinAttrs *battrs, int index, size_t *ells)
-{
-    size_t ellmin = (size_t)battrs->min[index];
-    size_t ellmax = (size_t)battrs->max[index];
-    size_t ellstep = (battrs->bin[index] == BIN_LIN) ? (size_t)battrs->step[index] : (size_t)1;
-
-    if (ellstep == 0) return 0;
-    size_t nells = 0;
-
-    for (size_t ell = ellmin; ell <= ellmax; ell += ellstep) {
-        ells[nells++] = ell;
-    }
-
-    return nells;
-}
-
-
-static inline DeviceCount2Layout make_device_count2_layout(
-    const IndexValue index_value1,
-    const IndexValue index_value2,
-    const BinAttrs battrs,
-    const SplitAttrs spattrs)
-{
-    DeviceCount2Layout layout;
-    memset(&layout, 0, sizeof(DeviceCount2Layout));
-
-    layout.nbins = battrs.size;
-
-    const size_t nweights = get_count2_weight_names(
-        index_value1,
-        index_value2,
-        NULL);
-
-    layout.csize = nweights * spattrs.size * battrs.size;
-
-    if (battrs.ndim > 0 && battrs.var[battrs.ndim - 1] == VAR_POLE) {
-        const int ipole = (int)battrs.ndim - 1;
-
-        layout.nells = fill_ells(&battrs, ipole, layout.ells);
-
-        if (layout.nells > 0) {
-            if (layout.nells == 1) {
-                layout.ells_even = (layout.ells[0] % 2 == 0);
-            }
-            else {
-                size_t ellstep;
-
-                if (battrs.asize[ipole] == 0) {
-                    ellstep = (size_t)battrs.step[ipole];
-                }
-                else {
-                    ellstep = 1;
-                }
-
-                layout.ells_even = ((layout.ells[0] % 2 == 0) && (ellstep % 2 == 0));
-            }
-        }
-    }
-
-    return layout;
-}
+// fill_ells and the pole layout are shared, in include/layout.h.
 
 
 // ============================================================================
@@ -630,14 +570,18 @@ __global__ void count2_kernel(
 void count2(
     FLOAT *counts,
     const Mesh *list_mesh,
-    const MeshAttrs mattrs,
-    const SelectionAttrs sattrs,
-    BinAttrs battrs,
-    WeightAttrs wattrs,
-    SplitAttrs spattrs,
+    const Count2Attrs &attrs,
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream)
 {
+    // Unpacked here so the body below reads as it always has: the bundle is
+    // the API, these are its members.
+    const MeshAttrs mattrs = attrs.mattrs;
+    const SelectionAttrs sattrs = attrs.sattrs;
+    BinAttrs battrs = attrs.battrs;
+    WeightAttrs wattrs = attrs.wattrs;
+    SplitAttrs spattrs = attrs.spattrs;
+
     int nblocks, nthreads_per_block;
 
     if (mattrs.type == MESH_ANGULAR) {
@@ -658,7 +602,7 @@ void count2(
     cudaEvent_t start, stop;
     float elapsed_time;
 
-    DeviceCount2Layout layout = make_device_count2_layout(
+    Count2PoleLayout layout = make_count2_pole_layout(
         list_mesh[0].index_value,
         list_mesh[1].index_value,
         battrs,
@@ -676,7 +620,7 @@ void count2(
     CUDA_CHECK(cudaMemcpyToSymbol(
         device_layout,
         &layout,
-        sizeof(DeviceCount2Layout)));
+        sizeof(Count2PoleLayout)));
 
     BinAttrs device_battrs;
     copy_bin_attrs_to_device(&device_battrs, &battrs, buffer);
