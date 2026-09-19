@@ -474,26 +474,40 @@ def test_close_mesh_type_does_not_change_the_result():
 
 
 @needs_cuda
+@pytest.mark.parametrize('angular_mesh', [False, True])
 @pytest.mark.parametrize('case', ['plain', 'third-axis', 'poles', 'angular3d'])
-def test_close_matches_cuda(case):
-    # An angular mesh on the close pair: the CUDA kernel walks it with the
-    # angular candidate window whatever its type, so a cartesian one there
-    # reads out of bounds. See _close_setup.
+def test_close_matches_cuda(case, angular_mesh):
+    """Both mesh types, on both backends.
+
+    angular_mesh=False is the regression case: the CUDA kernel used to fix the
+    close pair's candidate window to the angular one and exit the process on a
+    cartesian mesh, so a close-triplet count with no theta selection anywhere
+    could not run at all.
+    """
     kwargs = {}
     if case == 'third-axis':
-        particles, kw, _ = _close_setup(n=60, e23=E23, angular_mesh=True)
+        particles, kw, _ = _close_setup(n=60, e23=E23, angular_mesh=angular_mesh)
     elif case == 'poles':
-        particles, kw, _ = _close_setup(n=60, ells=([0, 2], [0, 2]), angular_mesh=True)
+        particles, kw, _ = _close_setup(n=60, ells=([0, 2], [0, 2]),
+                                        angular_mesh=angular_mesh)
     elif case == 'angular3d':
-        particles, kw, _ = _close_setup(n=60, angular_mesh=True)
+        particles, kw, _ = _close_setup(n=60, angular_mesh=angular_mesh)
         sep = np.linspace(0., 180., 7)
         rng = np.random.default_rng(7)
         kwargs['wattrs'] = WeightAttrs(
             angular=dict(sep=[sep, sep, sep],
                          weight=rng.uniform(0.5, 1.5, (sep.size,) * 3)))
     else:
-        particles, kw, _ = _close_setup(n=60, angular_mesh=True)
+        particles, kw, _ = _close_setup(n=60, angular_mesh=angular_mesh)
     count3close(*particles, backend='compare', **kw, **kwargs)
+
+
+@needs_cuda
+@pytest.mark.parametrize('close_pair', [(1, 2), (1, 3), (2, 3)])
+def test_close_pair_choice_matches_cuda(close_pair):
+    """Every close_pair, on a cartesian mesh: all three used to exit."""
+    particles, kw, _ = _close_setup(n=60)
+    count3close(*particles, backend='compare', close_pair=close_pair, **kw)
 
 
 def test_count3_and_count3close_differ_only_in_imaginary_sign():

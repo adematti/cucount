@@ -813,7 +813,12 @@ struct Count3Close23From2Op {
 // Kernel
 // ============================================================================
 
-template <MESH_TYPE OTHER_MESH_TYPE>
+// CLOSE_MESH_TYPE is the mesh the close pair is searched on (mesh2 for close
+// pair (1, 2), mesh3 for (1, 3) and (2, 3)); OTHER_MESH_TYPE is the remaining
+// leg. Both used to be fixed -- the close pair was assumed angular, and a
+// cartesian one exited the process -- so a close-triplet count with no theta
+// selection anywhere could not run at all.
+template <MESH_TYPE CLOSE_MESH_TYPE, MESH_TYPE OTHER_MESH_TYPE>
 __global__ void count3_close_kernel(
     FLOAT *block_counts,
     size_t csize,
@@ -872,7 +877,7 @@ __global__ void count3_close_kernel(
                     wattrs
                 };
 
-                for_each_candidate<MESH_ANGULAR>(
+                for_each_candidate<CLOSE_MESH_TYPE>(
                     position1, sposition1,
                     mesh2, mattrs2,
                     op
@@ -895,7 +900,7 @@ __global__ void count3_close_kernel(
                     wattrs
                 };
 
-                for_each_candidate<MESH_ANGULAR>(
+                for_each_candidate<CLOSE_MESH_TYPE>(
                     position1, sposition1,
                     mesh3, mattrs3,
                     op
@@ -920,7 +925,7 @@ __global__ void count3_close_kernel(
                 wattrs
             };
 
-            for_each_candidate<MESH_ANGULAR>(
+            for_each_candidate<CLOSE_MESH_TYPE>(
                 position2, sposition2,
                 mesh3, mattrs3,
                 op
@@ -934,8 +939,9 @@ __global__ void count3_close_kernel(
 // Compact host launch
 // ============================================================================
 
-#define LAUNCH_COUNT3_CLOSE_KERNEL(OTHER_MESH_TYPE)                              \
-    count3_close_kernel<OTHER_MESH_TYPE><<<nblocks, nthreads_per_block, 0, stream>>>( \
+#define LAUNCH_COUNT3_CLOSE_KERNEL(CLOSE_MESH_TYPE, OTHER_MESH_TYPE)              \
+    count3_close_kernel<CLOSE_MESH_TYPE, OTHER_MESH_TYPE>                         \
+        <<<nblocks, nthreads_per_block, 0, stream>>>(                             \
         block_counts,                                                            \
         csize,                                                                   \
         mesh1, mesh2, mesh3,                                                     \
@@ -974,27 +980,23 @@ void count3_close(
     DeviceMemoryBuffer *buffer,
     cudaStream_t stream)
 {
+    // The mesh the close pair is searched on, and the one the remaining leg
+    // is searched on. Each is now a template parameter, so either may be
+    // cartesian; the close pair used to have to be angular, and was not
+    // declined but exited the process.
+    const MeshAttrs *close_mattrs = nullptr;
     const MeshAttrs *other_mattrs = nullptr;
 
     if (close_pair == CLOSE_PAIR_12) {
-        if (mattrs1.type != MESH_ANGULAR || mattrs2.type != MESH_ANGULAR) {
-            log_message(LOG_LEVEL_ERROR, "count3_close: close pair (1, 2) must be angular.\n");
-            exit(EXIT_FAILURE);
-        }
+        close_mattrs = &mattrs2;
         other_mattrs = &mattrs3;
     }
     else if (close_pair == CLOSE_PAIR_13) {
-        if (mattrs1.type != MESH_ANGULAR || mattrs3.type != MESH_ANGULAR) {
-            log_message(LOG_LEVEL_ERROR, "count3_close: close pair (1, 3) must be angular.\n");
-            exit(EXIT_FAILURE);
-        }
+        close_mattrs = &mattrs3;
         other_mattrs = &mattrs2;
     }
     else {
-        if (mattrs2.type != MESH_ANGULAR || mattrs3.type != MESH_ANGULAR) {
-            log_message(LOG_LEVEL_ERROR, "count3_close: close pair (2, 3) must be angular.\n");
-            exit(EXIT_FAILURE);
-        }
+        close_mattrs = &mattrs3;
         other_mattrs = &mattrs1;
     }
 
@@ -1014,7 +1016,7 @@ void count3_close(
     copy_weight_attrs_to_device(&device_wattrs, &wattrs, buffer);
 
     int nblocks, nthreads_per_block;
-    CONFIGURE_KERNEL_LAUNCH((count3_close_kernel<MESH_ANGULAR>), nblocks, nthreads_per_block, buffer);
+    CONFIGURE_KERNEL_LAUNCH((count3_close_kernel<MESH_ANGULAR, MESH_ANGULAR>), nblocks, nthreads_per_block, buffer);
 
     FLOAT *block_counts = (FLOAT *) my_device_malloc(
         nblocks * csize * sizeof(FLOAT), buffer);
@@ -1022,15 +1024,22 @@ void count3_close(
     CUDA_CHECK(cudaMemsetAsync(counts, 0, csize * sizeof(FLOAT), stream));
     CUDA_CHECK(cudaMemcpyToSymbol(device_layout, &layout, sizeof(DeviceCount3Layout)));
 
-    if (other_mattrs->type == MESH_ANGULAR) {
-        LAUNCH_COUNT3_CLOSE_KERNEL(MESH_ANGULAR);
-    }
-    else if (other_mattrs->type == MESH_CARTESIAN) {
-        LAUNCH_COUNT3_CLOSE_KERNEL(MESH_CARTESIAN);
+    // Four instantiations: each leg's mesh is cartesian or angular.
+    if (close_mattrs->type == MESH_ANGULAR) {
+        if (other_mattrs->type == MESH_ANGULAR) {
+            LAUNCH_COUNT3_CLOSE_KERNEL(MESH_ANGULAR, MESH_ANGULAR);
+        }
+        else {
+            LAUNCH_COUNT3_CLOSE_KERNEL(MESH_ANGULAR, MESH_CARTESIAN);
+        }
     }
     else {
-        log_message(LOG_LEVEL_ERROR, "count3_close: unsupported other mesh type.\n");
-        exit(EXIT_FAILURE);
+        if (other_mattrs->type == MESH_ANGULAR) {
+            LAUNCH_COUNT3_CLOSE_KERNEL(MESH_CARTESIAN, MESH_ANGULAR);
+        }
+        else {
+            LAUNCH_COUNT3_CLOSE_KERNEL(MESH_CARTESIAN, MESH_CARTESIAN);
+        }
     }
 
     CUDA_CHECK(cudaGetLastError());
