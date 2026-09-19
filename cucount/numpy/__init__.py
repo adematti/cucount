@@ -665,14 +665,20 @@ class MeshAttrs(object):
         # kernel wants the tighter fit, since each candidate costs a load and the per-cell
         # bookkeeping is amortised across a warp; the CPU kernel wants the opposite, its
         # inner loop being fast only while it can load full SIMD vectors.
-        # These are the values the CUDA backend has always used. The CPU kernel used to
-        # pick its own mesh equivalent to 1, but it reached that by ignoring meshsize
-        # outright rather than by measurement, so the two are simply the ends of an
-        # unmeasured range; both backends take the CUDA value until it is measured.
+        # The cartesian CPU value is measured, on a 1000 box with smax = 100 and 32
+        # threads, timing the kernel against resolution with meshsize set explicitly so
+        # the O(nparticles) cap does not confound it (cpu/bench_mesh.py). Against c = 1, the
+        # mesh the kernel used to pick for itself:
+        #   n = 50k    c=2 0.53x   c=3 0.64x   c=6 1.07x
+        #   n = 200k   c=2 0.68x   c=3 0.67x   c=6 1.44x
+        #   n = 500k   c=2 0.63x   c=3 0.67x   c=6 0.84x
+        # 2 is the only value that wins at every size: 6 is good only once the cells are
+        # dense enough to fill a vector, and 1 leaves a factor of 1.5 on the table
+        # everywhere. The angular CPU value is untested and keeps the CUDA one.
         # 'compare' runs both on one mesh and so cannot suit either: anchor it on the
         # reference implementation, which costs the comparison nothing but timings.
         _backend = _resolve_backend(backend)
-        cells_per_smax = {'cartesian': {'cuda': 6., 'cpu': 6.},
+        cells_per_smax = {'cartesian': {'cuda': 6., 'cpu': 2.},
                           'angular': {'cuda': 5., 'cpu': 5.}}[mesh_type][
                               'cuda' if _backend == 'compare' else _backend]
 

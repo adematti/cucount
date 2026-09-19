@@ -116,6 +116,34 @@ from Python: same call, same result, only slower. `tuning={'isa': ...}`,
 `'scatter'` and single precision are kernel knobs and have no effect on the
 generic path.
 
+## Mesh
+
+Both backends take their mesh from `MeshAttrs`, so `meshsize=` and `refine=`
+mean the same thing on either. The kernel sweeps
+`ceil(smax / boxsize * meshsize)` cells each way, so every resolution gives the
+same counts and the choice is purely one of run time.
+
+How fine it should be differs by backend, which is what `MeshAttrs(backend=)`
+selects. Finer cells fit the swept volume to the sphere of radius `smax` more
+tightly -- at 6 cells per `smax`, 41% of the candidates examined lie within it,
+against 15% at 1 -- but leave fewer particles per cell for the inner loop to
+vectorise over. CUDA wants the tight fit; this kernel wants full SIMD vectors.
+
+The CPU default, 2 cells per `smax`, is measured with
+[bench_mesh.py](bench_mesh.py) on a 1000 box at `smax = 100` and 32 threads,
+against `c = 1` -- the mesh the kernel used to pick for itself before it read
+`MeshAttrs` at all:
+
+| n | c = 2 | c = 3 | c = 6 |
+|---|---|---|---|
+| 50k | 0.53x | 0.64x | 1.07x |
+| 200k | 0.68x | 0.67x | 1.44x |
+| 500k | 0.63x | 0.67x | 0.84x |
+
+2 is the only value that wins at every size: 6 pays off only once cells are
+dense enough to fill a vector, and 1 leaves a factor of ~1.5 everywhere. The
+angular value is untested and keeps the CUDA one.
+
 ## Verify
 
 ```bash
