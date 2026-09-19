@@ -85,8 +85,13 @@ angular meshes, s and theta selections, jackknife splits, individual weights,
 spin/shear (galaxy-shear and shear-shear channels), and bitwise (PIP),
 negative and 1D angular weights. For the triplet counts: legs binned in s or
 theta with multipoles to ell = 5, the optional (2, 3) axis, selections and
-vetoes, and the 3-dimensional angular upweight. Whatever is not served is
-declined by name.
+vetoes, and the 3-dimensional angular upweight.
+
+The CPU backend declines nothing the CUDA one serves. What neither serves --
+multipoles above the kernels' cache, N-dimensional angular weights in `count2`,
+spin with other than two components -- is a limit of both kernels, checked once
+in the frontend before a backend is chosen, so every backend refuses the same
+request the same way.
 
 Internally two paths sit behind the one entry point: a vectorised Highway
 kernel for s, (s, mu) and (s, pole) on a cartesian mesh, and a scalar path for
@@ -111,7 +116,7 @@ Highway backend) — while backend-neutral code lives at the root: `include/attr
 
 The Python frontend mirrors that split: `cucount/numpy/_cuda.py` and
 `cucount/numpy/_cpu.py` are one adapter per backend (same shape on both:
-`available`, `setup_logging`, `TUNING_KEYS`, `unsupported`, `count2`, ...),
+`available`, `unavailable`, `setup_logging`, `TUNING_KEYS`, `count2`, ...),
 and `cucount/numpy/__init__.py` holds the backend-neutral API — the
 attribute classes, `Particles`, the utilities, and the dispatch between the
 backends.

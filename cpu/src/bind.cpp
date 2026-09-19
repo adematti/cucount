@@ -77,9 +77,20 @@ void validate(const Particles& p1, const Particles& p2, const BinAttrs& battrs,
               const SelectionAttrs& sattrs, const SplitAttrs& spattrs) {
     if (mattrs.type != MESH_CARTESIAN && mattrs.type != MESH_ANGULAR)
         throw std::invalid_argument("cpu backend: mesh type not implemented");
+    // Two bounds, both shared with the CUDA kernel: the ell list is held in a
+    // buffer of MAX_POLE + 2, and the Legendre cache of MAX_POLE + 1 entries is
+    // indexed BY ell, so the largest ell is what matters. The frontend checks
+    // both and says so; this is the backstop that keeps a direct call to the
+    // extension from writing past either array.
     for (size_t i = 0; i < battrs.ndim; i++) {
-        if (battrs.var[i] == VAR_POLE && battrs.shape[i] > MAX_POLE + 1)
+        if (battrs.var[i] != VAR_POLE) continue;
+        if (battrs.shape[i] > MAX_POLE + 2)
             throw std::invalid_argument("cpu backend: too many multipoles requested");
+        for (size_t j = 0; j < battrs.shape[i]; j++) {
+            if (battrs.array[i][j] > MAX_POLE)
+                throw std::invalid_argument(
+                    "cpu backend: multipole above MAX_POLE requested");
+        }
     }
     for (size_t i = 0; i < sattrs.ndim; i++) {
         if (sattrs.var[i] != VAR_S && sattrs.var[i] != VAR_THETA)

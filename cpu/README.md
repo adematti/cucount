@@ -102,9 +102,16 @@ selected backend: the CPU backend accepts `nthreads` (CPU threads), `isa`
 and `'scalar'`. In `compare` mode the dict nests per backend:
 `tuning={'cpu': {...}, 'cuda': {...}}`.
 
-Requests the CPU backend cannot serve — N-dimensional angular weights,
-spin with other than two components — are declined by name, so it never
-silently computes something different.
+This backend declines nothing the other serves. What cannot be served --
+N-dimensional angular weights for `count2`, spin with other than two
+components, multipoles above `MAX_POLE` -- is a limit of both kernels alike,
+so it is checked once in the backend-neutral frontend before a backend is
+chosen. Ask for it on `cuda`, `cpu` or `compare` and you get the same refusal;
+`tests/test_cpu.py` asserts that across all three.
+
+That used to be one-sided: the CPU adapter reported these by name while CUDA
+went ahead, which meant a one-sided multipole projection was silently dropped
+and `ell > MAX_POLE` indexed the Legendre cache out of bounds on both.
 
 Two paths sit behind that one entry point. The Highway kernel serves the
 shapes worth vectorising: `s`, `(s, mu)` and `(s, pole)` binning on a

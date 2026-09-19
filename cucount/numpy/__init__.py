@@ -87,6 +87,110 @@ def _resolve_tuning(mode, tuning, nthreads=1):
     return cuda, cpu
 
 
+# Limits of the kernels themselves, not of one backend. Both count2 kernels
+# index a Legendre cache of MAX_POLE + 1 entries by ell and fill an ell list of
+# MAX_POLE + 2; both look the count2 angular upweight up against a single
+# cos(theta); both project spin from exactly two components; and neither
+# triplet kernel weights by splits, by bitwise columns, or -- for count3 -- by
+# an angular table.
+#
+# They are checked here, once, before a backend is chosen, so that the two
+# decline the same requests for the same reasons. Previously only the CPU
+# backend checked them and reported by name, while CUDA went ahead: it dropped
+# a one-sided multipole projection silently, and with ell > MAX_POLE it indexed
+# the Legendre cache out of bounds.
+
+MAX_POLE = 8
+"""Mirrors MAX_POLE in include/common.h: the size of both count2 kernels' Legendre cache."""
+
+
+def _pole_values(battrs):
+    """The ell values of a pole axis, or None when there is none."""
+    for name, array in zip(battrs.varnames, battrs.array):
+        if name == 'pole':
+            return np.asarray(array)
+    return None
+
+
+def _check_count2(particles, battrs, wattrs, spattrs):
+    """Raise for a count2 request neither kernel can serve."""
+    ells = _pole_values(battrs)
+    if ells is not None and ells.size:
+        if ells.size > MAX_POLE + 2:
+            raise ValueError(
+                f'{ells.size} multipoles requested, but both count2 kernels hold the ell list '
+                f'in a buffer of {MAX_POLE + 2} (MAX_POLE + 2 in include/common.h)')
+        if ells.max() > MAX_POLE:
+            raise ValueError(
+                f'multipoles up to ell = {int(ells.max())} requested, but both count2 kernels '
+                f'index a Legendre cache of {MAX_POLE + 1} entries by ell, so ell <= {MAX_POLE} '
+                f'(MAX_POLE in include/common.h). Raise MAX_POLE and rebuild to go higher.')
+
+    for p in particles:
+        sizes = dict(p.index_value._sizes)
+        if sizes.get('spin') and sizes['spin'] != 2:
+            raise ValueError(
+                f'spin with {sizes["spin"]} components, but the projection both kernels share '
+                'takes exactly 2')
+    nbitwise = [dict(p.index_value._sizes).get('bitwise_weight', 0) for p in particles]
+    if len(set(nbitwise)) > 1:
+        raise ValueError(
+            f'catalogues carry {nbitwise} bitwise weights; both kernels pair them column by '
+            'column, so the counts must match')
+
+    angular = getattr(wattrs, 'angular', None)
+    ndim = 0 if angular is None or angular.weight is None else angular.weight.ndim
+    if ndim and ndim != 1:
+        raise ValueError(
+            f'{ndim}-dimensional angular weights, but count2 has one angle per pair and both '
+            'kernels look the upweight up against a single cos(theta)')
+
+    if getattr(spattrs, 'size', 0) > 1 and not all(
+            dict(p.index_value._sizes).get('split') for p in particles):
+        raise ValueError('jackknife splits need a split label on both catalogues')
+
+
+def _check_count3(particles, battrs12, battrs13, battrs23, wattrs, close):
+    """Raise for a count3 / count3close request neither kernel can serve."""
+    poles = []
+    for name, battrs in [('battrs12', battrs12), ('battrs13', battrs13)]:
+        names = list(battrs.varnames)
+        if names[:1] not in (['s'], ['theta']):
+            raise ValueError(
+                f'{name} bins in {names}, but both triplet kernels bin a leg in s or theta')
+        if len(names) > 2 or (len(names) == 2 and names[1] != 'pole'):
+            raise ValueError(
+                f'{name} bins in {names}, but a triplet leg takes one separation axis and an '
+                'optional multipole axis')
+        poles.append(len(names) == 2)
+    if poles[0] != poles[1]:
+        # CUDA computed nprojs = 0 here and dropped the projection without a word.
+        raise ValueError(
+            'a multipole axis on one triplet leg only: both legs carry one, or neither')
+    if poles[0]:
+        check_kernel_ells(battrs12, battrs13)
+
+    if battrs23 is not None and list(battrs23.varnames) not in (['s'], ['theta']):
+        raise ValueError(
+            f'battrs23 bins in {list(battrs23.varnames)}, but the (2, 3) axis bins in s or theta')
+
+    angular = getattr(wattrs, 'angular', None)
+    ndim = 0 if angular is None or angular.weight is None else angular.weight.ndim
+    if ndim and not close:
+        raise ValueError('neither count3 kernel applies angular weights; they belong to count3close')
+    if ndim and ndim != 3:
+        raise ValueError(
+            f'{ndim}-dimensional angular weights, but count3close indexes the table by the '
+            "triangle's three cos(theta)")
+
+    bitwise = getattr(wattrs, 'bitwise', None)
+    if bitwise is not None and getattr(bitwise, 'weights', None):
+        raise ValueError('neither triplet kernel applies bitwise weights')
+    for p in particles:
+        if dict(p.index_value._sizes).get('split'):
+            raise ValueError('neither triplet kernel splits; splits are a count2 feature')
+
+
 def _dispatch(mode, cuda_call, cpu_call, why):
     """Run a count on the selected backend.
 
@@ -1023,6 +1127,8 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
 
     # Before the mesh: a default MeshAttrs picks its resolution for the backend
     # that will run.
+    _check_count2(particles, battrs, wattrs, spattrs)
+
     mode = _resolve_backend(backend)
     cuda_tuning, cpu_tuning = _resolve_tuning(mode, tuning, nthreads=nthreads)
 
@@ -1032,7 +1138,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     # either extension through pybind's foreign module_local loading.
     cparticles = [_to_c_particles(p) for p in particles]
 
-    why = None if mode == 'cuda' else _cpu.unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs)
+    why = None if mode == 'cuda' else _cpu.unavailable()
     return _dispatch(
         mode,
         lambda: _cuda.count2(cparticles, battrs, mattrs, wattrs=wattrs, sattrs=sattrs,
@@ -1201,8 +1307,7 @@ def count3close(*particles: Particles,
 
             {"weight": array}
     """
-    # the kernel clamps ell silently past ELLMAX -- fail loudly instead
-    check_kernel_ells(battrs12, battrs13, battrs23)
+    _check_count3(particles, battrs12, battrs13, battrs23, wattrs, close=True)
 
     mode = _resolve_backend(backend)
     cuda_tuning, cpu_tuning = _resolve_tuning(mode, tuning, nthreads=nthreads)
@@ -1261,8 +1366,7 @@ def count3close(*particles: Particles,
     sattrs = (sattrs12, sattrs13, sattrs23)
     vetos = (veto12, veto13, veto23)
 
-    why = None if mode == 'cuda' else _cpu.unsupported3close(
-        particles, battrs, mattrs, wattrs, sattrs, vetos)
+    why = None if mode == 'cuda' else _cpu.unavailable()
     return _dispatch(
         mode,
         lambda: _cuda.count3close(
@@ -1337,8 +1441,7 @@ def count3(*particles: Particles,
     dict
         Output of the native ``count3`` call, typically ``{"weight": array}``.
     """
-    # the kernel clamps ell silently past ELLMAX -- fail loudly instead
-    check_kernel_ells(battrs12, battrs13)
+    _check_count3(particles, battrs12, battrs13, None, wattrs, close=False)
 
     mode = _resolve_backend(backend)
     cuda_tuning, cpu_tuning = _resolve_tuning(mode, tuning, nthreads=nthreads)
@@ -1371,9 +1474,7 @@ def count3(*particles: Particles,
     cparticles = [_to_c_particles(p) for p in particles]
     mattrs = (mattrs1, mattrs2, mattrs3)
 
-    why = None if mode == 'cuda' else _cpu.unsupported3(
-        particles, battrs12, battrs13, mattrs, wattrs,
-        (sattrs12, sattrs13), (veto12, veto13))
+    why = None if mode == 'cuda' else _cpu.unavailable()
     return _dispatch(
         mode,
         lambda: _cuda.count3(cparticles, mattrs1, mattrs2, mattrs3,

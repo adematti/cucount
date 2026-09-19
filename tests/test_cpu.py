@@ -273,11 +273,17 @@ def test_irregular_edges_still_served():
     assert np.allclose(got, want, rtol=1e-9, atol=0)
 
 
-UNSUPPORTED = ['spin components', 'angular weights']
+# What neither kernel can serve is a property of the kernels, not of a
+# backend, so it is checked once in the frontend before a backend is chosen.
+# These tests assert that: the same request is refused the same way whichever
+# backend is asked, which is what stops one declining by name while the other
+# quietly computes something else.
+LIMITS = ['spin components', 'angular weights', 'ell above MAX_POLE',
+          'too many ells']
 
 
-def _unsupported_request(feature, n=200):
-    """A fully-formed count2 request using one feature the CPU backend lacks."""
+def _limit_request(feature, n=200):
+    """A fully-formed count2 request that neither kernel can serve."""
     rng = np.random.default_rng(10)
     pos1, w1 = catalog(11, n)
     pos2, w2 = catalog(12, n)
@@ -285,27 +291,50 @@ def _unsupported_request(feature, n=200):
     kw = dict(battrs=BinAttrs(s=EDGES['lin']))
 
     if feature == 'spin components':
-        # Spin itself is served now; only a non-2 component count is declined.
+        # Spin itself is served; the projection both kernels share takes 2.
         particles = (Particles(pos1, w1, spin_values=rng.uniform(-1, 1, n)),
                      Particles(pos2, w2))
         match = 'spin'
     elif feature == 'angular weights':
-        # 1D angular weights are served now; only N-dimensional tables decline.
+        # 1D is served; count2 has one angle per pair, so nothing else is.
         sep = np.linspace(0.0, 5.0, 11)
         kw['wattrs'] = WeightAttrs(angular=dict(sep=[sep, sep],
                                                 weight=np.ones((sep.size, sep.size))))
-        match = 'N-dimensional angular'
+        match = 'angular'
+    elif feature == 'ell above MAX_POLE':
+        # The Legendre cache is indexed BY ell, so the largest ell is the
+        # bound -- not how many were asked for. A single ell = 10 used to pass
+        # every check and write past the cache on both backends.
+        kw['battrs'] = BinAttrs(s=EDGES['lin'],
+                                pole=(np.array([10]), 'firstpoint'))
+        match = 'ell'
+    else:
+        kw['battrs'] = BinAttrs(s=EDGES['lin'],
+                                pole=(np.arange(0, 12), 'firstpoint'))
+        match = 'multipoles'
 
     kw.setdefault('mattrs', MeshAttrs(*particles, battrs=kw['battrs']))
     return particles, kw, match
 
 
-@pytest.mark.parametrize('feature', UNSUPPORTED)
-def test_unsupported_modes_are_declined(feature):
-    """Every feature the backend lacks must raise, naming the feature."""
-    particles, kw, match = _unsupported_request(feature)
-    with pytest.raises(NotImplementedError, match=match):
-        count2(*particles, backend='cpu', **kw)
+@pytest.mark.parametrize('backend', ['cpu', 'cuda', 'compare'])
+@pytest.mark.parametrize('feature', LIMITS)
+def test_kernel_limits_are_declined_on_every_backend(feature, backend):
+    """Refused before a backend is chosen, so all three refuse identically."""
+    if backend != 'cpu' and not CUDA:
+        pytest.skip('CUDA extension not built')
+    particles, kw, match = _limit_request(feature)
+    with pytest.raises(ValueError, match=match):
+        count2(*particles, backend=backend, **kw)
+
+
+@pytest.mark.parametrize('ells', [[0, 2, 4], [0, 2, 8], list(range(0, 9))])
+def test_multipoles_up_to_max_pole_are_served(ells):
+    """The bound is ell <= MAX_POLE; everything at or under it must run."""
+    particles, kw, raw = _pole_setup(ells)
+    got = count2(*particles, backend='cpu', **kw)['weight']
+    assert got.shape[-1] == len(ells)
+    assert np.any(got)
 
 
 def test_unbuilt_backend_is_declined(monkeypatch):

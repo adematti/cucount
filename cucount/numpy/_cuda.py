@@ -81,11 +81,12 @@ def _check_tuning(tuning):
     return tuning
 
 
-def unsupported(particles, battrs, mattrs, wattrs, sattrs, spattrs):
-    """Return a reason string if the CUDA backend cannot serve this call.
+def unavailable():
+    """Return a reason string if this backend cannot run at all, else None.
 
-    It serves everything the frontend can express, so this is None; it exists
-    so both backends answer the same question the same way.
+    The same shape as the CPU adapter's. What neither kernel can serve is
+    declined once in the backend-neutral frontend, so neither adapter answers
+    that question any more.
     """
     if not available():
         return 'CUDA backend not built (-DCUCOUNT_BUILD_CUDA=ON)'
