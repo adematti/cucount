@@ -78,11 +78,21 @@ The `count2()` function in the NumPy API supports an experimental CPU backend:
 counts = count2(particles1, particles2, backend='cpu')
 ```
 
-Only `count2` is supported currently, with a subset of features: s, (s, mu) and
-(s, pole) binning (every line of sight), cartesian mesh, s and theta selections,
-individual weights, spin/shear (galaxy-shear and shear-shear channels), and
-bitwise (PIP), negative and 1D angular weights. Requests it cannot serve are
+`count2`, `count3` and `count3close` are all supported, through the numpy API
+and the JAX one alike. For `count2`: every binning variable (s, mu, rp, pi,
+theta, pole, k) in any combination, every line of sight, the cartesian and
+angular meshes, s and theta selections, jackknife splits, individual weights,
+spin/shear (galaxy-shear and shear-shear channels), and bitwise (PIP),
+negative and 1D angular weights. For the triplet counts: legs binned in s or
+theta with multipoles to ell = 5, the optional (2, 3) axis, selections and
+vetoes, and the 3-dimensional angular upweight. Whatever is not served is
 declined by name.
+
+Internally two paths sit behind the one entry point: a vectorised Highway
+kernel for s, (s, mu) and (s, pole) on a cartesian mesh, and a scalar path for
+everything else. Which one runs is an implementation detail; the result is the
+same either way, and the `tuning` knobs below (`isa`, `scatter`) only reach
+the vectorised one.
 `backend='compare'` runs both backends and raises if they disagree. More features are
 expected to be added over time; please open an issue if a particular feature is
 important to you. See [cpu/README.md](cpu/README.md) for details.
@@ -117,6 +127,27 @@ Use the JAX interface if JAX is already part of your codebase.
 1. **JAX preallocates GPU memory**, which can cause `cudaMalloc` to fail if using the NumPy backend.
 2. **Passing device arrays** (from JAX) directly avoids host-device transfers.
 3. **JAX's distributed capabilities** (e.g., `shard_map`) are well-suited for scaling.
+
+### Backend selection
+
+The JAX API takes the same `backend=` keyword as the NumPy one, except that
+there is no `'compare'`: a traced computation runs one backend throughout.
+
+```python
+counts = cucount.jax.count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')
+```
+
+Multi-device works the same way on either backend — catalogue 1 is split
+across the devices of a `sharding_mesh` and the counts are summed — so the
+only difference is what the devices are. For several CPU devices, tell XLA
+before jax starts:
+
+```bash
+XLA_FLAGS=--xla_force_host_platform_device_count=8 python run.py
+```
+
+`cucount.jax.set_cpu_nthreads(n)` sets the threads each CPU FFI call uses.
+It is per device, so N devices at M threads occupy N * M cores.
 
 ---
 

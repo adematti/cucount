@@ -1094,6 +1094,7 @@ def count3close(*particles: Particles,
                 mattrs3: MeshAttrs = None,
                 close_pair: tuple = (1, 2),
                 nthreads: int = 1,
+                backend: str = None,
                 tuning: dict = None):
     """
     Perform close-triplet counts using the native cucount library.
@@ -1168,7 +1169,8 @@ def count3close(*particles: Particles,
     # the kernel clamps ell silently past ELLMAX -- fail loudly instead
     check_kernel_ells(battrs12, battrs13, battrs23)
 
-    cuda_tuning, _ = _resolve_tuning('cuda', tuning, nthreads=nthreads)
+    mode = _resolve_backend(backend)
+    cuda_tuning, cpu_tuning = _resolve_tuning(mode, tuning, nthreads=nthreads)
 
     _setup_cucount_logging()
     assert len(particles) == 3
@@ -1215,22 +1217,26 @@ def count3close(*particles: Particles,
             battrs=battrs23 if close_pair == (2, 3) else battrs13,
         )
 
-    return _cuda.count3close(
-        [_to_c_particles(p) for p in particles],
-        mattrs1, mattrs2, mattrs3,
-        battrs12=battrs12,
-        battrs13=battrs13,
-        battrs23=battrs23,
-        wattrs=wattrs,
-        sattrs12=sattrs12,
-        sattrs13=sattrs13,
-        sattrs23=sattrs23,
-        veto12=veto12,
-        veto13=veto13,
-        veto23=veto23,
-        close_pair=close_pair,
-        tuning=cuda_tuning,
-    )
+    cparticles = [_to_c_particles(p) for p in particles]
+    mattrs = (mattrs1, mattrs2, mattrs3)
+    battrs = (battrs12, battrs13, battrs23)
+    sattrs = (sattrs12, sattrs13, sattrs23)
+    vetos = (veto12, veto13, veto23)
+
+    why = None if mode == 'cuda' else _cpu.unsupported3close(
+        particles, battrs, mattrs, wattrs, sattrs, vetos)
+    return _dispatch(
+        mode,
+        lambda: _cuda.count3close(
+            cparticles, mattrs1, mattrs2, mattrs3,
+            battrs12=battrs12, battrs13=battrs13, battrs23=battrs23,
+            wattrs=wattrs, sattrs12=sattrs12, sattrs13=sattrs13, sattrs23=sattrs23,
+            veto12=veto12, veto13=veto13, veto23=veto23,
+            close_pair=close_pair, tuning=cuda_tuning),
+        lambda: _cpu.count3close(
+            cparticles, mattrs, battrs, wattrs=wattrs, sattrs=sattrs, vetos=vetos,
+            close_pair=''.join(str(i) for i in close_pair), tuning=cpu_tuning),
+        why)
 
 
 def count3(*particles: Particles,
@@ -1245,6 +1251,7 @@ def count3(*particles: Particles,
            mattrs2: MeshAttrs = None,
            mattrs3: MeshAttrs = None,
            nthreads: int = 1,
+           backend: str = None,
            tuning: dict = None):
     """
     Perform factorized triplet counts using the native cucount library.
@@ -1295,7 +1302,8 @@ def count3(*particles: Particles,
     # the kernel clamps ell silently past ELLMAX -- fail loudly instead
     check_kernel_ells(battrs12, battrs13)
 
-    cuda_tuning, _ = _resolve_tuning('cuda', tuning, nthreads=nthreads)
+    mode = _resolve_backend(backend)
+    cuda_tuning, cpu_tuning = _resolve_tuning(mode, tuning, nthreads=nthreads)
 
     _setup_cucount_logging()
     assert len(particles) == 3
@@ -1322,18 +1330,22 @@ def count3(*particles: Particles,
     if mattrs3 is None:
         mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13)
 
-    return _cuda.count3(
-        [_to_c_particles(p) for p in particles],
-        mattrs1, mattrs2, mattrs3,
-        battrs12=battrs12,
-        battrs13=battrs13,
-        wattrs=wattrs,
-        sattrs12=sattrs12,
-        sattrs13=sattrs13,
-        veto12=veto12,
-        veto13=veto13,
-        tuning=cuda_tuning,
-    )
+    cparticles = [_to_c_particles(p) for p in particles]
+    mattrs = (mattrs1, mattrs2, mattrs3)
+
+    why = None if mode == 'cuda' else _cpu.unsupported3(
+        particles, battrs12, battrs13, mattrs, wattrs,
+        (sattrs12, sattrs13), (veto12, veto13))
+    return _dispatch(
+        mode,
+        lambda: _cuda.count3(cparticles, mattrs1, mattrs2, mattrs3,
+                             battrs12=battrs12, battrs13=battrs13, wattrs=wattrs,
+                             sattrs12=sattrs12, sattrs13=sattrs13,
+                             veto12=veto12, veto13=veto13, tuning=cuda_tuning),
+        lambda: _cpu.count3(cparticles, mattrs, battrs12, battrs13, wattrs=wattrs,
+                            sattrs=(sattrs12, sattrs13), vetos=(veto12, veto13),
+                            tuning=cpu_tuning),
+        why)
 
 
 # Create a lookup table for set bits per byte

@@ -12,7 +12,19 @@ from jax import sharding
 from jax.experimental import mesh_utils
 from jax.sharding import PartitionSpec as P
 
-from cucountlib import ffi_cuda as ffi_cucount
+import os
+
+# One FFI module per backend, same entry points on both. Either may be absent:
+# -DCUCOUNT_BUILD_CUDA=OFF drops ffi_cuda, -DCUCOUNT_BUILD_CPU=OFF drops
+# ffi_cpu, and a build without jax's headers drops both.
+try:
+    from cucountlib import ffi_cuda as ffi_cucount
+except ImportError:
+    ffi_cucount = None
+try:
+    from cucountlib import ffi_cpu as ffi_cpucount
+except ImportError:
+    ffi_cpucount = None
 from cucount.numpy import BinAttrs, SelectionAttrs, SplitAttrs, _make_list_weights, _format_positions, _format_values, _stack_values, count2_analytic, setup_logging, _setup_cucount_logging, _get_ells
 from cucount import numpy
 
@@ -21,7 +33,52 @@ MAX_NBLOCKS = 256
 MAX_NTHREADS_PER_BLOCK = 512
 
 
-jax.ffi.register_ffi_target('count2', ffi_cucount.count2())
+BACKENDS = ('cuda', 'cpu')
+"""Backend selection, via a backend= keyword or the CUCOUNT_BACKEND variable.
+
+The numpy frontend also accepts 'compare'; here there is nothing to compare
+against inside a traced computation, so a run picks one backend and stays on
+it. No backend is ever chosen implicitly.
+"""
+
+# One FFI target per (entry point, backend). The CUDA targets keep their
+# historical unqualified names, so existing lowered computations still resolve.
+_FFI_SUFFIX = {'cuda': '', 'cpu': '_cpu'}
+
+for _name in ('count2', 'count3', 'count3close'):
+    if ffi_cucount is not None:
+        jax.ffi.register_ffi_target(_name, getattr(ffi_cucount, _name)(), platform='CUDA')
+    if ffi_cpucount is not None:
+        jax.ffi.register_ffi_target(_name + '_cpu', getattr(ffi_cpucount, _name)(),
+                                    platform='cpu')
+del _name
+
+
+def _resolve_ffi_backend(backend=None):
+    """Return (mode, ffi module, target-name suffix) for the selected backend."""
+    mode = (backend or os.environ.get('CUCOUNT_BACKEND') or 'cuda').lower()
+    if mode == 'compare':
+        raise ValueError("backend='compare' is a numpy-frontend mode; the jax "
+                         "frontend runs one backend per computation")
+    if mode not in BACKENDS:
+        raise ValueError(f'backend must be one of {BACKENDS}, got {mode!r}')
+    module = ffi_cucount if mode == 'cuda' else ffi_cpucount
+    if module is None:
+        raise NotImplementedError(
+            f'the {mode} JAX FFI module is not built; it needs the matching backend '
+            f'(-DCUCOUNT_BUILD_{mode.upper()}=ON) and jax\'s FFI headers at build time')
+    return mode, module, _FFI_SUFFIX[mode]
+
+
+def set_cpu_nthreads(nthreads: int):
+    """CPU threads each FFI call uses.
+
+    This is per device, so under shard_map over N jax CPU devices there are N
+    such calls in flight and the machine sees N * nthreads threads.
+    """
+    if ffi_cpucount is None:
+        raise NotImplementedError('the cpu JAX FFI module is not built')
+    ffi_cpucount.set_nthreads(int(nthreads))
 
 
 def create_sharding_mesh(device_mesh_shape=None):
@@ -169,24 +226,35 @@ class Particles(numpy.Particles):
 symmetrize_poles = partial(numpy.symmetrize_poles, np=jnp)
 
 
-jax.ffi.register_ffi_target("count2", ffi_cucount.count2(), platform="CUDA")
 
 
 def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs, wattrs: WeightAttrs = None,
-                     sattrs: SelectionAttrs = None, spattrs: SplitAttrs = None):
+                     sattrs: SelectionAttrs = None, spattrs: SplitAttrs = None, backend=None):
+    mode, ffi_module, suffix = _resolve_ffi_backend(backend)
     mattrs._to_c()
-    ffi_cucount.set_count2_attrs(
+    ffi_module.set_count2_attrs(
         mattrs._to_c(), battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs
     )
     for i, p in enumerate(particles):
-        ffi_cucount.set_index_value(i, **p.index_value._to_c())
+        ffi_module.set_index_value(i, **p.index_value._to_c())
 
     dtype = jnp.float64
-    names, shape = ffi_cucount.get_count2_layout()
+    names, shape = ffi_module.get_count2_layout()
     shape = tuple(shape)
     size = int(np.prod(shape, dtype=int))
 
     res_type = jax.ShapeDtypeStruct((len(names) * size,), dtype)
+
+    if mode == 'cpu':
+        # The scratch buffer is device memory the CUDA handler carves its
+        # allocations out of; the CPU handler allocates its own and ignores it.
+        buffer_type = jax.ShapeDtypeStruct((1,), dtype)
+        call = jax.ffi.ffi_call('count2' + suffix, (res_type, buffer_type))
+        args = sum(([p.positions, _stack_values(p.values, np=jnp)] for p in particles),
+                   start=[])
+        counts = call(*args)[0]
+        return {name: counts[iweight * size:(iweight + 1) * size].reshape(shape)
+                for iweight, name in enumerate(names)}
 
     # Max values
     nblocks = MAX_NBLOCKS
@@ -241,7 +309,7 @@ def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs,
 
 @default_sharding_mesh
 def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs = None, sattrs: SelectionAttrs = None,
-           spattrs: SplitAttrs = None, mattrs: MeshAttrs = None, sharding_mesh=None):
+           spattrs: SplitAttrs = None, mattrs: MeshAttrs = None, backend=None, sharding_mesh=None):
     """
     Perform two-point pair counts using the native cucount library.
 
@@ -292,7 +360,8 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs = None, 
     wattrs.check(*particles)
     spattrs.check(*particles)
     count2 = _count2 = partial(
-        _count2_no_shard, mattrs=mattrs, battrs=battrs, wattrs=wattrs, sattrs=sattrs, spattrs=spattrs
+        _count2_no_shard, mattrs=mattrs, battrs=battrs, wattrs=wattrs, sattrs=sattrs,
+        spattrs=spattrs, backend=backend
     )
     if sharding_mesh.axis_names:
         count2 = shard_map(
@@ -304,7 +373,6 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs = None, 
     return count2(*particles)
 
 
-jax.ffi.register_ffi_target("count3close", ffi_cucount.count3close(), platform="CUDA")
 
 
 def _count3close_no_shard(
@@ -323,10 +391,12 @@ def _count3close_no_shard(
     veto13: SelectionAttrs = None,
     veto23: SelectionAttrs = None,
     close_pair: tuple[int, int] = (1, 2),
+    backend=None,
 ):
     assert len(particles) == 3
+    mode, ffi_module, suffix = _resolve_ffi_backend(backend)
 
-    ffi_cucount.set_count3close_attrs(
+    ffi_module.set_count3close_attrs(
         mattrs1._to_c(),
         mattrs2._to_c(),
         mattrs3._to_c(),
@@ -344,11 +414,11 @@ def _count3close_no_shard(
     )
 
     for i, p in enumerate(particles):
-        ffi_cucount.set_count3close_index_value(i, **p.index_value._to_c())
+        ffi_module.set_count3close_index_value(i, **p.index_value._to_c())
 
     dtype = jnp.float64
 
-    names, shape = ffi_cucount.get_count3close_layout()
+    names, shape = ffi_module.get_count3close_layout()
     shape = tuple(shape)
     size = int(np.prod(shape, dtype=int))
 
@@ -384,8 +454,10 @@ def _count3close_no_shard(
 
     bufsize += nblocks * len(names) * size
 
-    buffer_type = jax.ShapeDtypeStruct((bufsize,), dtype)
-    call = jax.ffi.ffi_call("count3close", (res_type, buffer_type))
+    # The scratch buffer is device memory the CUDA handler carves its
+    # allocations out of; the CPU handler allocates its own and ignores it.
+    buffer_type = jax.ShapeDtypeStruct((1 if mode == "cpu" else bufsize,), dtype)
+    call = jax.ffi.ffi_call("count3close" + suffix, (res_type, buffer_type))
 
     args = sum(
         ([particle.positions, _stack_values(particle.values, np=jnp)] for particle in particles),
@@ -416,6 +488,7 @@ def count3close(
     mattrs1: MeshAttrs = None,
     mattrs2: MeshAttrs = None,
     mattrs3: MeshAttrs = None,
+    backend=None,
     sharding_mesh=None,
     shard_particle: int = 1,
 ):
@@ -485,6 +558,7 @@ def count3close(
         veto13=veto13,
         veto23=veto23,
         close_pair=close_pair,
+        backend=backend,
     )
 
     count3close_fn = _count3close
@@ -506,7 +580,6 @@ def count3close(
     return count3close_fn(*particles)
 
 
-jax.ffi.register_ffi_target("count3", ffi_cucount.count3(), platform="CUDA")
 
 
 def _count3_no_shard(
@@ -521,10 +594,12 @@ def _count3_no_shard(
     sattrs13: SelectionAttrs = None,
     veto12: SelectionAttrs = None,
     veto13: SelectionAttrs = None,
+    backend=None,
 ):
     assert len(particles) == 3
+    mode, ffi_module, suffix = _resolve_ffi_backend(backend)
 
-    ffi_cucount.set_count3_attrs(
+    ffi_module.set_count3_attrs(
         mattrs1._to_c(),
         mattrs2._to_c(),
         mattrs3._to_c(),
@@ -538,11 +613,11 @@ def _count3_no_shard(
     )
 
     for i, p in enumerate(particles):
-        ffi_cucount.set_count3_index_value(i, **p.index_value._to_c())
+        ffi_module.set_count3_index_value(i, **p.index_value._to_c())
 
     dtype = jnp.float64
 
-    names, shape = ffi_cucount.get_count3_layout()
+    names, shape = ffi_module.get_count3_layout()
     shape = tuple(shape)
     size = int(np.prod(shape, dtype=int))
 
@@ -588,8 +663,10 @@ def _count3_no_shard(
     bufsize += nthreads * hsize3
     bufsize += nblocks * len(names) * size
 
-    buffer_type = jax.ShapeDtypeStruct((bufsize,), dtype)
-    call = jax.ffi.ffi_call("count3", (res_type, buffer_type))
+    # The scratch buffer is device memory the CUDA handler carves its
+    # allocations out of; the CPU handler allocates its own and ignores it.
+    buffer_type = jax.ShapeDtypeStruct((1 if mode == "cpu" else bufsize,), dtype)
+    call = jax.ffi.ffi_call("count3" + suffix, (res_type, buffer_type))
 
     args = sum(
         ([particle.positions, _stack_values(particle.values, np=jnp)] for particle in particles),
@@ -616,6 +693,7 @@ def count3(
     mattrs1: MeshAttrs = None,
     mattrs2: MeshAttrs = None,
     mattrs3: MeshAttrs = None,
+    backend=None,
     sharding_mesh=None,
     shard_particle: int = 1,
 ):
@@ -722,6 +800,7 @@ def count3(
         sattrs13=sattrs13,
         veto12=veto12,
         veto13=veto13,
+        backend=backend,
     )
 
     count3_fn = _count3

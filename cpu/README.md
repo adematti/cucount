@@ -102,9 +102,19 @@ selected backend: the CPU backend accepts `nthreads` (CPU threads), `isa`
 and `'scalar'`. In `compare` mode the dict nests per backend:
 `tuning={'cpu': {...}, 'cuda': {...}}`.
 
-Requests the CPU backend cannot serve — theta/pole/k binning, angular mesh,
-N-dimensional angular weights, jackknife splits, selections — are declined
-by name, so it never silently computes something different.
+Requests the CPU backend cannot serve — N-dimensional angular weights,
+spin with other than two components — are declined by name, so it never
+silently computes something different.
+
+Two paths sit behind that one entry point. The Highway kernel serves the
+shapes worth vectorising: `s`, `(s, mu)` and `(s, pole)` binning on a
+cartesian mesh, without splits. Everything else — `theta`, `rp`, `pi`, `k`
+axes in any combination, non-linear `mu` edges, the angular mesh, jackknife
+splits — goes to the scalar generic path in [src/generic.cpp](src/generic.cpp),
+one pair per iteration. The choice is made in the binding and is invisible
+from Python: same call, same result, only slower. `tuning={'isa': ...}`,
+`'scatter'` and single precision are kernel knobs and have no effect on the
+generic path.
 
 ## Verify
 
@@ -148,6 +158,51 @@ Multipoles: `(s, pole)` binning, with mu computed but not binned and
 through the `set_legendre` shared with CUDA. Pair selections on `s` and
 `theta` ride the same scalar tail as a per-pair veto.
 
-Not covered, deliberately: triplet counts, angular mesh, theta/rp/pi/k
-binning, N-dimensional angular weights, jackknife splits, JAX FFI,
-multi-device.
+Covered by the generic path, at one pair per iteration: every remaining
+binning variable (`theta`, `rp`, `pi`, `k`) in any combination and order the
+`BinAttrs` constructor accepts, including `(k, pole)` through the shared
+`get_bessel`; non-linear `mu` edges; the angular mesh, whose `(cos theta, phi)`
+candidate window is a port of `set_angular_bounds`; and jackknife splits,
+which add the leading `3 * nsplits` output axis. The mesh it walks is the
+CUDA one — same cell index, same `meshsize` from `MeshAttrs`, and the same
+rule that a particle carrying a zero individual weight is dropped — so the
+two backends form exactly the same candidate pairs.
+
+Triplet counts: both `count3` (factorized -- each leg histogrammed against
+the primary, then the outer product, with the real spherical-harmonic
+projection contracted over m when both legs carry a multipole axis) and
+`count3close` (every triplet formed and binned, with an optional (2, 3) axis
+and the 3-dimensional angular upweight). They share the mesh and the candidate
+walk with the pair counts, through
+[include/cucount/cpu/walk.h](include/cucount/cpu/walk.h), and the local frame
+and the normalized associated Legendre functions with CUDA, through
+`include/pair_math.h`. Legs bin in `s` or `theta`, with multipoles up to
+`ell = 5`; `close_pair` is accepted and ignored, because all of the CUDA
+backend's search strategies enumerate the same triplets and the choice is a
+performance hint.
+
+JAX: [src/ffi_bind.cpp](src/ffi_bind.cpp) builds `cucountlib.ffi_cpu`, the
+same three FFI entry points the CUDA arm provides, registered on the `cpu`
+platform as `count2_cpu` / `count3_cpu` / `count3close_cpu`. `cucount.jax`
+takes a `backend=` keyword ('cuda' or 'cpu', or `CUCOUNT_BACKEND`) and picks
+the target; the CUDA targets keep their unqualified names, so anything already
+lowered still resolves. The handlers take no stream, and the scratch buffer
+the CUDA handlers carve device allocations out of is accepted and ignored.
+
+Multi-device works through the existing `shard_map` path: catalogue 1 is split
+across devices and the counts are `psum`ed, so it is the device count that
+changes, not the code. Run jax with several CPU devices
+(`XLA_FLAGS=--xla_force_host_platform_device_count=N`) and pass a
+`sharding_mesh`. `cucount.jax.set_cpu_nthreads` sets the threads each FFI call
+uses, which is per device -- N devices at M threads occupy N * M cores.
+
+Not covered: nothing in `count2`, `count3` or `count3close` that the CUDA
+backend serves, apart from the deliberate limits above (spin needs exactly two
+components; triplet legs bin in s or theta with multipoles to ell = 5).
+
+One upstream quirk both backends reproduce: `count3` and `count3close` agree
+on every real projection coefficient but come out exactly negated on the
+imaginary ones, because `add_weight3` takes `sin(dphi)` from the cross product
+of the two transverse parts -- `sin(phi13 - phi12)` -- while `count3`'s
+m-contraction produces `sin(phi12 - phi13)`. `tests/test_cpu_triplet.py` pins
+the relationship so a change to either convention has to be deliberate.

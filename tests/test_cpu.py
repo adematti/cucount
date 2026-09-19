@@ -273,21 +273,7 @@ def test_irregular_edges_still_served():
     assert np.allclose(got, want, rtol=1e-9, atol=0)
 
 
-def test_unsupported_is_declined_by_name():
-    pos, w = catalog(8, n=200)
-    p = Particles(pos, w)
-    battrs = BinAttrs(theta=np.linspace(0.1, 5.0, 11))
-    mattrs = MeshAttrs(p, p, battrs=battrs)
-    with pytest.raises(NotImplementedError, match='theta'):
-        count2(p, p, battrs=battrs, mattrs=mattrs, backend='cpu')
-    # The same request is served when routed to the CUDA backend.
-    if CUDA:
-        assert 'weight' in count2(p, p, battrs=battrs, mattrs=mattrs, backend='cuda')
-
-
-UNSUPPORTED = ['rp-pi binning', 'non-linear mu',
-               'angular mesh', 'jackknife splits',
-               'spin components', 'angular weights']
+UNSUPPORTED = ['spin components', 'angular weights']
 
 
 def _unsupported_request(feature, n=200):
@@ -298,25 +284,7 @@ def _unsupported_request(feature, n=200):
     particles = (Particles(pos1, w1), Particles(pos2, w2))
     kw = dict(battrs=BinAttrs(s=EDGES['lin']))
 
-    if feature == 'rp-pi binning':
-        kw['battrs'] = BinAttrs(rp=(np.linspace(1.0, 50.0, 11), 'z'),
-                                pi=(np.linspace(1.0, 50.0, 11), 'z'))
-        match = 'rp'
-    elif feature == 'non-linear mu':
-        kw['battrs'] = BinAttrs(s=EDGES['lin'],
-                                mu=(np.array([-1.0, -0.5, 0.8, 1.0]), 'z'))
-        match = 'non-linear mu'
-    elif feature == 'angular mesh':
-        sattrs = SelectionAttrs(theta=(0.0, 1.0))
-        kw.update(sattrs=sattrs, mattrs=MeshAttrs(*particles, battrs=kw['battrs'],
-                                                  sattrs=sattrs))
-        match = 'angular mesh'
-    elif feature == 'jackknife splits':
-        particles = (Particles(pos1, w1, splits=rng.integers(0, 4, n)),
-                     Particles(pos2, w2, splits=rng.integers(0, 4, n)))
-        kw['spattrs'] = SplitAttrs(mode='jackknife', nsplits=4)
-        match = 'split'
-    elif feature == 'spin components':
+    if feature == 'spin components':
         # Spin itself is served now; only a non-2 component count is declined.
         particles = (Particles(pos1, w1, spin_values=rng.uniform(-1, 1, n)),
                      Particles(pos2, w2))
@@ -824,14 +792,6 @@ def test_poles_with_weights_match_cuda():
            backend='compare')
 
 
-def test_k_pole_binning_is_declined():
-    """(k, pole) has no s binning and is not implemented; decline by name."""
-    particles, _, _ = _pole_setup([0, 2])
-    battrs = BinAttrs(k=np.linspace(0.01, 0.2, 10),
-                      pole=(np.array([0, 2]), 'firstpoint'))
-    mattrs = MeshAttrs(*particles, battrs=battrs)
-    with pytest.raises(NotImplementedError, match='binning'):
-        count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')
 
 
 # ---------------------------------------------------------------------------
@@ -903,4 +863,355 @@ def test_selections_match_brute_force(kind):
 @pytest.mark.parametrize('kind', ['s', 'theta', 'both'])
 def test_selections_match_cuda(kind):
     particles, kw, _ = _selection_setup(kind)
+    count2(*particles, backend='compare', **kw)
+
+
+# ---------------------------------------------------------------------------
+# The generic scalar path: theta / rp / pi / k axes, any combination of them,
+# the angular mesh and the jackknife splits -- none of which the Highway
+# kernel vectorises. Each is checked against a numpy oracle built from the
+# same definitions add_weight2 uses, and the paths are checked against each
+# other where they overlap.
+# ---------------------------------------------------------------------------
+
+def sky_catalog(seed, n=400, rmin=1800., rmax=2200.):
+    """A catalogue spread over the whole sky, so angles actually vary.
+
+    With points in a 1000^3 box and s < 100 every pair sits within a few
+    degrees, and an angular binning or a theta cut is a test that cannot fail.
+    """
+    rng = np.random.default_rng(seed)
+    ct = rng.uniform(-1., 1., n)
+    phi = rng.uniform(0., 2 * np.pi, n)
+    st = np.sqrt(1. - ct**2)
+    r = rng.uniform(rmin, rmax, n)
+    pos = np.column_stack([r * st * np.cos(phi), r * st * np.sin(phi), r * ct])
+    return pos, rng.uniform(0.5, 1.5, n)
+
+
+def pair_geometry(pos1, pos2, los):
+    """(s, mu, cos theta) per pair, as compute_pair_mu defines them."""
+    d = pos2[None, :, :] - pos1[:, None, :]
+    s = np.sqrt((d * d).sum(-1))
+    r1 = pos1 / np.linalg.norm(pos1, axis=-1, keepdims=True)
+    r2 = pos2 / np.linalg.norm(pos2, axis=-1, keepdims=True)
+    if los == 'z':
+        num, den = d[..., 2], s
+    elif los == 'x':
+        num, den = d[..., 0], s
+    elif los == 'y':
+        num, den = d[..., 1], s
+    elif los == 'firstpoint':
+        num, den = np.einsum('ijk,ik->ij', d, r1), s
+    elif los == 'endpoint':
+        num, den = np.einsum('ijk,jk->ij', d, r2), s
+    else:  # midpoint: los = p1 + p2
+        vlos = pos1[:, None, :] + pos2[None, :, :]
+        num = (d * vlos).sum(-1)
+        den = s * np.sqrt((vlos * vlos).sum(-1))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        mu = np.where(den > 0, num / np.where(den > 0, den, 1.), -2.)
+    mu = np.where(s == 0, 0., mu)
+    return s, mu, np.clip(r1 @ r2.T, -1., 1.)
+
+
+def var_values(name, s, mu, costheta):
+    """One binning variable's per-pair value, matching add_weight2."""
+    if name == 's':
+        return s
+    if name == 'mu':
+        return mu
+    if name == 'pi':
+        return mu * s
+    if name == 'rp':
+        return np.sqrt(np.maximum(s * s - s * s * mu * mu, 0.))
+    if name == 'theta':
+        return np.degrees(np.arccos(costheta))
+    raise ValueError(f'no reference for {name}')
+
+
+def binned_reference(pos1, w1, pos2, w2, axes, los='z'):
+    """Counts over a list of (varname, edges) axes, in the order given."""
+    s, mu, ct = pair_geometry(pos1, pos2, los)
+    w = w1[:, None] * w2[None, :]
+    shape = tuple(len(edges) - 1 for _, edges in axes)
+    flat = np.zeros(s.shape, dtype=np.int64)
+    ok = np.ones(s.shape, dtype=bool)
+    for (name, edges), nbins in zip(axes, shape):
+        idx, good = _bin_index(var_values(name, s, mu, ct), edges)
+        flat = flat * nbins + np.where(good, idx, 0)
+        ok &= good
+    return np.bincount(flat[ok], weights=w[ok],
+                       minlength=int(np.prod(shape))).reshape(shape)
+
+
+def bessel(ell, x):
+    """get_bessel: the closed forms above 0.1, the series below."""
+    x = np.asarray(x, dtype=float)
+    x2 = x * x
+    with np.errstate(invalid='ignore', divide='ignore'):
+        invx = np.where(x > 0., 1. / np.where(x > 0., x, 1.), 0.)
+        invx2, invx3, invx4 = invx**2, invx**3, invx**4
+        if ell == 0:
+            small = 1. - x2 / 6. + x2**2 / 120. - x2**3 / 5040.
+            large = np.sin(x) * invx
+        elif ell == 2:
+            small = x2 / 15. - x2**2 / 210. + x2**3 / 11340.
+            large = (3. * invx2 - 1.) * np.sin(x) * invx - 3. * np.cos(x) * invx2
+        elif ell == 4:
+            small = x2**2 / 945. - x2**3 / 10395.
+            large = (5 * (2 * invx2 - 21 * invx4) * np.cos(x)
+                     + (invx - 45 * invx3 + 105 * invx2 * invx3) * np.sin(x))
+        else:
+            raise ValueError(f'no reference for ell = {ell}')
+    return np.where(x < 0.1, small, large)
+
+
+def legendre(ell, mu):
+    c = np.zeros(ell + 1)
+    c[ell] = 1.
+    return np.polynomial.legendre.legval(mu, c)
+
+
+THETA_EDGES = np.linspace(0., 90., 10)
+RP_EDGES = np.linspace(1., 300., 9)
+PI_EDGES = np.linspace(-300., 300., 13)
+
+
+@pytest.mark.parametrize('los', ['z', 'firstpoint', 'midpoint'])
+def test_theta_binning_matches_brute_force(los):
+    """theta binning drives MeshAttrs to the angular mesh."""
+    pos1, w1 = sky_catalog(21)
+    pos2, w2 = sky_catalog(22)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    battrs = BinAttrs(theta=THETA_EDGES)
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    assert mattrs.type == 'angular', 'this test means to exercise the angular mesh'
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    want = binned_reference(pos1, w1, pos2, w2, [('theta', THETA_EDGES)], los)
+    assert np.any(want), "the reference must not be empty"
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+
+
+@pytest.mark.parametrize('los', ['z', 'x', 'firstpoint', 'endpoint', 'midpoint'])
+def test_rp_pi_binning_matches_brute_force(los):
+    pos1, w1 = sky_catalog(23)
+    pos2, w2 = sky_catalog(24)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    battrs = BinAttrs(rp=(RP_EDGES, los), pi=(PI_EDGES, los))
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    want = binned_reference(pos1, w1, pos2, w2,
+                            [('rp', RP_EDGES), ('pi', PI_EDGES)], los)
+    assert np.any(want), "the reference must not be empty"
+    assert got.shape == want.shape
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+
+
+def test_s_theta_binning_matches_brute_force():
+    """Two axes of different kinds, to check the index composition order."""
+    pos1, w1 = sky_catalog(25)
+    pos2, w2 = sky_catalog(26)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    sedges = np.linspace(10., 400., 9)
+    battrs = BinAttrs(s=sedges, theta=THETA_EDGES)
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    want = binned_reference(pos1, w1, pos2, w2,
+                            [('s', sedges), ('theta', THETA_EDGES)])
+    assert np.any(want), "the reference must not be empty"
+    assert got.shape == want.shape
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+
+
+def test_non_linear_mu_matches_brute_force():
+    """Irregular mu edges route to the generic path; linear ones do not."""
+    pos1, w1 = catalog(27)
+    pos2, w2 = catalog(28)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    muedges = np.array([-1.0, -0.6, -0.1, 0.3, 0.8, 1.0])
+    sedges = EDGES['lin']
+    battrs = BinAttrs(s=sedges, mu=(muedges, 'midpoint'))
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    want = binned_reference(pos1, w1, pos2, w2,
+                            [('s', sedges), ('mu', muedges)], 'midpoint')
+    assert np.any(want), "the reference must not be empty"
+    assert got.shape == want.shape
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+
+
+@pytest.mark.parametrize('ells', [[0, 2, 4], [0]])
+def test_k_pole_matches_brute_force(ells):
+    """(k, pole) has no separation axis: every pair the mesh forms contributes."""
+    pos1, w1 = catalog(29, n=200)
+    pos2, w2 = catalog(30, n=200)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    kvals = np.linspace(0.01, 0.2, 7)
+    battrs = BinAttrs(k=kvals, pole=(np.array(ells), 'firstpoint'))
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+
+    s, mu, _ = pair_geometry(pos1, pos2, 'firstpoint')
+    w = w1[:, None] * w2[None, :]
+    want = np.zeros((len(kvals), len(ells)))
+    for ill, ell in enumerate(ells):
+        leg = ((-1.) ** (ell // 2)) * (2 * ell + 1) * legendre(ell, mu)
+        for ik, k in enumerate(kvals):
+            want[ik, ill] = (w * leg * bessel(ell, k * s)).sum()
+    assert got.shape == want.shape
+    scale = np.abs(want).max()
+    assert scale > 0, 'the reference must not be empty'
+    assert np.allclose(got, want, rtol=1e-9, atol=1e-12 * scale)
+
+
+def _split_catalog(seed, n, nsplits):
+    pos, w = catalog(seed, n)
+    rng = np.random.default_rng(seed + 100)
+    return pos, w, rng.integers(0, nsplits, n).astype(np.int64)
+
+
+@pytest.mark.parametrize('nsplits', [1, 4])
+def test_jackknife_matches_brute_force(nsplits):
+    """Three blocks per split: the auto pairs, then each side's cross pairs."""
+    n = 300
+    pos1, w1, sp1 = _split_catalog(31, n, nsplits)
+    pos2, w2, sp2 = _split_catalog(32, n, nsplits)
+    particles = (Particles(pos1, w1, splits=sp1), Particles(pos2, w2, splits=sp2))
+    sedges = EDGES['lin']
+    battrs = BinAttrs(s=sedges)
+    spattrs = SplitAttrs(mode='jackknife', nsplits=nsplits)
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, spattrs=spattrs,
+                 backend='cpu')['weight']
+
+    d = pos2[None, :, :] - pos1[:, None, :]
+    s = np.sqrt((d * d).sum(-1))
+    si, ok = _bin_index(s, sedges)
+    w = w1[:, None] * w2[None, :]
+    s1 = np.broadcast_to(sp1[:, None], s.shape)
+    s2 = np.broadcast_to(sp2[None, :], s.shape)
+    same = s1 == s2
+    nb = len(sedges) - 1
+    want = np.zeros((3 * nsplits, nb))
+    for isplit in range(nsplits):
+        for block, m in enumerate([ok & same & (s1 == isplit),
+                                   ok & ~same & (s1 == isplit),
+                                   ok & ~same & (s2 == isplit)]):
+            want[block * nsplits + isplit] = np.bincount(
+                si[m], weights=w[m], minlength=nb)
+    assert got.shape == want.shape
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+
+
+def test_jackknife_blocks_sum_to_the_plain_count():
+    """The auto and first-side cross blocks partition every pair exactly once."""
+    n = 300
+    nsplits = 5
+    pos1, w1, sp1 = _split_catalog(33, n, nsplits)
+    pos2, w2, sp2 = _split_catalog(34, n, nsplits)
+    battrs = BinAttrs(s=EDGES['lin'])
+    plain = (Particles(pos1, w1), Particles(pos2, w2))
+    mattrs = MeshAttrs(*plain, battrs=battrs)
+    want = count2(*plain, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+
+    split = (Particles(pos1, w1, splits=sp1), Particles(pos2, w2, splits=sp2))
+    got = count2(*split, battrs=battrs, mattrs=mattrs,
+                 spattrs=SplitAttrs(mode='jackknife', nsplits=nsplits),
+                 backend='cpu')['weight']
+    assert np.allclose(got[:2 * nsplits].sum(axis=0), want, rtol=1e-9, atol=0)
+    # The third block set re-bins the same cross pairs under the other label.
+    assert np.allclose(got[nsplits:2 * nsplits].sum(axis=0),
+                       got[2 * nsplits:].sum(axis=0), rtol=1e-9, atol=0)
+
+
+@pytest.mark.parametrize('kind', ['lin', 'log', 'edges'])
+@pytest.mark.parametrize('los', ['z', 'firstpoint', 'midpoint'])
+@pytest.mark.parametrize('periodic', [False, True])
+def test_generic_and_vectorized_paths_agree(kind, los, periodic):
+    """One split sends an otherwise identical request down the generic path.
+
+    This is the sharpest check the two have: same catalogues, same binning,
+    same mesh, and the only difference is which path runs. It also covers the
+    periodic wrap, which the two reach by different routes -- the kernel folds
+    with Round, the generic path with the fmod form the CUDA kernel uses.
+    """
+    n = 400
+    pos1, w1, sp1 = _split_catalog(35, n, 1)
+    pos2, w2, sp2 = _split_catalog(36, n, 1)
+    battrs = BinAttrs(s=EDGES[kind], mu=(MU, los))
+    plain = (Particles(pos1, w1), Particles(pos2, w2))
+    mkw = dict(battrs=battrs, periodic=True, boxsize=BOX) if periodic else dict(battrs=battrs)
+    mattrs = MeshAttrs(*plain, **mkw)
+    vec = count2(*plain, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    assert np.any(vec), 'the comparison must not be between two empty results'
+
+    split = (Particles(pos1, w1, splits=sp1), Particles(pos2, w2, splits=sp2))
+    gen = count2(*split, battrs=battrs, mattrs=mattrs,
+                 spattrs=SplitAttrs(mode='jackknife', nsplits=1),
+                 backend='cpu')['weight']
+    # nsplits == 1 puts every pair in the auto block; the other two stay empty.
+    assert np.allclose(gen[0], vec, rtol=1e-9, atol=0)
+    assert not np.any(gen[1:])
+
+
+def test_angular_and_cartesian_mesh_agree():
+    """The mesh is an acceleration structure: it must not change the answer."""
+    pos1, w1 = sky_catalog(37)
+    pos2, w2 = sky_catalog(38)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    battrs = BinAttrs(s=np.linspace(10., 400., 9))
+    sattrs = SelectionAttrs(theta=(0., 20.))
+    cartesian = MeshAttrs(*particles, battrs=battrs)
+    angular = MeshAttrs(*particles, battrs=battrs, sattrs=sattrs)
+    assert cartesian.type == 'cartesian' and angular.type == 'angular'
+    kw = dict(battrs=battrs, sattrs=sattrs, backend='cpu')
+    got = count2(*particles, mattrs=angular, **kw)['weight']
+    want = count2(*particles, mattrs=cartesian, **kw)['weight']
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+
+
+def test_generic_path_thread_count_invariance():
+    """The generic path reduces per-thread buffers, like the kernel does."""
+    pos1, w1 = sky_catalog(39, n=300)
+    pos2, w2 = sky_catalog(40, n=300)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    battrs = BinAttrs(rp=(RP_EDGES, 'midpoint'), pi=(PI_EDGES, 'midpoint'))
+    mattrs = MeshAttrs(*particles, battrs=battrs)
+    kw = dict(battrs=battrs, mattrs=mattrs, backend='cpu')
+    one = count2(*particles, tuning={'nthreads': 1}, **kw)['weight']
+    many = count2(*particles, tuning={'nthreads': 8}, **kw)['weight']
+    assert np.allclose(one, many, rtol=1e-12, atol=0)
+
+
+@needs_cuda
+@pytest.mark.parametrize('case', ['theta', 'rp-pi', 'k-pole', 'jackknife',
+                                  'non-linear mu'])
+def test_generic_path_matches_cuda(case):
+    """Compare mode runs both backends and raises if they disagree."""
+    if case == 'jackknife':
+        n = 300
+        pos1, w1, sp1 = _split_catalog(41, n, 4)
+        pos2, w2, sp2 = _split_catalog(42, n, 4)
+        particles = (Particles(pos1, w1, splits=sp1),
+                     Particles(pos2, w2, splits=sp2))
+        kw = dict(battrs=BinAttrs(s=EDGES['lin']),
+                  spattrs=SplitAttrs(mode='jackknife', nsplits=4))
+    elif case == 'non-linear mu':
+        particles = (Particles(*catalog(43)), Particles(*catalog(44)))
+        kw = dict(battrs=BinAttrs(s=EDGES['lin'],
+                                  mu=(np.array([-1., -0.6, -0.1, 0.3, 0.8, 1.]),
+                                      'midpoint')))
+    else:
+        particles = (Particles(*sky_catalog(43)), Particles(*sky_catalog(44)))
+        if case == 'theta':
+            kw = dict(battrs=BinAttrs(theta=THETA_EDGES))
+        elif case == 'rp-pi':
+            kw = dict(battrs=BinAttrs(rp=(RP_EDGES, 'midpoint'),
+                                      pi=(PI_EDGES, 'midpoint')))
+        else:
+            kw = dict(battrs=BinAttrs(k=np.linspace(0.01, 0.2, 7),
+                                      pole=(np.array([0, 2, 4]), 'firstpoint')))
+    kw['mattrs'] = MeshAttrs(*particles, battrs=kw['battrs'],
+                             sattrs=kw.get('sattrs'))
     count2(*particles, backend='compare', **kw)

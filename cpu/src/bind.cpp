@@ -8,6 +8,12 @@
 #include <string>
 #include <vector>
 
+// First, because it pulls in pair_math.h, which undefines common.h's
+// convenience macros on its way out; attrs.h's own include of common.h then
+// restores them for the rest of this translation unit.
+#include "cucount/cpu/generic.h"
+#include "cucount/cpu/triplet.h"
+
 // The shared attrs/layout layer (CUDA-free flavour): the binding takes the
 // same Particles/BinAttrs/MeshAttrs/... objects as the CUDA backend and
 // lowers them to the kernel's Count2Args here, in C++.
@@ -63,43 +69,59 @@ ScatterKind parse_scatter(const std::string& s) {
 
 // The Python shim declines unsupported requests by name before calling in;
 // these checks are the defensive backstop, not the user-facing message.
+// They bound what the backend as a whole serves, not what the vectorised
+// kernel serves -- everything else falls through to the generic path.
 void validate(const Particles& p1, const Particles& p2, const BinAttrs& battrs,
               const MeshAttrs& mattrs, const WeightAttrs& wattrs,
               const SelectionAttrs& sattrs, const SplitAttrs& spattrs) {
-    if (mattrs.type != MESH_CARTESIAN)
-        throw std::invalid_argument("cpu backend: only the cartesian mesh is implemented");
-    const bool ok1 = (battrs.ndim == 1 && battrs.var[0] == VAR_S);
-    const bool ok2 = (battrs.ndim == 2 && battrs.var[0] == VAR_S && battrs.var[1] == VAR_MU);
-    const bool okp = (battrs.ndim == 2 && battrs.var[0] == VAR_S && battrs.var[1] == VAR_POLE);
-    if (!ok1 && !ok2 && !okp)
-        throw std::invalid_argument(
-            "cpu backend: only s, (s, mu) and (s, pole) binning are implemented");
-    if (ok2 && battrs.bin[1] != BIN_LIN)
-        throw std::invalid_argument("cpu backend: non-linear mu binning not implemented");
-    if (okp && battrs.shape[1] > MAX_POLE + 1)
-        throw std::invalid_argument("cpu backend: too many multipoles requested");
+    if (mattrs.type != MESH_CARTESIAN && mattrs.type != MESH_ANGULAR)
+        throw std::invalid_argument("cpu backend: mesh type not implemented");
+    for (size_t i = 0; i < battrs.ndim; i++) {
+        if (battrs.var[i] == VAR_POLE && battrs.shape[i] > MAX_POLE + 1)
+            throw std::invalid_argument("cpu backend: too many multipoles requested");
+    }
     for (size_t i = 0; i < sattrs.ndim; i++) {
         if (sattrs.var[i] != VAR_S && sattrs.var[i] != VAR_THETA)
             throw std::invalid_argument(
                 "cpu backend: only s and theta selections are implemented");
     }
-    if (spattrs.nsplits)
-        throw std::invalid_argument("cpu backend: jackknife splits not implemented");
+    // Matching the CUDA count2, which looks the angular upweight up against
+    // one cos(theta) axis; the N-dimensional form belongs to the triplet
+    // counts, which this backend does not serve yet.
     if (wattrs.angular.size && wattrs.angular.ndim != 1)
         throw std::invalid_argument(
             "cpu backend: only 1D angular weights are implemented");
     for (const Particles* p : {&p1, &p2}) {
         const IndexValue& iv = p->index_value;
-        if (iv.size_split)
-            throw std::invalid_argument("cpu backend: weight scheme not implemented");
+        if (iv.size_split > 1)
+            throw std::invalid_argument("cpu backend: only one split label is supported");
         if (iv.size_spin && iv.size_spin != 2)
             throw std::invalid_argument("cpu backend: spin needs exactly 2 components");
         if (iv.size_negative_weight > 1)
             throw std::invalid_argument("cpu backend: only one negative weight is supported");
     }
+    if (spattrs.nsplits && !(p1.index_value.size_split && p2.index_value.size_split))
+        throw std::invalid_argument(
+            "cpu backend: jackknife splits need a split label on both catalogues");
     if (p1.index_value.size_bitwise_weight != p2.index_value.size_bitwise_weight)
         throw std::invalid_argument(
             "cpu backend: both catalogues must carry the same number of bitwise weights");
+}
+
+// Whether the vectorised Highway kernel covers this request. Anything outside
+// it is served by the scalar generic path, which is slower but complete; the
+// result is the same either way, and the tests check that on the overlap.
+bool vectorized(const Particles& p1, const Particles& p2, const BinAttrs& battrs,
+                const MeshAttrs& mattrs, const SplitAttrs& spattrs) {
+    if (mattrs.type != MESH_CARTESIAN) return false;
+    if (spattrs.nsplits) return false;
+    if (p1.index_value.size_split || p2.index_value.size_split) return false;
+    const bool ok1 = (battrs.ndim == 1 && battrs.var[0] == VAR_S);
+    const bool ok2 = (battrs.ndim == 2 && battrs.var[0] == VAR_S &&
+                      battrs.var[1] == VAR_MU && battrs.bin[1] == BIN_LIN);
+    const bool okp = (battrs.ndim == 2 && battrs.var[0] == VAR_S &&
+                      battrs.var[1] == VAR_POLE);
+    return ok1 || ok2 || okp;
 }
 
 // Contiguous copies of the packed-value columns the kernel consumes; O(n)
@@ -135,6 +157,27 @@ void extract_columns(const Particles& p, std::vector<double>& w,
     }
 }
 
+// Reshape the flat accumulator into the named per-channel arrays. Both the
+// vectorised and the generic path land here, so the two cannot present their
+// results differently.
+py::object finish(py::array_t<double>& counts_py, const Count2Layout& layout,
+                  const double* timings, bool return_timings) {
+    py::dict result;
+    for (size_t iweight = 0; iweight < layout.nweights; ++iweight) {
+        py::array_t<double> array_py(
+            {(ssize_t)layout.size},
+            {(ssize_t)sizeof(double)},
+            counts_py.data() + iweight * layout.size,
+            counts_py);
+        result[layout.names[iweight].c_str()] =
+            array_py.attr("reshape")(layout.shape).cast<py::array_t<double>>();
+    }
+    if (return_timings) {
+        return py::make_tuple(result, py::make_tuple(timings[0], timings[1]));
+    }
+    return std::move(result);
+}
+
 // The attrs-based entry point, mirroring cucountlib.cucount.count2.
 py::object count2_py(Particles_py& particles1, Particles_py& particles2,
                      MeshAttrs_py mattrs_py, BinAttrs_py battrs_py,
@@ -152,6 +195,46 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     Particles p2 = particles2.data();
 
     validate(p1, p2, battrs, mattrs, wattrs, sattrs, spattrs);
+
+    // Output through the shared layout, so names, ordering and shape cannot
+    // diverge from the CUDA binding. Allocated before the path split, because
+    // both paths fill this one buffer.
+    Count2Layout layout = get_count2_layout(p1.index_value, p2.index_value,
+                                            battrs, spattrs);
+    const size_t csize = layout.nweights * layout.size;
+    py::array_t<double> counts_py(csize);
+    std::memset(counts_py.mutable_data(), 0, csize * sizeof(double));
+
+    double timings[2] = {0.0, 0.0};
+    double* timings_ptr = return_timings ? timings : nullptr;
+
+    // Zero requested bins is served as the empty result, like the CUDA backend.
+    if (layout.size == 0)
+        return finish(counts_py, layout, timings, return_timings);
+
+    // Anything the vectorised kernel does not cover -- theta / rp / pi / k
+    // axes, the angular mesh, jackknife splits -- goes to the scalar generic
+    // path, which walks the same mesh one pair at a time. float32 and the
+    // scatter strategy are kernel tuning and have no effect there.
+    if (!vectorized(p1, p2, battrs, mattrs, spattrs)) {
+        Count2GenericArgs g;
+        g.p1 = p1;
+        g.p2 = p2;
+        g.mattrs = mattrs;
+        g.battrs = battrs;
+        g.wattrs = wattrs;
+        g.sattrs = sattrs;
+        g.spattrs = spattrs;
+        g.nthreads = nthreads;
+        g.out = counts_py.mutable_data();
+        g.timings = timings_ptr;
+        {
+            py::gil_scoped_release unlock;
+            Count2Generic(g);
+        }
+        return finish(counts_py, layout, timings, return_timings);
+    }
+
     // Which second axis: mu bins, or the multipole channel axis. (ndim == 2
     // alone is ambiguous -- (s, pole) has ndim 2 as well.)
     const bool ok2 = (battrs.ndim == 2 && battrs.var[1] == VAR_MU);
@@ -260,10 +343,84 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
         a.origin[axis] = mattrs.boxcenter[axis] - 0.5 * mattrs.boxsize[axis];
     }
 
-    // Output through the shared layout, so names, ordering and shape cannot
-    // diverge from the CUDA binding.
-    Count2Layout layout = get_count2_layout(p1.index_value, p2.index_value,
-                                            battrs, spattrs);
+    a.out = counts_py.mutable_data();
+    a.timings = timings_ptr;
+
+    {
+        py::gil_scoped_release unlock;
+        Count2(a);
+    }
+
+    return finish(counts_py, layout, timings, return_timings);
+}
+
+// What the factorized triplet counts require of each leg, mirroring what
+// add_pair_weight can actually bin on.
+void validate3(const BinAttrs& battrs12, const BinAttrs& battrs13,
+               const MeshAttrs& mattrs1, const MeshAttrs& mattrs2,
+               const MeshAttrs& mattrs3) {
+    for (const MeshAttrs* m : {&mattrs1, &mattrs2, &mattrs3}) {
+        if (m->type != MESH_CARTESIAN && m->type != MESH_ANGULAR)
+            throw std::invalid_argument("cpu backend: mesh type not implemented");
+    }
+    for (const BinAttrs* b : {&battrs12, &battrs13}) {
+        if (b->ndim < 1 || b->ndim > 2)
+            throw std::invalid_argument(
+                "cpu backend: each triplet leg takes one separation axis and an "
+                "optional multipole axis");
+        if (b->var[0] != VAR_S && b->var[0] != VAR_THETA)
+            throw std::invalid_argument(
+                "cpu backend: triplet legs bin in s or theta only");
+        if (b->ndim == 2 && b->var[1] != VAR_POLE)
+            throw std::invalid_argument(
+                "cpu backend: the second triplet axis must be the multipole axis");
+    }
+    const bool pole12 = (battrs12.ndim == 2 && battrs12.var[1] == VAR_POLE);
+    const bool pole13 = (battrs13.ndim == 2 && battrs13.var[1] == VAR_POLE);
+    if (pole12 != pole13)
+        throw std::invalid_argument(
+            "cpu backend: either both triplet legs carry a multipole axis or neither");
+    if (pole12) {
+        for (const BinAttrs* b : {&battrs12, &battrs13}) {
+            if (b->max[1] > ELLMAX)
+                throw std::invalid_argument(
+                    "cpu backend: triplet multipoles are implemented up to ell = 5");
+        }
+    }
+}
+
+// The attrs-based triplet entry point, mirroring cucountlib.cuda.count3.
+py::object count3_py(Particles_py& particles1, Particles_py& particles2,
+                     Particles_py& particles3,
+                     MeshAttrs_py mattrs1_py, MeshAttrs_py mattrs2_py,
+                     MeshAttrs_py mattrs3_py,
+                     BinAttrs_py battrs12_py, BinAttrs_py battrs13_py,
+                     WeightAttrs_py wattrs_py,
+                     const SelectionAttrs_py sattrs12_py,
+                     const SelectionAttrs_py sattrs13_py,
+                     const SelectionAttrs_py veto12_py,
+                     const SelectionAttrs_py veto13_py,
+                     const int nthreads, const bool return_timings) {
+    Count3Args a;
+    a.mattrs1 = mattrs1_py.data();
+    a.mattrs2 = mattrs2_py.data();
+    a.mattrs3 = mattrs3_py.data();
+    a.battrs12 = battrs12_py.data();
+    a.battrs13 = battrs13_py.data();
+    a.wattrs = wattrs_py.data();
+    a.sattrs12 = sattrs12_py.data();
+    a.sattrs13 = sattrs13_py.data();
+    a.veto12 = veto12_py.data();
+    a.veto13 = veto13_py.data();
+    a.p1 = particles1.data();
+    a.p2 = particles2.data();
+    a.p3 = particles3.data();
+    a.nthreads = nthreads;
+
+    validate3(a.battrs12, a.battrs13, a.mattrs1, a.mattrs2, a.mattrs3);
+
+    BinAttrs battrs23{};
+    Count3Layout layout = get_count3_out_layout(a.battrs12, a.battrs13, battrs23);
     const size_t csize = layout.nweights * layout.size;
     py::array_t<double> counts_py(csize);
     std::memset(counts_py.mutable_data(), 0, csize * sizeof(double));
@@ -272,22 +429,90 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     double timings[2] = {0.0, 0.0};
     if (return_timings) a.timings = timings;
 
-    // Zero requested bins is served as the empty result, like the CUDA backend.
     if (layout.size != 0) {
         py::gil_scoped_release unlock;
-        Count2(a);
+        Count3(a);
     }
 
     py::dict result;
-    for (size_t iweight = 0; iweight < layout.nweights; ++iweight) {
-        py::array_t<double> array_py(
-            {(ssize_t)layout.size},
-            {(ssize_t)sizeof(double)},
-            counts_py.data() + iweight * layout.size,
-            counts_py);
-        result[layout.names[iweight].c_str()] =
-            array_py.attr("reshape")(layout.shape).cast<py::array_t<double>>();
+    result[layout.names[0].c_str()] =
+        counts_py.attr("reshape")(layout.shape).cast<py::array_t<double>>();
+    if (return_timings) {
+        return py::make_tuple(result, py::make_tuple(timings[0], timings[1]));
     }
+    return std::move(result);
+}
+
+// The attrs-based close-triplet entry point, mirroring
+// cucountlib.cuda.count3close. close_pair is accepted for signature parity and
+// ignored: it selects among search strategies that all enumerate the same
+// triplets, and this backend has one.
+py::object count3close_py(Particles_py& particles1, Particles_py& particles2,
+                          Particles_py& particles3,
+                          MeshAttrs_py mattrs1_py, MeshAttrs_py mattrs2_py,
+                          MeshAttrs_py mattrs3_py,
+                          BinAttrs_py battrs12_py, BinAttrs_py battrs13_py,
+                          py::object battrs23_py,
+                          WeightAttrs_py wattrs_py,
+                          const SelectionAttrs_py sattrs12_py,
+                          const SelectionAttrs_py sattrs13_py,
+                          const SelectionAttrs_py sattrs23_py,
+                          const SelectionAttrs_py veto12_py,
+                          const SelectionAttrs_py veto13_py,
+                          const SelectionAttrs_py veto23_py,
+                          const std::string& close_pair,
+                          const int nthreads, const bool return_timings) {
+    (void)close_pair;
+
+    Count3CloseArgs a;
+    a.mattrs1 = mattrs1_py.data();
+    a.mattrs2 = mattrs2_py.data();
+    a.mattrs3 = mattrs3_py.data();
+    a.battrs12 = battrs12_py.data();
+    a.battrs13 = battrs13_py.data();
+    std::memset(&a.battrs23, 0, sizeof(BinAttrs));
+    // Held for the duration of the call, so battrs23.array stays valid.
+    BinAttrs_py battrs23_held = battrs23_py.is_none()
+        ? BinAttrs_py(py::kwargs()) : battrs23_py.cast<BinAttrs_py>();
+    if (!battrs23_py.is_none()) a.battrs23 = battrs23_held.data();
+
+    a.wattrs = wattrs_py.data();
+    a.sattrs12 = sattrs12_py.data();
+    a.sattrs13 = sattrs13_py.data();
+    a.sattrs23 = sattrs23_py.data();
+    a.veto12 = veto12_py.data();
+    a.veto13 = veto13_py.data();
+    a.veto23 = veto23_py.data();
+    a.p1 = particles1.data();
+    a.p2 = particles2.data();
+    a.p3 = particles3.data();
+    a.nthreads = nthreads;
+
+    validate3(a.battrs12, a.battrs13, a.mattrs1, a.mattrs2, a.mattrs3);
+    if (a.battrs23.ndim > 0) {
+        if (a.battrs23.ndim != 1 ||
+            (a.battrs23.var[0] != VAR_S && a.battrs23.var[0] != VAR_THETA))
+            throw std::invalid_argument(
+                "cpu backend: the (2, 3) triplet axis bins in s or theta only");
+    }
+
+    Count3Layout layout = get_count3_out_layout(a.battrs12, a.battrs13, a.battrs23);
+    const size_t csize = layout.nweights * layout.size;
+    py::array_t<double> counts_py(csize);
+    std::memset(counts_py.mutable_data(), 0, csize * sizeof(double));
+    a.out = counts_py.mutable_data();
+
+    double timings[2] = {0.0, 0.0};
+    if (return_timings) a.timings = timings;
+
+    if (layout.size != 0) {
+        py::gil_scoped_release unlock;
+        Count3Close(a);
+    }
+
+    py::dict result;
+    result[layout.names[0].c_str()] =
+        counts_py.attr("reshape")(layout.shape).cast<py::array_t<double>>();
     if (return_timings) {
         return py::make_tuple(result, py::make_tuple(timings[0], timings[1]));
     }
@@ -416,6 +641,39 @@ PYBIND11_MODULE(cpu, m, py::mod_gil_not_used()) {
           "output as cucountlib.cucount.count2; nthreads means CPU threads.\n"
           "Every ordered pair is visited, matching the CUDA backend, so an\n"
           "autocorrelation counts each pair twice and includes self-pairs.");
+
+    m.def("count3", &count3_py,
+          py::arg("particles1"), py::arg("particles2"), py::arg("particles3"),
+          py::arg("mattrs1"), py::arg("mattrs2"), py::arg("mattrs3"),
+          py::arg("battrs12"), py::arg("battrs13"),
+          py::arg("wattrs") = WeightAttrs_py(),
+          py::arg("sattrs12") = SelectionAttrs_py(),
+          py::arg("sattrs13") = SelectionAttrs_py(),
+          py::arg("veto12") = SelectionAttrs_py(),
+          py::arg("veto13") = SelectionAttrs_py(),
+          py::arg("nthreads") = 1,
+          py::arg("return_timings") = false,
+          "Factorized triplet counts on the CPU, with the same signature and\n"
+          "output as cucountlib.cuda.count3; nthreads means CPU threads.");
+
+    m.def("count3close", &count3close_py,
+          py::arg("particles1"), py::arg("particles2"), py::arg("particles3"),
+          py::arg("mattrs1"), py::arg("mattrs2"), py::arg("mattrs3"),
+          py::arg("battrs12"), py::arg("battrs13"),
+          py::arg("battrs23") = py::none(),
+          py::arg("wattrs") = WeightAttrs_py(),
+          py::arg("sattrs12") = SelectionAttrs_py(),
+          py::arg("sattrs13") = SelectionAttrs_py(),
+          py::arg("sattrs23") = SelectionAttrs_py(),
+          py::arg("veto12") = SelectionAttrs_py(),
+          py::arg("veto13") = SelectionAttrs_py(),
+          py::arg("veto23") = SelectionAttrs_py(),
+          py::arg("close_pair") = "12",
+          py::arg("nthreads") = 1,
+          py::arg("return_timings") = false,
+          "Close triplet counts on the CPU, with the same signature and output\n"
+          "as cucountlib.cuda.count3close; nthreads means CPU threads and\n"
+          "close_pair is accepted for parity and ignored.");
 
     m.def("count2_arrays", &count2_arrays_py, py::arg("positions1"), py::arg("weights1"),
           py::arg("positions2"), py::arg("weights2"), py::arg("sedges"),

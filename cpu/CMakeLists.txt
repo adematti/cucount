@@ -46,7 +46,10 @@ find_package(pybind11 CONFIG REQUIRED)
 
 # ../src/logger.cpp: register_attrs binds setup_logging, which needs the
 # module-local global_log_level.
-pybind11_add_module(cucount_cpu src/count2.cpp src/bind.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp)
+# src/generic.cpp is the scalar path for everything the Highway kernel does
+# not vectorise; it is a plain translation unit, compiled once, so nothing it
+# adds can reach the kernel's inner loop.
+pybind11_add_module(cucount_cpu src/count2.cpp src/generic.cpp src/count3.cpp src/count3close.cpp src/bind.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp)
 # ../include for pair_math.h, the scalar per-pair math shared with CUDA (the
 # other headers there are CUDA-only and are not included from this target).
 target_include_directories(cucount_cpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../include)
@@ -61,4 +64,46 @@ set_target_properties(cucount_cpu PROPERTIES OUTPUT_NAME cpu LIBRARY_OUTPUT_DIRE
 
 if(CUCOUNT_CPU_ALL_TARGETS)
   target_compile_definitions(cucount_cpu PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
+endif()
+
+# The JAX FFI module, cucountlib.ffi_cpu, built when jax provides its headers.
+# Mirrors the cuda/ arm. It reuses the scalar paths but not the Highway kernel
+# source, which stays in cucount_cpu; the FFI module links that kernel in by
+# compiling count2.cpp again rather than depending on the extension.
+if(NOT DEFINED XLA_DIR)
+  find_package(Python COMPONENTS Interpreter REQUIRED)
+  execute_process(
+    COMMAND "${Python_EXECUTABLE}" "-c" "from jax import ffi; print(ffi.include_dir())"
+    OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE XLA_DIR
+    RESULT_VARIABLE XLA_RESULT)
+else()
+  set(XLA_RESULT 0)
+endif()
+
+if(DEFINED ENV{BUILD_FFI_CUCOUNT})
+  set(BUILD_FFI_CUCOUNT_CPU $ENV{BUILD_FFI_CUCOUNT})
+elseif(XLA_RESULT EQUAL 0)
+  set(BUILD_FFI_CUCOUNT_CPU ON)
+else()
+  set(BUILD_FFI_CUCOUNT_CPU OFF)
+endif()
+
+if(BUILD_FFI_CUCOUNT_CPU)
+  message(STATUS "Compilation of the CPU JAX FFI module (XLA headers: ${XLA_DIR})")
+  pybind11_add_module(cucount_ffi_cpu
+    src/count2.cpp src/generic.cpp src/count3.cpp src/count3close.cpp
+    src/ffi_bind.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp)
+  target_include_directories(cucount_ffi_cpu PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+  target_include_directories(cucount_ffi_cpu PUBLIC ${XLA_DIR})
+  target_link_libraries(cucount_ffi_cpu PRIVATE hwy OpenMP::OpenMP_CXX)
+  target_compile_options(cucount_ffi_cpu PRIVATE -O3 -fno-math-errno)
+  if(CUCOUNT_CPU_ALL_TARGETS)
+    target_compile_definitions(cucount_ffi_cpu PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
+  endif()
+  set_target_properties(cucount_ffi_cpu PROPERTIES
+    OUTPUT_NAME ffi_cpu LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
+else()
+  message(STATUS "XLA include directory not found: skipping the CPU JAX FFI module")
 endif()

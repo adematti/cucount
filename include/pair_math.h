@@ -47,6 +47,7 @@ using std::cos;
 using std::atan2;
 using std::log;
 using std::floor;
+using std::fabs;
 #endif
 
 // Legendre polynomials P_ell(mu) for ellmin <= ell <= ellmax. The even-only
@@ -526,6 +527,219 @@ CUCOUNT_HOST_DEVICE inline double lookup_angular_weight(
     return result;
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Triplet math: the local line-of-sight frame and the real spherical-harmonic
+// basis the factorized triplet counts project onto. Lifted from the
+// DEFINE_BUILD_LOS_FRAME and DEFINE_COMPUTE_SPHERICAL_HARMONICS macros so
+// both backends run one copy.
+// ---------------------------------------------------------------------------
+
+// Same values the CUDA count3close.h fixes; redefining them there with the
+// same tokens is well-formed, so either header may be included first.
+#ifndef ELLMAX
+#define ELLMAX 5
+#endif
+#ifndef MMAX_SIZE
+#define MMAX_SIZE 6
+#endif
+
+
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline Float clamp_unit(Float x) {
+    return MIN((Float)1., MAX((Float)-1., x));
+}
+
+
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline void normalize3(Float *out, const Float *x) {
+    Float norm = (Float)0.;
+    CUCOUNT_UNROLL
+    for (int icoord = 0; icoord < 3; icoord++) norm += x[icoord] * x[icoord];
+    norm = sqrt(norm);
+
+    if (norm > (Float)0.) {
+        CUCOUNT_UNROLL
+        for (int icoord = 0; icoord < 3; icoord++) out[icoord] = x[icoord] / norm;
+    }
+    else {
+        CUCOUNT_UNROLL
+        for (int icoord = 0; icoord < 3; icoord++) out[icoord] = (Float)0.;
+    }
+}
+
+
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline void cross3(Float *out, const Float *a, const Float *b) {
+    out[0] = a[1] * b[2] - a[2] * b[1];
+    out[1] = a[2] * b[0] - a[0] * b[2];
+    out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+
+// An orthonormal frame with ez along ez_in; the reference axis is switched
+// away from z near the pole so the cross product stays well conditioned.
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline void build_local_frame(const Float *ez_in,
+                                                  Float local_frame[3][3]) {
+    Float ref[3];
+
+    if (fabs((double)ez_in[2]) < 0.9) {
+        ref[0] = (Float)0.; ref[1] = (Float)0.; ref[2] = (Float)1.;
+    }
+    else {
+        ref[0] = (Float)1.; ref[1] = (Float)0.; ref[2] = (Float)0.;
+    }
+
+    CUCOUNT_UNROLL
+    for (int icoord = 0; icoord < 3; icoord++) local_frame[0][icoord] = ez_in[icoord];
+
+    Float proj = (Float)0.;
+    CUCOUNT_UNROLL
+    for (int icoord = 0; icoord < 3; icoord++) proj += ref[icoord] * local_frame[0][icoord];
+
+    Float tmp[3];
+    CUCOUNT_UNROLL
+    for (int icoord = 0; icoord < 3; icoord++)
+        tmp[icoord] = ref[icoord] - proj * local_frame[0][icoord];
+
+    normalize3(local_frame[1], tmp);
+    cross3(local_frame[2], local_frame[0], local_frame[1]);
+}
+
+
+// Which line of sight the triplet projection uses: the multipole axis of
+// either leg names it, and the endpoint frame is the default.
+CUCOUNT_HOST_DEVICE inline LOS_TYPE get_count3_los(const BinAttrs &battrs12,
+                                                   const BinAttrs &battrs13) {
+    LOS_TYPE los = LOS_FIRSTPOINT;
+
+    if (battrs12.ndim > 1 && battrs12.var[1] == VAR_POLE) los = battrs12.los[1];
+    else if (battrs13.ndim > 1 && battrs13.var[1] == VAR_POLE) los = battrs13.los[1];
+
+    return los;
+}
+
+
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline void build_los_frame(const Float *sposition1, LOS_TYPE los,
+                                                Float local_frame[3][3]) {
+    CUCOUNT_UNROLL
+    for (int i = 0; i < 3; i++) {
+        CUCOUNT_UNROLL
+        for (int j = 0; j < 3; j++) local_frame[i][j] = (Float)0.;
+    }
+
+    if (los == LOS_X) {
+        local_frame[0][0] = (Float)1.;
+        local_frame[1][1] = (Float)1.;
+        local_frame[2][2] = (Float)1.;
+    }
+    else if (los == LOS_Y) {
+        local_frame[0][1] = (Float)1.;
+        local_frame[1][2] = (Float)1.;
+        local_frame[2][0] = (Float)1.;
+    }
+    else if (los == LOS_Z) {
+        local_frame[0][2] = (Float)1.;
+        local_frame[1][0] = (Float)1.;
+        local_frame[2][1] = (Float)1.;
+    }
+    else {
+        build_local_frame(sposition1, local_frame);
+    }
+}
+
+
+// cos(m phi) and sin(m phi) by repeated angle addition from (cos phi, sin phi).
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline void compute_trig_up_to_m(int mmax, Float c1, Float s1,
+                                                     Float cm[MMAX_SIZE],
+                                                     Float sm[MMAX_SIZE]) {
+    CUCOUNT_UNROLL
+    for (int m = 0; m < MMAX_SIZE; m++) { cm[m] = (Float)0.; sm[m] = (Float)0.; }
+
+    mmax = MIN(mmax, ELLMAX);
+
+    cm[0] = (Float)1.;
+    sm[0] = (Float)0.;
+    if (mmax <= 0) return;
+
+    cm[1] = c1;
+    sm[1] = s1;
+    if (mmax <= 1) return;
+
+    CUCOUNT_UNROLL
+    for (int m = 2; m < MMAX_SIZE; m++) {
+        if (m > mmax) break;
+        cm[m] = c1 * cm[m - 1] - s1 * sm[m - 1];
+        sm[m] = s1 * cm[m - 1] + c1 * sm[m - 1];
+    }
+}
+
+
+// Normalized associated Legendre functions Pbar_ell^m(mu) as closed forms up
+// to ell = 5, which is ELLMAX; the binding rejects anything higher rather
+// than letting it clamp silently.
+template <typename Float>
+CUCOUNT_HOST_DEVICE inline void compute_pbar_all_lmax5(int ellmax, Float mu,
+                                                       Float P[MMAX_SIZE][MMAX_SIZE]) {
+    ellmax = MIN(ellmax, ELLMAX);
+
+    Float x = clamp_unit(mu);
+    Float x2 = x * x;
+    Float s2 = MAX((Float)0., (Float)1. - x2);
+    Float s = sqrt(s2);
+
+    CUCOUNT_UNROLL
+    for (int ell = 0; ell < MMAX_SIZE; ell++) {
+        CUCOUNT_UNROLL
+        for (int m = 0; m < MMAX_SIZE; m++) P[ell][m] = (Float)0.;
+    }
+
+    P[0][0] = (Float)1.;
+    if (ellmax <= 0) return;
+
+    P[1][0] = x;
+    P[1][1] = -(Float)0.70710678118654752440 * s;
+    if (ellmax <= 1) return;
+
+    Float x3 = x2 * x;
+
+    P[2][0] = ((Float)0.5) * (((Float)3.) * x2 - (Float)1.);
+    P[2][1] = -(Float)1.22474487139158904910 * x * s;
+    P[2][2] =  (Float)0.61237243569579452455 * s2;
+    if (ellmax <= 2) return;
+
+    Float s3 = s2 * s;
+
+    P[3][0] =  ((Float)0.5) * (((Float)5.) * x3 - ((Float)3.) * x);
+    P[3][1] = -(Float)0.43301270189221932338 * ((((Float)5.) * x2) - (Float)1.) * s;
+    P[3][2] =  (Float)1.36930639376291527536 * x * s2;
+    P[3][3] = -(Float)0.55901699437494742410 * s3;
+    if (ellmax <= 3) return;
+
+    Float x4 = x2 * x2;
+    Float s4 = s2 * s2;
+
+    P[4][0] =  ((Float)0.125) * (((Float)35.) * x4 - ((Float)30.) * x2 + (Float)3.);
+    P[4][1] = -(Float)0.55901699437494742410 * x * ((((Float)7.) * x2) - (Float)3.) * s;
+    P[4][2] =  (Float)0.39528470752104741743 * ((((Float)7.) * x2) - (Float)1.) * s2;
+    P[4][3] = -(Float)0.93541434669348534640 * x * s3;
+    P[4][4] =  (Float)0.52291251658379721705 * s4;
+    if (ellmax <= 4) return;
+
+    Float x5 = x4 * x;
+    Float s5 = s4 * s;
+
+    P[5][0] =  ((Float)0.125) * (((Float)63.) * x5 - ((Float)70.) * x3 + ((Float)15.) * x);
+    P[5][1] = -(Float)0.19882122822827110675 * ((((Float)21.) * x4) - ((Float)14.) * x2 + (Float)1.) * s;
+    P[5][2] =  (Float)0.48412291827592711065 * x * ((((Float)3.) * x2) - (Float)1.) * s2;
+    P[5][3] = -(Float)0.52291251658379721705 * ((((Float)9.) * x2) - (Float)1.) * s3;
+    P[5][4] =  (Float)1.16926793336685668103 * x * s4;
+    P[5][5] = -(Float)0.70156076002011400980 * s5;
+}
 }  // namespace pairmath
 }  // namespace cucount
 
