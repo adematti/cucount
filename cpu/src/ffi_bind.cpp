@@ -375,7 +375,9 @@ ffi::Error count2Impl(ffi::Buffer<ffi::F64> positions1, ffi::Buffer<ffi::F64> va
     }
     a.cfg.periodic = mattrs2.periodic;
     a.nthreads = staged_nthreads;
+    a.smax = mattrs2.smax;
     for (int axis = 0; axis < 3; ++axis) {
+        a.meshsize[axis] = mattrs2.meshsize[axis];
         a.boxsize[axis] = mattrs2.boxsize[axis];
         a.origin[axis] = mattrs2.boxcenter[axis] - 0.5 * mattrs2.boxsize[axis];
     }

@@ -128,18 +128,20 @@ static HWY_INLINE hn::VFromD<D> WrapPeriodic(D d, hn::VFromD<D> dx,
     return dx - box * hn::Round(dx * inv_box);
 }
 
-// Neighbour cell range along one axis. Cells are built at >= smax so one cell
-// of padding suffices; fewer than 3 cells on an axis means the whole axis is
-// swept instead, otherwise periodic wrapping would visit a cell twice.
+// Neighbour cell range along one axis, delta cells each way. A port of the
+// CUDA set_cartesian_bounds, so the sweep adapts to whatever mesh MeshAttrs
+// chose rather than requiring cells at least smax wide. A periodic axis that
+// the window wraps all the way round is swept once instead, otherwise a cell
+// would be visited twice.
 struct AxisRange {
     int begin, end;  // inclusive; indices may be out of [0, n) and need wrapping
     bool wrap;
 };
 
-inline AxisRange axis_range(int i, int n, bool periodic) {
-    if (n < 3) return {0, n - 1, false};
-    if (!periodic) return {std::max(i - 1, 0), std::min(i + 1, n - 1), false};
-    return {i - 1, i + 1, true};
+inline AxisRange axis_range(int i, int n, bool periodic, int delta) {
+    if (!periodic) return {std::max(i - delta, 0), std::min(i + delta, n - 1), false};
+    if (2 * delta + 1 >= n) return {0, n - 1, false};
+    return {i - delta, i + delta, true};
 }
 
 // ScalarTail is compile-time: when false (plain w1 * w2 weighting) the whole
@@ -231,6 +233,15 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
     const int nx = m2.dims[0], ny = m2.dims[1], nz = m2.dims[2];
     const long ncells1 = static_cast<long>(m1.ncells());
 
+    // How many cells each way can hold a neighbour within smax, for the mesh
+    // the caller chose. The raw-array entry point has no MeshAttrs, so smax
+    // falls back to the last s edge there.
+    const double smax_eff = (a.smax > 0.) ? a.smax : a.sedges[a.nsbins];
+    const int dcell[3] = {
+        std::max(1, static_cast<int>(std::ceil(smax_eff / bx[0] * nx))),
+        std::max(1, static_cast<int>(std::ceil(smax_eff / bx[1] * ny))),
+        std::max(1, static_cast<int>(std::ceil(smax_eff / bx[2] * nz)))};
+
 #ifdef _OPENMP
 #pragma omp parallel num_threads(nthreads)
 #endif
@@ -258,9 +269,9 @@ void Count2Impl(const Count2Args& a, const Mesh<Float>& m1,
             const int iy = static_cast<int>((c1 / m1.dims[2]) % m1.dims[1]);
             const int ix = static_cast<int>(c1 / (m1.dims[2] * m1.dims[1]));
 
-            const AxisRange rx = axis_range(ix, nx, Periodic);
-            const AxisRange ry = axis_range(iy, ny, Periodic);
-            const AxisRange rz = axis_range(iz, nz, Periodic);
+            const AxisRange rx = axis_range(ix, nx, Periodic, dcell[0]);
+            const AxisRange ry = axis_range(iy, ny, Periodic, dcell[1]);
+            const AxisRange rz = axis_range(iz, nz, Periodic, dcell[2]);
 
             for (int jx = rx.begin; jx <= rx.end; ++jx) {
                 const int wx = rx.wrap ? wrap_index(jx, nx) : jx;
@@ -701,9 +712,22 @@ static void DispatchNDim(const Count2Args& a) {
     }
 
     // One dims for both meshes: the kernel walks m1's cell coordinates on
-    // m2's grid.
+    // m2's grid. The mesh is the one MeshAttrs chose, the same object the CUDA
+    // backend is given; mesh_dims is only the fallback for the raw-array entry
+    // point, which has no MeshAttrs to take one from.
     int dims[3];
-    mesh_dims(a.boxsize, smax, (a.n1 + a.n2) / 2, dims);
+    if (a.meshsize[0]) {
+        for (int axis = 0; axis < 3; ++axis)
+            dims[axis] = static_cast<int>(a.meshsize[axis]);
+    }
+    else {
+        mesh_dims(a.boxsize, smax, (a.n1 + a.n2) / 2, dims);
+    }
+    // Every mesh gives the same counts, so which one ran is invisible in the
+    // result and only this says so.
+    log_message(LOG_LEVEL_DEBUG, "cpu kernel: mesh %d x %d x %d (%s).\n",
+                dims[0], dims[1], dims[2],
+                a.meshsize[0] ? "from MeshAttrs" : "no MeshAttrs, own heuristic");
 
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();

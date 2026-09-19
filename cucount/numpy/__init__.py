@@ -558,7 +558,7 @@ class MeshAttrs(object):
     smax: float
     _np = np
 
-    def __init__(self, *positions, boxsize=None, boxcenter=None, meshsize=None, refine=1., battrs=None, sattrs=None, periodic=False):
+    def __init__(self, *positions, boxsize=None, boxcenter=None, meshsize=None, refine=1., backend=None, battrs=None, sattrs=None, periodic=False):
         """
         Determine mesh attributes from input positions and other attributes.
 
@@ -573,6 +573,11 @@ class MeshAttrs(object):
         refine : float, default=1.
             Refine mesh by this factor; > 1 to increase the resolution of the mesh used to speed-up pair counting;
             < 1 to decrease the resolution (only impact running time).
+        backend : str, optional
+            Backend the mesh is built for, 'cuda' or 'cpu' (default: the CUCOUNT_BACKEND
+            variable, else 'cuda'). This sets the default resolution only, which ``refine``
+            then scales and an explicit ``meshsize`` overrides; it is not stored on the
+            instance. A mesh built for one backend stays correct on the other, only slower.
         battrs : BinAttrs, optional
             Binning attributes. Used to determine cellsize if cellsize is None.
         sattrs : SelectionAttrs, optional
@@ -650,11 +655,32 @@ class MeshAttrs(object):
         if mesh_smax is None:
             mesh_smax = sum(bb**2 for bb in boxsize)**0.5
 
+        # Target number of cells per maximum separation, smax / cellsize, before the
+        # O(nparticles) cap and refine are applied. Only running time depends on it: the
+        # candidate window widens as the cells shrink, so every value gives the same counts.
+        # The trade-off is wasted distance evaluations against per-cell overhead. Finer
+        # cells fit the swept volume to the sphere of radius smax more tightly -- at 6
+        # cells per smax, 41% of the candidates examined lie within smax, against 15% at
+        # 1 -- but there are more cells to walk and fewer particles in each. The CUDA
+        # kernel wants the tighter fit, since each candidate costs a load and the per-cell
+        # bookkeeping is amortised across a warp; the CPU kernel wants the opposite, its
+        # inner loop being fast only while it can load full SIMD vectors.
+        # These are the values the CUDA backend has always used. The CPU kernel used to
+        # pick its own mesh equivalent to 1, but it reached that by ignoring meshsize
+        # outright rather than by measurement, so the two are simply the ends of an
+        # unmeasured range; both backends take the CUDA value until it is measured.
+        # 'compare' runs both on one mesh and so cannot suit either: anchor it on the
+        # reference implementation, which costs the comparison nothing but timings.
+        _backend = _resolve_backend(backend)
+        cells_per_smax = {'cartesian': {'cuda': 6., 'cpu': 6.},
+                          'angular': {'cuda': 5., 'cpu': 5.}}[mesh_type][
+                              'cuda' if _backend == 'compare' else _backend]
+
         # Now set up resolution meshsize
         if mesh_type == 'angular':
             if meshsize is None:
                 theta_max = np.arccos(mesh_smax)
-                nside1 = 5 * (np.pi / theta_max)
+                nside1 = cells_per_smax * (np.pi / theta_max)
                 fsky = boxsize.prod() / (4 * np.pi)
                 nside2 = np.minimum(self._np.sqrt(0.25 * nparticles / fsky), 2048)
                 meshsize = np.maximum(np.minimum(nside1, nside2) * refine, 1).astype(int)
@@ -666,7 +692,7 @@ class MeshAttrs(object):
         elif mesh_type == 'cartesian':
             nside2 = (0.5 * nparticles)**(1. / 3.)
             if meshsize is None:
-                nside1 = 6.0 * boxsize / mesh_smax
+                nside1 = cells_per_smax * boxsize / mesh_smax
                 meshsize = np.maximum(np.minimum(nside1, nside2) * refine, 1).astype(int)
             meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
             cellsize = boxsize / meshsize
@@ -988,10 +1014,13 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     if spattrs is None: spattrs = SplitAttrs()
     wattrs.check(*particles)
     spattrs.check(*particles)
-    if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
 
+    # Before the mesh: a default MeshAttrs picks its resolution for the backend
+    # that will run.
     mode = _resolve_backend(backend)
     cuda_tuning, cpu_tuning = _resolve_tuning(mode, tuning, nthreads=nthreads)
+
+    if mattrs is None: mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs, backend=mode)
 
     # One conversion serves both backends: attrs-module Particles cast into
     # either extension through pybind's foreign module_local loading.
@@ -1201,6 +1230,7 @@ def count3close(*particles: Particles,
             particles[0],
             sattrs=sattrs13 if close_pair == (1, 3) else sattrs12,
             battrs=battrs13 if close_pair == (1, 3) else battrs12,
+            backend=mode,
         )
 
     if mattrs2 is None:
@@ -1208,6 +1238,7 @@ def count3close(*particles: Particles,
             particles[1],
             sattrs=sattrs23 if close_pair == (2, 3) else sattrs12,
             battrs=battrs23 if close_pair == (2, 3) else battrs12,
+            backend=mode,
         )
 
     if mattrs3 is None:
@@ -1215,6 +1246,7 @@ def count3close(*particles: Particles,
             particles[2],
             sattrs=sattrs23 if close_pair == (2, 3) else sattrs13,
             battrs=battrs23 if close_pair == (2, 3) else battrs13,
+            backend=mode,
         )
 
     cparticles = [_to_c_particles(p) for p in particles]
@@ -1324,11 +1356,11 @@ def count3(*particles: Particles,
     wattrs.check(*particles)
 
     if mattrs1 is None:
-        mattrs1 = MeshAttrs(particles[0], sattrs=sattrs12, battrs=battrs12)
+        mattrs1 = MeshAttrs(particles[0], sattrs=sattrs12, battrs=battrs12, backend=mode)
     if mattrs2 is None:
-        mattrs2 = MeshAttrs(particles[1], sattrs=sattrs12, battrs=battrs12)
+        mattrs2 = MeshAttrs(particles[1], sattrs=sattrs12, battrs=battrs12, backend=mode)
     if mattrs3 is None:
-        mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13)
+        mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13, backend=mode)
 
     cparticles = [_to_c_particles(p) for p in particles]
     mattrs = (mattrs1, mattrs2, mattrs3)

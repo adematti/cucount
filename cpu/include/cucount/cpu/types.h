@@ -155,6 +155,14 @@ struct Count2Args {
     double boxsize[3] = {0, 0, 0};
     double origin[3] = {0, 0, 0};
 
+    // The mesh, from MeshAttrs, exactly as the CUDA backend receives it: the
+    // kernel sweeps ceil(smax / boxsize * meshsize) cells each way, so any
+    // resolution is correct and the caller's choice is honoured. Left at zero
+    // by the raw-array entry point, which has no MeshAttrs; the kernel then
+    // falls back to mesh_dims and to the last s edge for smax.
+    size_t meshsize[3] = {0, 0, 0};
+    double smax = 0.;
+
     Config cfg;
     int nthreads = 1;
 

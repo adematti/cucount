@@ -338,9 +338,13 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     a.cfg.scatter = parse_scatter(scatter);
     a.nthreads = nthreads;
 
+    // The mesh comes from MeshAttrs, exactly as the CUDA backend receives it,
+    // so meshsize= and refine= mean the same thing on both backends.
+    a.smax = mattrs.smax;
     for (int axis = 0; axis < 3; ++axis) {
         a.boxsize[axis] = mattrs.boxsize[axis];
         a.origin[axis] = mattrs.boxcenter[axis] - 0.5 * mattrs.boxsize[axis];
+        a.meshsize[axis] = mattrs.meshsize[axis];
     }
 
     a.out = counts_py.mutable_data();

@@ -1215,3 +1215,85 @@ def test_generic_path_matches_cuda(case):
     kw['mattrs'] = MeshAttrs(*particles, battrs=kw['battrs'],
                              sattrs=kw.get('sattrs'))
     count2(*particles, backend='compare', **kw)
+
+
+# ---------------------------------------------------------------------------
+# The mesh comes from MeshAttrs on both backends. The kernel used to invent its
+# own and ignore meshsize/refine outright, which was safe only because its
+# candidate sweep was fixed at one cell either way; the sweep now widens with
+# the resolution, so any mesh is correct and the caller's choice is honoured.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('periodic', [False, True])
+@pytest.mark.parametrize('meshsize', [None, 3, 12, 30])
+def test_meshsize_does_not_change_the_result(meshsize, periodic):
+    """Every resolution must give the same counts, only a different run time.
+
+    meshsize=30 in a 1000 box with smax=100 puts 3 cells inside smax, so the
+    sweep has to reach 3 cells either way; the old fixed +-1 would have dropped
+    every pair beyond one cell.
+    """
+    pos1, w1 = catalog(50)
+    pos2, w2 = catalog(51)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    sedges = EDGES['lin']
+    battrs = BinAttrs(s=sedges)
+    kw = dict(battrs=battrs, periodic=True, boxsize=BOX) if periodic else dict(battrs=battrs)
+    if meshsize is not None:
+        kw['meshsize'] = meshsize
+    mattrs = MeshAttrs(*particles, **kw)
+    if meshsize is not None:
+        assert np.all(mattrs.meshsize == meshsize), 'the mesh was not the one requested'
+
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    want = brute(pos1, w1, pos2, w2, sedges, periodic=periodic)
+    assert np.any(want), 'the reference must not be empty'
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+
+
+@pytest.mark.parametrize('refine', [0.5, 1., 4.])
+def test_refine_does_not_change_the_result(refine):
+    """refine scales the mesh; it used to be silently inert on the kernel."""
+    pos1, w1 = catalog(52)
+    pos2, w2 = catalog(53)
+    particles = (Particles(pos1, w1), Particles(pos2, w2))
+    sedges = EDGES['lin']
+    battrs = BinAttrs(s=sedges)
+    mattrs = MeshAttrs(*particles, battrs=battrs, refine=refine)
+    got = count2(*particles, battrs=battrs, mattrs=mattrs, backend='cpu')['weight']
+    want = brute(pos1, w1, pos2, w2, sedges)
+    assert np.any(want)
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+
+
+def test_mesh_resolution_does_not_change_the_result():
+    """A fine and a coarse mesh must agree with each other, not just with brute force.
+
+    Note what this cannot check. Since every resolution is correct, which mesh
+    the kernel actually ran is not observable in the result -- if it ignored
+    meshsize outright both calls would use one mesh and agree trivially. The
+    kernel logs its mesh at DEBUG for that reason; what is testable here is
+    that the sweep is right at a resolution finer than smax, which is the
+    meshsize=30 case of the test above against the brute force.
+    """
+    pos, w = catalog(54, n=200)
+    particles = (Particles(pos, w), Particles(pos, w))
+    battrs = BinAttrs(s=EDGES['lin'])
+    fine = MeshAttrs(*particles, battrs=battrs, meshsize=30)
+    coarse = MeshAttrs(*particles, battrs=battrs, meshsize=3)
+    assert np.all(fine.meshsize == 30) and np.all(coarse.meshsize == 3)
+    kw = dict(battrs=battrs, backend='cpu', tuning={'nthreads': 1})
+    a = count2(*particles, mattrs=fine, **kw)['weight']
+    b = count2(*particles, mattrs=coarse, **kw)['weight']
+    assert np.any(a)
+    assert np.allclose(a, b, rtol=1e-12, atol=0)
+
+
+@needs_cuda
+@pytest.mark.parametrize('meshsize', [3, 30])
+def test_meshsize_matches_cuda(meshsize):
+    """Both backends take the same mesh from the same MeshAttrs."""
+    particles = (Particles(*catalog(55)), Particles(*catalog(56)))
+    battrs = BinAttrs(s=EDGES['lin'])
+    mattrs = MeshAttrs(*particles, battrs=battrs, meshsize=meshsize)
+    count2(*particles, battrs=battrs, mattrs=mattrs, backend='compare')

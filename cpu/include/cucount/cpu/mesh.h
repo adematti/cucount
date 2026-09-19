@@ -14,9 +14,11 @@ inline int wrap_index(int i, int n) {
     return (r < 0) ? r + n : r;
 }
 
-// Cells are sized at >= smax so the candidate scan only ever needs the 27
-// neighbouring cells; coarsening preserves that, so the particle cap keeps
-// the cell count O(n) instead of (boxsize/smax)^3.
+// Fallback mesh for the raw-array entry point, which has no MeshAttrs to take
+// one from; every other caller passes the mesh MeshAttrs chose. Cells at >= smax
+// so one cell of padding suffices, and the particle cap keeps the cell count
+// O(n) instead of (boxsize/smax)^3. The kernel sweeps ceil(smax/boxsize * dims)
+// cells either way, so this rule is a performance choice, not a correctness one.
 inline void mesh_dims(const double boxsize[3], double smax, size_t n,
                       int dims[3]) {
     const double cap = std::cbrt(0.5 * static_cast<double>(n));
