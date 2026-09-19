@@ -43,44 +43,29 @@ COMPARE_RTOL = float(os.environ.get('CUCOUNT_COMPARE_RTOL', 1e-9))
 # else -- what a request may ask for, how it is dispatched, how a disagreement
 # is reported -- is backend-neutral and lives below.
 #
-# The CUDA extension is imported lazily and nothing outside cudalib() may touch
-# cucountlib.cuda, so a -DCUCOUNT_BUILD_CUDA=OFF build (or a machine with no
-# CUDA libraries) still imports this module and serves backend='cpu'.
+# Either extension may be absent, and this module imports and serves whichever
+# is there: a -DCUCOUNT_BUILD_CUDA=OFF build still serves backend='cpu'.
+
+# Both extensions are imported here, either one optional. Importing
+# cucountlib.cuda costs about 10 ms and pulls in no CUDA libraries -- nvcc
+# links the runtime statically and the driver is dlopened at the first CUDA
+# call, not at import -- so there is nothing to defer. (cucountlib.cpu, the
+# multi-ISA Highway module, is the expensive one at ~300 ms.) cucount.jax
+# imports its two the same way.
+
+try:
+    from cucountlib import cuda as cudalib
+except ImportError:  # -DCUCOUNT_BUILD_CUDA=OFF, or the CUDA libraries are missing
+    cudalib = None
 
 try:
     from cucountlib import cpu as cpulib
 except ImportError:  # -DCUCOUNT_BUILD_CPU=OFF
     cpulib = None
 
-_cudalib = None
-
-
-def cudalib():
-    """Return the CUDA extension, importing it on first use."""
-    global _cudalib
-    if _cudalib is None:
-        try:
-            import cucountlib.cuda
-        except ImportError as exc:
-            raise ImportError(
-                "the cucount CUDA extension is not available (was cucount built with "
-                "-DCUCOUNT_BUILD_CUDA=OFF, or is CUDA missing?); only backend='cpu' "
-                "can be served") from exc
-        _cudalib = cucountlib.cuda
-        _cudalib.setup_logging(_log_level_name())
-    return _cudalib
-
 
 def cuda_available():
-    """Whether the CUDA extension can be imported -- without importing it, so
-    that asking the question does not pull in the CUDA libraries."""
-    if _cudalib is not None:
-        return True
-    import importlib.util
-    try:
-        return importlib.util.find_spec('cucountlib.cuda') is not None
-    except (ImportError, ValueError):
-        return False
+    return cudalib is not None
 
 
 def cpu_available():
@@ -141,9 +126,10 @@ def _unavailable(backend):
     name while the other went ahead and computed something else.
     """
     if backend == 'cpu' and cpulib is None:
-        return 'CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)'
-    if backend == 'cuda' and not cuda_available():
-        return 'CUDA backend not built (-DCUCOUNT_BUILD_CUDA=ON)'
+        return 'not built (-DCUCOUNT_BUILD_CPU=ON)'
+    if backend == 'cuda' and cudalib is None:
+        return ('not built (-DCUCOUNT_BUILD_CUDA=ON), or the CUDA libraries are '
+                "missing; only backend='cpu' can be served")
     return None
 
 
@@ -186,7 +172,7 @@ def check_kernel_ells(*battrs_or_ells):
 def _cuda_count2(cparticles, battrs, mattrs, wattrs=None, sattrs=None, spattrs=None,
                  tuning=None):
     tuning = _check_tuning('cuda', tuning)
-    result, timings = cudalib().count2(
+    result, timings = cudalib.count2(
         *cparticles, mattrs._to_c(), battrs=battrs,
         wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs,
         nthreads=tuning.get('nthreads', 1), return_timings=True)
@@ -221,7 +207,7 @@ def _cpu_count2(cparticles, battrs, mattrs, wattrs=None, sattrs=None, spattrs=No
 def _cuda_count3(cparticles, mattrs, battrs12, battrs13, wattrs=None, sattrs=None,
                  vetos=None, tuning=None):
     tuning = _check_tuning('cuda', tuning)
-    result, timings = cudalib().count3(
+    result, timings = cudalib.count3(
         *cparticles, *[m._to_c() for m in mattrs],
         battrs12=battrs12, battrs13=battrs13, wattrs=wattrs._to_c(),
         sattrs12=sattrs[0], sattrs13=sattrs[1], veto12=vetos[0], veto13=vetos[1],
@@ -245,7 +231,7 @@ def _cpu_count3(cparticles, mattrs, battrs12, battrs13, wattrs=None, sattrs=None
 def _cuda_count3close(cparticles, mattrs, battrs, wattrs=None, sattrs=None, vetos=None,
                       close_pair=(1, 2), tuning=None):
     tuning = _check_tuning('cuda', tuning)
-    result, timings = cudalib().count3close(
+    result, timings = cudalib.count3close(
         *cparticles, *[m._to_c() for m in mattrs],
         battrs12=battrs[0], battrs13=battrs[1], battrs23=battrs[2],
         wattrs=wattrs._to_c(),
@@ -421,13 +407,10 @@ def _dispatch(mode, cuda_call, cpu_call, why):
     `why` is None when the CPU backend can serve the request, otherwise the
     reason it cannot. No backend is ever chosen implicitly.
     """
-    if mode == 'cuda':
-        return cuda_call()
-
-    if mode == 'cpu':
+    if mode in ('cuda', 'cpu'):
         if why:
-            raise NotImplementedError(f'CPU backend: {why}')
-        return cpu_call()
+            raise NotImplementedError(f'{mode.upper()} backend: {why}')
+        return cuda_call() if mode == 'cuda' else cpu_call()
 
     # compare
     if why:
@@ -460,12 +443,10 @@ def _setup_cucount_logging():
     # theirs if (and only if) they are loaded.
     level = _log_level_name()
     cucount_attrs.setup_logging(level)
-    # Each extension holds its own copy; sync the ones that are loaded. Asking
-    # the CUDA one would import it, which is what cudalib() exists to defer.
-    if _cudalib is not None:
-        _cudalib.setup_logging(level)
-    if cpulib is not None:
-        cpulib.setup_logging(level)
+    # Each extension holds its own copy; sync the ones that are built.
+    for lib in (cudalib, cpulib):
+        if lib is not None:
+            lib.setup_logging(level)
 
 
 def setup_logging(level=logging.INFO, stream=sys.stdout,  **kwargs):
@@ -1380,7 +1361,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     # either extension through pybind's foreign module_local loading.
     cparticles = [_to_c_particles(p) for p in particles]
 
-    why = _unavailable(mode) if mode in ('cuda', 'cpu') else _unavailable('cpu')
+    why = _unavailable(mode) if mode != 'compare' else (_unavailable('cuda') or _unavailable('cpu'))
     return _dispatch(
         mode,
         lambda: _cuda_count2(cparticles, battrs, mattrs, wattrs=wattrs, sattrs=sattrs,
@@ -1608,7 +1589,7 @@ def count3close(*particles: Particles,
     sattrs = (sattrs12, sattrs13, sattrs23)
     vetos = (veto12, veto13, veto23)
 
-    why = _unavailable(mode) if mode in ('cuda', 'cpu') else _unavailable('cpu')
+    why = _unavailable(mode) if mode != 'compare' else (_unavailable('cuda') or _unavailable('cpu'))
     return _dispatch(
         mode,
         lambda: _cuda_count3close(cparticles, mattrs, battrs, wattrs=wattrs,
@@ -1713,7 +1694,7 @@ def count3(*particles: Particles,
     cparticles = [_to_c_particles(p) for p in particles]
     mattrs = (mattrs1, mattrs2, mattrs3)
 
-    why = _unavailable(mode) if mode in ('cuda', 'cpu') else _unavailable('cpu')
+    why = _unavailable(mode) if mode != 'compare' else (_unavailable('cuda') or _unavailable('cpu'))
     return _dispatch(
         mode,
         lambda: _cuda_count3(cparticles, mattrs, battrs12, battrs13, wattrs=wattrs,
