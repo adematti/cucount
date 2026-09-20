@@ -357,13 +357,11 @@ def close_reference(cats, e12, e13, e23=None, ells=None, los='firstpoint',
                 dphi = phi2[i2] - phi3[i3]
                 for ell1, ell2, m, imag, slot in slots:
                     norm = np.sqrt((2 * ell1 + 1) * (2 * ell2 + 1))
-                    # Note the sign: add_weight3 takes sin(m dphi) from the
-                    # cross product of the two transverse parts, which is
-                    # sin(phi13 - phi12) -- the opposite of what count3's
-                    # m-contraction produces. That difference is upstream
-                    # behaviour, reproduced by both backends, and pinned by
-                    # test_count3_and_count3close_differ_only_in_imaginary_sign.
-                    ang = -np.sin(m * dphi) if imag else np.cos(m * dphi)
+                    # exp(+i m dphi), dphi = phi12 - phi13: the phase of
+                    # Y_{ell1 m}(rhat12) conj(Y_{ell2 m}(rhat13)), which is
+                    # what count3's m-contraction produces and what
+                    # add_weight3 now matches.
+                    ang = np.sin(m * dphi) if imag else np.cos(m * dphi)
                     out[b2[i2], b3[i3], slot] += (
                         w * norm * pbar(ell1, m, mu2[i2]) * pbar(ell2, m, mu3[i3]) * ang)
     return out
@@ -554,15 +552,16 @@ def test_close_pair_choice_matches_cuda(close_pair):
     count3close(*particles, backend='compare', close_pair=close_pair, **kw)
 
 
-def test_count3_and_count3close_differ_only_in_imaginary_sign():
+def test_count3_and_count3close_agree_on_every_coefficient():
     """count3 is the factorized form of count3close, so the two must agree.
 
-    They do, on every real coefficient. On the imaginary ones they come out
-    exactly negated, because add_weight3 takes sin(dphi) from the cross
-    product of the two transverse parts -- sin(phi13 - phi12) -- while
-    count3's m-contraction produces sin(phi12 - phi13). This is upstream
-    behaviour that both backends reproduce; the test pins it so a change to
-    either convention has to be deliberate.
+    The imaginary coefficients used to come out exactly negated: add_weight3
+    took sin(dphi) from the cross product of the two transverse parts the
+    other way round, giving sin(phi13 - phi12), while count3's m-contraction
+    forms Z12 conj(Z13) and so produces sin(phi12 - phi13). The real ones
+    never showed it, cos being even. Both backends carried the flipped sign,
+    so this test checks the two entry points really are interchangeable now,
+    and the imaginary assertion is the one that regresses.
     """
     ells = ([0, 2], [0, 2])
     particles, kw, _ = _close_setup(n=40, ells=ells)
@@ -575,10 +574,8 @@ def test_count3_and_count3close_differ_only_in_imaginary_sign():
     for ell1, ell2, m, imag, slot in slots:
         a, b = factorized[..., slot], close[..., slot]
         scale = max(np.abs(a).max(), 1e-300)
+        assert np.allclose(a, b, rtol=1e-9, atol=1e-12 * scale)
         if imag:
             assert np.abs(a).max() > 0, 'a vanishing coefficient proves nothing'
-            assert np.allclose(a, -b, rtol=1e-9, atol=1e-12 * scale)
             checked_imag += 1
-        else:
-            assert np.allclose(a, b, rtol=1e-9, atol=1e-12 * scale)
     assert checked_imag > 0, 'no imaginary coefficient was exercised'

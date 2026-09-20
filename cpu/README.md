@@ -233,12 +233,15 @@ Not covered: nothing in `count2`, `count3` or `count3close` that the CUDA
 backend serves, apart from the deliberate limits above (spin needs exactly two
 components; triplet legs bin in s or theta with multipoles to ell = 5).
 
-One upstream quirk both backends reproduce: `count3` and `count3close` agree
-on every real projection coefficient but come out exactly negated on the
-imaginary ones, because `add_weight3` takes `sin(dphi)` from the cross product
-of the two transverse parts -- `sin(phi13 - phi12)` -- while `count3`'s
-m-contraction produces `sin(phi12 - phi13)`. `tests/test_cpu_triplet.py` pins
-the relationship so a change to either convention has to be deliberate.
+`count3` and `count3close` are the factorized and direct forms of one
+quantity, and agree coefficient for coefficient. Both take the phase of the
+azimuthal separation to be `exp(+i m (phi12 - phi13))`, so that a projection
+is `Y_{ell1 m}(rhat12) conj(Y_{ell2 m}(rhat13))` summed over m. `add_weight3`
+used to orient its cross product the other way and so returned the conjugate:
+the real coefficients were unaffected, cos being even, and every imaginary one
+came back negated. Both backends carried it, and both are fixed;
+`tests/test_cpu_triplet.py` checks the two entry points against each other and
+against an independent triple sum.
 
 ## Shared structures
 

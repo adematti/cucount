@@ -19,7 +19,8 @@ import pytest
 
 import cucount.numpy
 from cucount.numpy import (BinAttrs, MeshAttrs, Particles, SelectionAttrs,
-                           SplitAttrs, WeightAttrs, count2, cpu_available, cpulib)
+                           SplitAttrs, WeightAttrs, count2, cpu_available,
+                           cpulib, cudalib, _to_c_particles)
 
 pytestmark = pytest.mark.skipif(
     not cpu_available(), reason='CPU backend not built (-DCUCOUNT_BUILD_CPU=ON)')
@@ -327,6 +328,28 @@ def test_kernel_limits_are_declined_on_every_backend(feature, backend):
     particles, kw, match = _limit_request(feature)
     with pytest.raises(ValueError, match=match):
         count2(*particles, backend=backend, **kw)
+
+
+@pytest.mark.parametrize('lib_name', ['cpu', 'cuda'])
+@pytest.mark.parametrize('feature', LIMITS)
+def test_kernel_limits_are_declined_by_the_extension_itself(feature, lib_name):
+    """The same limits, asked of the extension with the shim stepped over.
+
+    The test above never reaches C++: the frontend refuses first, so the
+    backstop in each binding's validate() is what nothing exercised. It is not
+    decoration -- the Legendre cache is a fixed-size stack array indexed by
+    ell, so an ell past MAX_POLE arriving here writes off the end of it, and
+    cucountlib is an importable module that any caller can reach directly.
+    """
+    lib = {'cpu': cpulib, 'cuda': cudalib}[lib_name]
+    if lib is None or (lib_name == 'cuda' and not CUDA):
+        pytest.skip(f'{lib_name} extension not built')
+    particles, kw, match = _limit_request(feature)
+    cparticles = [_to_c_particles(p) for p in particles]
+    wattrs = kw.get('wattrs') or WeightAttrs()
+    with pytest.raises(Exception, match=match):
+        lib.count2(*cparticles, kw['mattrs']._to_c(), kw['battrs'],
+                   wattrs=wattrs._to_c())
 
 
 @pytest.mark.parametrize('ells', [[0, 2, 4], [0, 2, 8], list(range(0, 9))])

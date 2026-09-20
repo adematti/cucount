@@ -7,6 +7,7 @@
 #include <thread>
 #include <vector>
 #include <memory>
+#include <stdexcept>
 
 #include "mesh.h"
 #include "count2.h"
@@ -16,6 +17,46 @@
 #include "cucount.h"
 
 namespace py = pybind11;
+
+
+// The backstop the Python shim's nicer-worded checks sit in front of. It
+// exists because cucountlib.cuda is an importable module: a caller reaching
+// it directly bypasses every frontend check, and the two limits below are not
+// preferences but bounds on fixed-size arrays. Mirrors validate() in
+// cpu/src/bind.cpp, which carries the same two plus the CPU-only ones.
+static void validate_count2(const BinAttrs& battrs, const WeightAttrs& wattrs,
+                            const IndexValue& iv1, const IndexValue& iv2) {
+    // The ell list rides a buffer of MAX_POLE + 2, and legendre_cache in
+    // count2.cu is MAX_POLE + 1 entries indexed BY ell -- so the largest ell
+    // is the bound, not how many were asked for. A single ell = 10 passes a
+    // count-based check and writes off the end of the cache, in device code,
+    // where there is nothing to catch it.
+    for (size_t i = 0; i < battrs.ndim; i++) {
+        if (battrs.var[i] != VAR_POLE) continue;
+        if (battrs.shape[i] > MAX_POLE + 2)
+            throw std::invalid_argument("cuda backend: too many multipoles requested");
+        for (size_t j = 0; j < battrs.shape[i]; j++) {
+            if (battrs.array[i][j] > MAX_POLE)
+                throw std::invalid_argument(
+                    "cuda backend: multipole ell above MAX_POLE requested");
+        }
+    }
+    // count2 looks the angular upweight up against the one angle a pair has
+    // (lookup_angular_weight<1> in count2.cu), so a table of any other
+    // dimensionality is a malformed request rather than an unserved one: the
+    // extra axes would be read past, or silently ignored.
+    if (wattrs.angular.size && wattrs.angular.ndim != 1)
+        throw std::invalid_argument(
+            "cuda backend: only 1D angular weights are implemented");
+    // compute_spin_projection_cartesian, shared by both backends, reads two
+    // components from &values[start_spin]. One is not a smaller request but a
+    // misread: the second component comes from whatever the packed row holds
+    // next, or from past its end when spin is the last field.
+    for (const IndexValue* iv : {&iv1, &iv2}) {
+        if (iv->size_spin && iv->size_spin != 2)
+            throw std::invalid_argument("cuda backend: spin needs exactly 2 components");
+    }
+}
 
 
 py::object count2_py(Particles_py& particles1, Particles_py& particles2,
@@ -34,6 +75,10 @@ py::object count2_py(Particles_py& particles1, Particles_py& particles2,
     // prepare host-side particle descriptors (point into numpy buffers)
     Particles p1_host = particles1.data();
     Particles p2_host = particles2.data();
+
+    // Before the first CUDA call, so a malformed request is refused the same
+    // way on a machine with no device as on one with eight.
+    validate_count2(battrs, wattrs, p1_host.index_value, p2_host.index_value);
 
     // number of GPUs available
     int ngpus = 1;

@@ -191,7 +191,12 @@ __device__ inline void add_weight3(
     if (rho[0] > (FLOAT)1e-12 && rho[1] > (FLOAT)1e-12) {
         FLOAT inv = (FLOAT)1. / (rho[0] * rho[1]);
         cdphi = clamp1((xy[0][0] * xy[1][0] + xy[0][1] * xy[1][1]) * inv);
-        sdphi = MIN((FLOAT)1., MAX((FLOAT)-1., (xy[0][0] * xy[1][1] - xy[0][1] * xy[1][0]) * inv));
+        // The cross product is oriented (1, 2) x (1, 3), so that sdphi is
+        // sin(phi12 - phi13) and compute_trig_up_to_m raises exp(+i dphi).
+        // Taken the other way round it raises the conjugate, which leaves the
+        // real coefficients untouched -- cos is even -- and negates every
+        // imaginary one against count3.
+        sdphi = MIN((FLOAT)1., MAX((FLOAT)-1., (xy[0][1] * xy[1][0] - xy[0][0] * xy[1][1]) * inv));
     }
 
     const int ellmax1 = device_layout.ellmax1;

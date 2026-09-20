@@ -56,77 +56,64 @@ static WeightAttrs wattrs3;
 static CLOSE_PAIR close_pair_3 = CLOSE_PAIR_12;
 static IndexValue index_value3[3] = {0};
 
-// keep ownership of host-side copies created here so pointers stay valid
-static std::vector<void*> owned_host_ptrs;
-
-// helper to free owned pointers
-static void free_owned_ptrs() {
-    for (void *p : owned_host_ptrs) {
-        std::free(p);
-    }
-    owned_host_ptrs.clear();
-}
-
 // -----------------------------------------------------------------------------
 // Owned host-copy helpers
 // -----------------------------------------------------------------------------
 
-static void own_bin_attrs_arrays(BinAttrs *battrs) {
-    for (size_t i = 0; i < (size_t)battrs->ndim; i++) {
-        if (battrs->asize[i] != 0 && battrs->array[i] != nullptr) {
-            FLOAT *buf = (FLOAT*) std::malloc(battrs->asize[i] * sizeof(FLOAT));
-            if (!buf) throw std::bad_alloc();
-            std::memcpy(buf, battrs->array[i], battrs->asize[i] * sizeof(FLOAT));
-            battrs->array[i] = buf;
-            owned_host_ptrs.push_back(buf);
-        }
+// The staged attrs point into numpy buffers the caller may drop as soon as the
+// setter returns, so every array is copied here and kept alive until the next
+// staging of the same entry point.
+//
+// One owner per entry point, not one list for the module: staging count2's
+// attrs must not free the arrays count3 is still pointing at. Identical to
+// OwnedArrays in cpu/src/ffi_bind.cpp.
+struct OwnedArrays {
+    std::vector<void*> ptrs;
+
+    ~OwnedArrays() { clear(); }
+
+    void clear() {
+        for (void* p : ptrs) std::free(p);
+        ptrs.clear();
     }
-}
 
-
-static void own_weight_attrs_arrays(WeightAttrs *wattrs) {
-    // Bitwise
-    if (wattrs->bitwise.p_nbits > 0 &&
-        wattrs->bitwise.p_correction_nbits != nullptr) {
-        size_t size = wattrs->bitwise.p_nbits * wattrs->bitwise.p_nbits;
-
-        FLOAT *buf = (FLOAT*) std::malloc(size * sizeof(FLOAT));
+    FLOAT* copy(const FLOAT* src, size_t n) {
+        FLOAT* buf = (FLOAT*) std::malloc(n * sizeof(FLOAT));
         if (!buf) throw std::bad_alloc();
-
-        std::memcpy(buf, wattrs->bitwise.p_correction_nbits, size * sizeof(FLOAT));
-
-        wattrs->bitwise.p_correction_nbits = buf;
-        owned_host_ptrs.push_back(buf);
+        std::memcpy(buf, src, n * sizeof(FLOAT));
+        ptrs.push_back(buf);
+        return buf;
     }
 
-    // Angular axis arrays
-    for (size_t idim = 0; idim < wattrs->angular.ndim; ++idim) {
-        if (wattrs->angular.sep[idim] != nullptr) {
-            const size_t n = wattrs->angular.sep_is_edges ? wattrs->angular.shape[idim] + 1 : wattrs->angular.shape[idim];
-
-            FLOAT *buf = (FLOAT*) std::malloc(n * sizeof(FLOAT));
-            if (!buf) throw std::bad_alloc();
-
-            std::memcpy(buf, wattrs->angular.sep[idim], n * sizeof(FLOAT));
-
-            wattrs->angular.sep[idim] = buf;
-            owned_host_ptrs.push_back(buf);
+    void own(BinAttrs* battrs) {
+        for (size_t i = 0; i < battrs->ndim; i++) {
+            if (battrs->asize[i] != 0 && battrs->array[i] != nullptr)
+                battrs->array[i] = copy(battrs->array[i], battrs->asize[i]);
         }
     }
 
-    // Angular weight table
-    if (wattrs->angular.size > 0 &&
-        wattrs->angular.weight != nullptr) {
-        FLOAT *buf = (FLOAT*) std::malloc(wattrs->angular.size * sizeof(FLOAT));
-
-        if (!buf) throw std::bad_alloc();
-
-        std::memcpy(buf, wattrs->angular.weight, wattrs->angular.size * sizeof(FLOAT));
-
-        wattrs->angular.weight = buf;
-        owned_host_ptrs.push_back(buf);
+    void own(WeightAttrs* wattrs) {
+        if (wattrs->bitwise.p_nbits > 0 && wattrs->bitwise.p_correction_nbits != nullptr) {
+            const size_t size = wattrs->bitwise.p_nbits * wattrs->bitwise.p_nbits;
+            wattrs->bitwise.p_correction_nbits =
+                copy(wattrs->bitwise.p_correction_nbits, size);
+        }
+        for (size_t idim = 0; idim < wattrs->angular.ndim; ++idim) {
+            if (wattrs->angular.sep[idim] == nullptr) continue;
+            // sep_is_edges is per axis: indexed, not taken whole. Read as a
+            // scalar it is an array decaying to a pointer, so always true,
+            // and every axis is copied one element long.
+            const size_t n = wattrs->angular.sep_is_edges[idim]
+                ? wattrs->angular.shape[idim] + 1 : wattrs->angular.shape[idim];
+            wattrs->angular.sep[idim] = copy(wattrs->angular.sep[idim], n);
+        }
+        if (wattrs->angular.size > 0 && wattrs->angular.weight != nullptr)
+            wattrs->angular.weight = copy(wattrs->angular.weight, wattrs->angular.size);
     }
-}
+};
+
+static OwnedArrays owned2;
+static OwnedArrays owned3;
 
 // -----------------------------------------------------------------------------
 // Python setters for count2 attrs
@@ -139,7 +126,7 @@ void set_count2_attrs_py(
     const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
     const SplitAttrs_py spattrs_py = SplitAttrs_py())
 {
-    free_owned_ptrs();
+    owned2.clear();
 
     mattrs2 = mattrs_py.data();
     battrs2 = battrs_py.data();
@@ -147,8 +134,8 @@ void set_count2_attrs_py(
     sattrs2 = sattrs_py.data();
     spattrs2 = spattrs_py.data();
 
-    own_bin_attrs_arrays(&battrs2);
-    own_weight_attrs_arrays(&wattrs2);
+    owned2.own(&battrs2);
+    owned2.own(&wattrs2);
 }
 
 // -----------------------------------------------------------------------------
@@ -171,7 +158,7 @@ void set_count3close_attrs_py(
     const SelectionAttrs_py veto23_py = SelectionAttrs_py(),
     py::tuple close_pair = py::make_tuple(1, 2))
 {
-    free_owned_ptrs();
+    owned3.clear();
 
     mattrs3_1 = mattrs1_py.data();
     mattrs3_2 = mattrs2_py.data();
@@ -185,7 +172,6 @@ void set_count3close_attrs_py(
     }
     else {
         battrs3_23 = py::cast<BinAttrs_py>(battrs23_obj).data();
-        own_bin_attrs_arrays(&battrs3_23);
     }
 
     wattrs3 = wattrs_py.data();
@@ -200,9 +186,10 @@ void set_count3close_attrs_py(
 
     close_pair_3 = parse_close_pair(close_pair);
 
-    own_bin_attrs_arrays(&battrs3_12);
-    own_bin_attrs_arrays(&battrs3_13);
-    own_weight_attrs_arrays(&wattrs3);
+    owned3.own(&battrs3_12);
+    owned3.own(&battrs3_13);
+    if (battrs3_23.ndim) owned3.own(&battrs3_23);
+    owned3.own(&wattrs3);
 }
 
 

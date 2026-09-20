@@ -202,7 +202,13 @@ def test_triposh():
                             mmax = min(ell1, ell2)
 
                             for m in range(mmax + 1):
-                                val = Y(ell1, m, rhat12_local).conjugate() * Y(ell2, m, rhat13_local)
+                                # Y(r12) conj(Y(r13)), the pairing the Legendre
+                                # addition theorem gives: its phase is
+                                # exp(+i m (phi12 - phi13)). Taken the other way
+                                # round this returns the conjugate, which leaves
+                                # every real coefficient alone -- cos is even --
+                                # and negates every imaginary one.
+                                val = Y(ell1, m, rhat12_local) * Y(ell2, m, rhat13_local).conjugate()
                                 out[ib12, ib13, ip + m] += tw * val.real
 
                                 if m > 0:
@@ -223,6 +229,15 @@ def test_triposh():
     particles = Particles(positions=positions, weights=weights)
     sattrs = SelectionAttrs(theta=(0., theta_max))
 
+    # This check is blind to the azimuthal phase, and cannot easily be made
+    # otherwise: at ells1 = [0] every mmax is 0 so the imaginary branch never
+    # runs, and counting one catalogue three times makes swapping legs 2 and 3
+    # a symmetry of the sum, which sends dphi -> -dphi and cancels the
+    # imaginary coefficients to machine zero whatever the ells. What it does
+    # check is the real coefficients and the (ell1, ell2) bookkeeping.
+    # The phase convention is tested in tests/test_cpu_triplet.py, against
+    # three distinct catalogues and an oracle that forms each azimuth with
+    # arctan2 instead of a cross product.
     ells1, ells2 = [0], [0, 2]
     battrs12 = BinAttrs(s=sedges, pole=(ells1, "firstpoint"))
     battrs13 = BinAttrs(s=sedges, pole=(ells2, "firstpoint"))

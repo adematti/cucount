@@ -162,7 +162,12 @@ void add_weight3(double* counts, const double local_frame[3][3],
     if (rho[0] > 1e-12 && rho[1] > 1e-12) {
         const double inv = 1. / (rho[0] * rho[1]);
         cdphi = clamp_unit((xy[0][0] * xy[1][0] + xy[0][1] * xy[1][1]) * inv);
-        sdphi = clamp_unit((xy[0][0] * xy[1][1] - xy[0][1] * xy[1][0]) * inv);
+        // The cross product is oriented (1, 2) x (1, 3), so that sdphi is
+        // sin(phi12 - phi13) and compute_trig_up_to_m raises exp(+i dphi).
+        // Taken the other way round it raises the conjugate, which leaves the
+        // real coefficients untouched -- cos is even -- and negates every
+        // imaginary one against count3.
+        sdphi = clamp_unit((xy[0][1] * xy[1][0] - xy[0][0] * xy[1][1]) * inv);
     }
 
     const int global_mmax = std::min(layout.ellmax1, layout.ellmax2);
