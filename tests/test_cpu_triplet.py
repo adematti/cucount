@@ -461,6 +461,50 @@ def test_close_pair_choice_does_not_change_the_result(close_pair):
     assert np.allclose(got, ref, rtol=1e-12, atol=0)
 
 
+@pytest.mark.parametrize('close_pair', [(1, 2), (1, 3), (2, 3)])
+def test_close_pair_choice_does_not_change_the_result_on_default_meshes(close_pair):
+    """The same, with the meshes the frontend picks rather than explicit ones.
+
+    This is the regression case. close_pair names a search strategy, and each
+    strategy bounds a different leg, so the default meshes used to be sized
+    for the close pair itself. This backend has one traversal, centred on
+    particle 1, so a mesh sized for the (2, 3) leg left it sweeping a window
+    narrower than the (1, 2) and (1, 3) separations it walks over: it dropped
+    triplets instead of rejecting them and came back ~0.7% low. Every other
+    close-triplet test here passes mattrs1/2/3 explicitly, which is what kept
+    it hidden.
+
+    Two things the catalogue has to supply for the bug to show at all. A
+    selection tighter than the binning, or every strategy sizes its meshes
+    from the same binning; and enough particles that the default mesh is
+    finer than the shortfall, or the swept cells cover the missing window by
+    accident. At n = 35 both fail and the reverted code still passes.
+    """
+    cats = [sky_catalog(s, 4000) for s in (11, 12, 13)]
+    particles = [Particles(*c) for c in cats]
+    kw = dict(battrs12=BinAttrs(s=E12), battrs13=BinAttrs(s=E13), battrs23=None)
+    kw[f'sattrs{close_pair[0]:d}{close_pair[1]:d}'] = SelectionAttrs(s=(0., E12[len(E12) // 2]))
+    ref = count3close(*particles, backend='cpu', close_pair=(1, 2), **kw)['weight']
+    got = count3close(*particles, backend='cpu', close_pair=close_pair, **kw)['weight']
+    assert np.any(ref), 'the comparison must not be between two empty results'
+    assert np.allclose(got, ref, rtol=1e-12, atol=0)
+
+
+def test_close_declines_a_mesh_too_narrow_for_the_leg_it_walks():
+    """A hand-built mesh gets the check the defaults no longer need.
+
+    Sizing mattrs2 for a short (2, 3) selection is exactly what the frontend
+    used to do by itself. Walked over the (1, 2) leg it would drop triplets
+    quietly, so it has to be refused rather than counted.
+    """
+    particles, kw, _ = _close_setup()
+    narrow = SelectionAttrs(s=(0., E12[1]))
+    kw['mattrs2'] = MeshAttrs(*particles, battrs=None, sattrs=narrow)
+    with pytest.raises(ValueError, match='too narrow'):
+        count3close(*particles, backend='cpu', close_pair=(2, 3),
+                    sattrs23=narrow, **kw)
+
+
 def test_close_mesh_type_does_not_change_the_result():
     """The mesh is an acceleration structure; cartesian and angular must agree."""
     particles, cartesian, _ = _close_setup()

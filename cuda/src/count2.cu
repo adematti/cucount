@@ -7,7 +7,7 @@
 // set_legendre, get_bessel, compute_spin_projection_cartesian: shared with the
 // CPU backend. Note the spin projection now normalizes in FLOAT precision
 // (the pre-extraction code used rsqrtf, truncating the double path to float).
-#include "pair_math.h"
+#include "cmath.h"
 
 using cucount::pairmath::set_legendre;
 using cucount::pairmath::get_bessel;
@@ -187,7 +187,7 @@ __device__ inline void add_weight2(
     }
 
     if (REQUIRED_MU2 || REQUIRED_MU) {
-        // Shared with the CPU backend (pair_math.h); lifted verbatim.
+        // Shared with the CPU backend (cmath.h); lifted verbatim.
         compute_pair_mu(
             diff,
             sposition1,
@@ -251,7 +251,7 @@ __device__ inline void add_weight2(
 
     if (index_value1.size_bitwise_weight &&
         index_value2.size_bitwise_weight) {
-        // Shared with the CPU backend (pair_math.h); lifted verbatim.
+        // Shared with the CPU backend (cmath.h); lifted verbatim.
         pair_weight *= pair_bitwise_weight(
             value1,
             value2,

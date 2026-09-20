@@ -6,7 +6,7 @@
 #include <cuda.h>
 #endif
 
-// Convenience macros live OUTSIDE the include guard: pair_math.h undefines
+// Convenience macros live OUTSIDE the include guard: cmath.h undefines
 // them at its end for CUDA-free SIMD translation units, and a later include
 // of this header must restore them (identical redefinition is well-formed).
 #define FLOAT double

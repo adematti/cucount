@@ -6,8 +6,8 @@
 // one-source home for the math where correctness bugs hide; each backend keeps
 // its own parallelization idiom around it.
 
-#ifndef _CUCOUNT_PAIR_MATH_
-#define _CUCOUNT_PAIR_MATH_
+#ifndef _CUCOUNT_CMATH_
+#define _CUCOUNT_CMATH_
 
 #ifdef __CUDACC__
 #define CUCOUNT_HOST_DEVICE __host__ __device__
@@ -754,4 +754,4 @@ CUCOUNT_HOST_DEVICE inline void compute_pbar_all_lmax5(int ellmax, Float mu,
 #undef CLIP
 #endif
 
-#endif  // _CUCOUNT_PAIR_MATH_
+#endif  // _CUCOUNT_CMATH_

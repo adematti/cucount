@@ -110,7 +110,7 @@ Each backend owns a subdirectory with the same shape — [cuda/](cuda/) (the def
 `cucountlib.cuda` extension and the JAX FFI module) and [cpu/](cpu/) (the portable
 Highway backend) — while backend-neutral code lives at the root: `include/attrs.h`
 (the attribute classes, compiled into the CUDA-free `cucountlib.attrs` extension),
-`include/pair_math.h` (scalar per-pair math shared by both backends) and
+`include/cmath.h` (scalar per-pair math shared by both backends) and
 `include/common.h` (type definitions). `-DCUCOUNT_BUILD_CUDA=OFF` /
 `-DCUCOUNT_BUILD_CPU=OFF` skip either backend.
 

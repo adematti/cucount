@@ -3,7 +3,7 @@
 // kernel-inl.h again via its toggle guard. HWY_DYNAMIC_DISPATCH then picks a
 // target at run time from CPUID.
 
-#include "cucount/cpu/types.h"
+#include "count2.h"
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "src/count2.cpp"
@@ -11,7 +11,7 @@
 
 #include "hwy/highway.h"
 // Per-target; the toggle guard lets it re-expand on every pass.
-#include "cucount/cpu/kernel-inl.h"
+#include "count2-inl.h"
 
 #if HWY_ONCE
 

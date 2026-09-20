@@ -2,6 +2,7 @@ import sys
 import time
 import itertools
 import logging
+import contextlib
 import functools
 import operator
 import os
@@ -87,12 +88,18 @@ Kernel launch geometry is chosen by occupancy (CONFIGURE_KERNEL_LAUNCH) and
 is not exposed.
 """
 
-CPU_TUNING_KEYS = ('nthreads', 'isa', 'scatter')
+CPU_TUNING_KEYS = ('nthreads', 'isa', 'scatter', 'float32')
 """Tuning keys the CPU backend accepts through the public tuning= keyword.
 
 nthreads  CPU threads (default: CUCOUNT_CPU_NTHREADS, else the affinity mask)
 isa       Highway target to pin for this call, e.g. 'AVX2' (default: automatic)
 scatter   'scalar' (default) or 'binmajor' accumulation strategy
+float32   run the geometry in single precision (default: False), for twice the
+          lanes per vector; the accumulators stay double either way. Pairs near
+          a bin edge can land in the neighbouring bin, so results differ at
+          roughly the per-cent level, and count2 alone serves it. There is no
+          CUDA counterpart: FLOAT is a compile-time choice there, not a
+          runtime one.
 """
 
 _TUNING_KEYS = {'cuda': CUDA_TUNING_KEYS, 'cpu': CPU_TUNING_KEYS}
@@ -169,101 +176,107 @@ def check_kernel_ells(*battrs_or_ells):
 # both backends; the attrs cross into either extension through pybind's foreign
 # module_local loading.
 
-def _cuda_count2(cparticles, battrs, mattrs, wattrs=None, sattrs=None, spattrs=None,
-                 tuning=None):
-    tuning = _check_tuning('cuda', tuning)
-    result, timings = cudalib.count2(
-        *cparticles, mattrs._to_c(), battrs=battrs,
-        wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs,
-        nthreads=tuning.get('nthreads', 1), return_timings=True)
-    _log_timings('cuda', *timings)
-    return result
+def _lib_and_nthreads(backend, tuning):
+    """The extension to call, and the one tuning key whose meaning differs:
+    nthreads is GPUs on one backend and CPU threads on the other."""
+    if backend == 'cuda':
+        return cudalib, tuning.get('nthreads', 1)
+    return cpulib, int(tuning.get('nthreads') or cpu_nthreads())
 
 
-def _cpu_count2(cparticles, battrs, mattrs, wattrs=None, sattrs=None, spattrs=None,
-                tuning=None):
-    tuning = _check_tuning('cpu', tuning)
-    # Selections and splits go through too: the binding lowers them, and the
-    # kernel applies the selection as a per-pair veto.
-    kwargs = dict(scatter=str(tuning.get('scatter', 'scalar')),
-                  nthreads=int(tuning.get('nthreads') or cpu_nthreads()),
-                  return_timings=True,
-                  wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs)
+@contextlib.contextmanager
+def _pinned_isa(tuning):
+    """Pin Highway to one ISA for the call, and restore it afterwards.
 
+    The target is process-global state inside the extension, so it has to be
+    put back even if the call raises. A CUDA request never arrives here with an
+    isa: _check_tuning rejects the key for that backend.
+    """
     isa = tuning.get('isa')
-    if isa is not None and cpulib.set_target(isa) is None:
+    if isa is None:
+        yield
+        return
+    if cpulib.set_target(isa) is None:
         cpulib.set_target('')
         raise ValueError(f'CPU backend tuning: ISA {isa!r} unknown or unavailable; '
                          f'available: {cpulib.available_targets()}')
     try:
-        result, timings = cpulib.count2(*cparticles, mattrs._to_c(), battrs, **kwargs)
+        yield
     finally:
-        if isa is not None:
-            cpulib.set_target('')
-    _log_timings('cpu', *timings)
+        cpulib.set_target('')
+
+
+def _count2(backend, cparticles, battrs, mattrs, wattrs=None, sattrs=None,
+            spattrs=None, tuning=None):
+    tuning = _check_tuning(backend, tuning)
+    lib, nthreads = _lib_and_nthreads(backend, tuning)
+    # Selections and splits go through too: the bindings lower them, and the
+    # kernels apply a selection as a per-pair veto.
+    kwargs = dict(wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs,
+                  nthreads=nthreads, return_timings=True)
+    if backend == 'cpu':
+        kwargs['scatter'] = str(tuning.get('scatter', 'scalar'))
+        kwargs['float32'] = bool(tuning.get('float32', False))
+    with _pinned_isa(tuning):
+        result, timings = lib.count2(*cparticles, mattrs._to_c(), battrs, **kwargs)
+    _log_timings(backend, *timings)
     return result
 
 
-def _cuda_count3(cparticles, mattrs, battrs12, battrs13, wattrs=None, sattrs=None,
-                 vetos=None, tuning=None):
-    tuning = _check_tuning('cuda', tuning)
-    result, timings = cudalib.count3(
-        *cparticles, *[m._to_c() for m in mattrs],
-        battrs12=battrs12, battrs13=battrs13, wattrs=wattrs._to_c(),
-        sattrs12=sattrs[0], sattrs13=sattrs[1], veto12=vetos[0], veto13=vetos[1],
-        nthreads=tuning.get('nthreads', 1), return_timings=True)
-    _log_timings('cuda', *timings)
-    return result
-
-
-def _cpu_count3(cparticles, mattrs, battrs12, battrs13, wattrs=None, sattrs=None,
-                vetos=None, tuning=None):
-    tuning = _check_tuning('cpu', tuning)
-    result, timings = cpulib.count3(
+def _count3(backend, cparticles, mattrs, battrs12, battrs13, wattrs=None,
+            sattrs=None, vetos=None, tuning=None):
+    tuning = _check_tuning(backend, tuning)
+    lib, nthreads = _lib_and_nthreads(backend, tuning)
+    result, timings = lib.count3(
         *cparticles, *[m._to_c() for m in mattrs], battrs12, battrs13,
         wattrs=wattrs._to_c(),
         sattrs12=sattrs[0], sattrs13=sattrs[1], veto12=vetos[0], veto13=vetos[1],
-        nthreads=int(tuning.get('nthreads') or cpu_nthreads()), return_timings=True)
-    _log_timings('cpu', *timings)
+        nthreads=nthreads, return_timings=True)
+    _log_timings(backend, *timings)
     return result
 
 
-def _cuda_count3close(cparticles, mattrs, battrs, wattrs=None, sattrs=None, vetos=None,
-                      close_pair=(1, 2), tuning=None):
-    tuning = _check_tuning('cuda', tuning)
-    result, timings = cudalib.count3close(
-        *cparticles, *[m._to_c() for m in mattrs],
-        battrs12=battrs[0], battrs13=battrs[1], battrs23=battrs[2],
+def _count3close(backend, cparticles, mattrs, battrs, wattrs=None, sattrs=None,
+                 vetos=None, close_pair=(1, 2), tuning=None):
+    tuning = _check_tuning(backend, tuning)
+    lib, nthreads = _lib_and_nthreads(backend, tuning)
+    # battrs[2] is the one that really can be None: the (2, 3) axis is optional.
+    result, timings = lib.count3close(
+        *cparticles, *[m._to_c() for m in mattrs], battrs[0], battrs[1], battrs[2],
         wattrs=wattrs._to_c(),
         sattrs12=sattrs[0], sattrs13=sattrs[1], sattrs23=sattrs[2],
         veto12=vetos[0], veto13=vetos[1], veto23=vetos[2],
-        close_pair=close_pair,
-        nthreads=tuning.get('nthreads', 1), return_timings=True)
-    _log_timings('cuda', *timings)
+        close_pair=close_pair, nthreads=nthreads, return_timings=True)
+    _log_timings(backend, *timings)
     return result
-
-
-def _cpu_count3close(cparticles, mattrs, battrs, wattrs=None, sattrs=None, vetos=None,
-                     close_pair=(1, 2), tuning=None):
-    tuning = _check_tuning('cpu', tuning)
-    # battrs[2] is the one that really can be None: the (2, 3) axis is optional.
-    result, timings = cpulib.count3close(
-        *cparticles, *[m._to_c() for m in mattrs], battrs[0], battrs[1],
-        battrs23=battrs[2], wattrs=wattrs._to_c(),
-        sattrs12=sattrs[0], sattrs13=sattrs[1], sattrs23=sattrs[2],
-        veto12=vetos[0], veto13=vetos[1], veto23=vetos[2],
-        close_pair=''.join(str(i) for i in close_pair),
-        nthreads=int(tuning.get('nthreads') or cpu_nthreads()), return_timings=True)
-    _log_timings('cpu', *timings)
-    return result
-
 
 
 def _resolve_backend(backend=None):
+    """Return the backend to run: the argument, else $CUCOUNT_BACKEND, else cuda.
+
+    Mirrors cucount.jax's _resolve_ffi_backend, except that this one returns a
+    name rather than an extension handle, because 'compare' needs both. Naming
+    a backend is separate from requiring it (_require_backend): MeshAttrs
+    resolves a name only to pick its cell size, and a mesh outlives the choice
+    of kernel, so it must keep working on a build without that backend.
+    """
     mode = (backend or os.environ.get('CUCOUNT_BACKEND') or 'cuda').lower()
     if mode not in BACKENDS:
         raise ValueError(f'backend must be one of {BACKENDS}, got {mode!r}')
     return mode
+
+
+def _require_backend(mode):
+    """Raise unless every backend ``mode`` would run is actually built.
+
+    Deliberately later than the tuning check in _resolve_tuning: a misspelled
+    tuning key is a programming error and is reported by name on any machine,
+    including one where that backend was never built.
+    """
+    for name in (('cuda', 'cpu') if mode == 'compare' else (mode,)):
+        why = _unavailable(name)
+        if why:
+            raise NotImplementedError(f'{name.upper()} backend: {why}')
 
 
 def _resolve_tuning(mode, tuning, nthreads=1):
@@ -401,28 +414,23 @@ def _check_count3(particles, battrs12, battrs13, battrs23, wattrs, close):
             raise ValueError('neither triplet kernel splits; splits are a count2 feature')
 
 
-def _dispatch(mode, cuda_call, cpu_call, why):
+def _dispatch(mode, call, cuda_tuning, cpu_tuning):
     """Run a count on the selected backend.
 
-    `why` is None when the CPU backend can serve the request, otherwise the
-    reason it cannot. No backend is ever chosen implicitly.
+    ``call(backend, tuning)`` runs one backend; one callable rather than two
+    means the two cannot drift apart. No backend is ever chosen implicitly:
+    an unbuilt one raises here rather than silently falling back.
     """
+    _require_backend(mode)
     if mode in ('cuda', 'cpu'):
-        if why:
-            raise NotImplementedError(f'{mode.upper()} backend: {why}')
-        return cuda_call() if mode == 'cuda' else cpu_call()
+        return call(mode, cuda_tuning if mode == 'cuda' else cpu_tuning)
 
-    # compare
-    if why:
-        warnings.warn(f'CPU backend skipped, comparison not run: {why}', stacklevel=3)
-        return cuda_call()
-
-    # Wall clock on both sides
+    # compare: wall clock on both sides
     start = time.perf_counter()
-    cpu = cpu_call()
+    cpu = call('cpu', cpu_tuning)
     cpu_seconds = time.perf_counter() - start
     start = time.perf_counter()
-    reference = cuda_call()
+    reference = call('cuda', cuda_tuning)
     cuda_seconds = time.perf_counter() - start
     ratio = cuda_seconds / cpu_seconds if cpu_seconds > 0 else float('inf')
     logger.info('compare: cpu %.4f s, cuda %.4f s -- cpu %.2fx %s',
@@ -860,6 +868,82 @@ class BinAttrs(cucount_attrs.BinAttrs):
         return tuple(super().shape)
 
 
+def _mesh_reach(sattrs=None, battrs=None):
+    """Return the (mesh type, smax) a leg bounded by these attrs needs.
+
+    The rule MeshAttrs sizes itself by, lifted out so a caller can ask what a
+    leg requires without building a mesh for it. The binning and the selection
+    each bound the leg, so on any variable they share the tighter wins. smax
+    is a distance for a cartesian mesh and cos(theta_max) for an angular one,
+    matching what MeshAttrs.smax carries; it is None when nothing here bounds
+    the leg, and the mesh then has to reach across the whole box.
+    """
+    limits = {}
+    for attrs in [sattrs, battrs]:
+        if attrs is None: continue
+        for name, lim in zip(attrs.varnames, attrs.max):
+            if name in limits: limits[name] = min(limits[name], lim)
+            else: limits[name] = lim
+
+    mesh_type, mesh_smax = None, None
+    for name, lim in limits.items():
+        if name == 'theta':
+            mesh_type = 'angular'
+            mesh_smax = np.cos(np.radians(lim))
+            break
+        elif name == 's':
+            mesh_type = 'cartesian'
+            mesh_smax = lim
+            break
+        elif name in ['rp', 'pi', 'k']:
+            mesh_type = 'cartesian'
+
+    if mesh_smax is None and all(name in limits for name in ['rp', 'pi']):
+        mesh_smax = (limits['rp']**2 + limits['pi']**2)**0.5
+    return mesh_type, mesh_smax
+
+
+def _check_meshsize(meshsize):
+    """Raise unless every axis has at least one cell.
+
+    Only a caller-supplied meshsize can be short: both derived branches clamp
+    what they compute. A mesh of no cells is refused rather than repaired, so
+    the two backends meet it the same way -- neither kernel carries a
+    resolution heuristic to fall back on, and the cell size divides by it.
+    Checked before pixel_resolution and cellsize, which would divide by zero
+    first and warn.
+    """
+    if np.any(np.asarray(meshsize) < 1):
+        raise ValueError(f'meshsize must be at least 1 on every axis, got {list(meshsize)}')
+
+
+def _check_mesh_reaches(mattrs, name, leg, sattrs=None, battrs=None):
+    """Raise unless ``mattrs`` sweeps wide enough to bound ``leg``.
+
+    A window narrower than the leg it is walked over drops pairs rather than
+    rejecting them, so the count comes back quietly low. The defaults built
+    below are always wide enough; this is for a mesh passed in by hand.
+    Nothing is checked when the leg is unbounded (the mesh spans the box
+    anyway) or when it is bounded in a variable this mesh type cannot express,
+    which leaves the walk complete by being maximally wide.
+    """
+    want_type, want_smax = _mesh_reach(sattrs, battrs)
+    if want_smax is None or want_type != mattrs.type:
+        return
+    # An angular mesh carries cos(theta_max), so there wider means smaller.
+    # The slack is additive on that side: a cosine is bounded, and scaling it
+    # would tighten rather than loosen the whole southern half of the range.
+    wide_enough = (mattrs.smax <= want_smax + 1e-9 if want_type == 'angular'
+                   else mattrs.smax >= want_smax * (1. - 1e-9))
+    if not wide_enough:
+        unit = 'cos(theta)' if want_type == 'angular' else 'separation'
+        raise ValueError(
+            f'{name} sweeps to {unit} {mattrs.smax!r}, too narrow for the {leg} leg it is '
+            f'walked over, which reaches {want_smax!r}; pairs would be dropped rather than '
+            f'rejected. Pass a mesh built from the {leg} binning and selection, or let '
+            f'{name}=None build one.')
+
+
 @dataclass(init=False)
 class MeshAttrs(object):
 
@@ -926,29 +1010,8 @@ class MeshAttrs(object):
             pos_max = np.array([self._np.max(p, axis=axis) for p in nonempty_positions]).max(axis=0)
             return pos_min, pos_max
 
-        mesh_type, mesh_smax = None, None
-        limits = {}
-        for attrs in [sattrs, battrs]:
-            if attrs is None: continue
-            for name, lim in zip(attrs.varnames, attrs.max):
-                if name in limits: limits[name] = min(limits[name], lim)
-                else: limits[name] = lim
-
-        for name, lim in limits.items():
-            if name == 'theta':
-                mesh_type = 'angular'
-                mesh_smax = np.cos(np.radians(lim))
-                break
-            elif name == 's':
-                mesh_type = 'cartesian'
-                mesh_smax = lim
-                break
-            elif name in ['rp', 'pi', 'k']:
-                mesh_type = 'cartesian'
-
+        mesh_type, mesh_smax = _mesh_reach(sattrs, battrs)
         assert mesh_type is not None, 'cannot determine mesh type from sattrs or battrs; provide at least one'
-        if mesh_smax is None and all(name in limits for name in ['rp', 'pi']):
-            mesh_smax = (limits['rp']**2 + limits['pi']**2)**0.5
         ndim = {'angular': 2, 'cartesian': 3}[mesh_type]
 
         if periodic:
@@ -1005,6 +1068,7 @@ class MeshAttrs(object):
                 meshsize = np.maximum(np.minimum(nside1, nside2) * refine, 1).astype(int)
                 meshsize = [meshsize, 2 * meshsize]
             meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
+            _check_meshsize(meshsize)
             pixel_resolution = np.degrees(np.sqrt(4 * np.pi / meshsize.prod()))
             logger.debug("Mesh size is %d = %d x %d.", meshsize.prod(), meshsize[0], meshsize[1])
             logger.debug("Pixel resolution is %.4lf deg.", pixel_resolution)
@@ -1014,6 +1078,7 @@ class MeshAttrs(object):
                 nside1 = cells_per_smax * boxsize / mesh_smax
                 meshsize = np.maximum(np.minimum(nside1, nside2) * refine, 1).astype(int)
             meshsize = np.array(meshsize, dtype=np.int64) * np.ones(ndim, dtype=np.int64)
+            _check_meshsize(meshsize)
             cellsize = boxsize / meshsize
             logger.debug("Mesh size is %d = %d x %d x %d.", meshsize.prod(), meshsize[0], meshsize[1], meshsize[2])
             logger.debug("Cell size is (%.4lf, %.4lf, %.4lf).", cellsize[0], cellsize[1], cellsize[2])
@@ -1361,14 +1426,12 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
     # either extension through pybind's foreign module_local loading.
     cparticles = [_to_c_particles(p) for p in particles]
 
-    why = _unavailable(mode) if mode != 'compare' else (_unavailable('cuda') or _unavailable('cpu'))
     return _dispatch(
         mode,
-        lambda: _cuda_count2(cparticles, battrs, mattrs, wattrs=wattrs, sattrs=sattrs,
-                             spattrs=spattrs, tuning=cuda_tuning),
-        lambda: _cpu_count2(cparticles, battrs, mattrs, wattrs=wattrs, sattrs=sattrs,
-                            spattrs=spattrs, tuning=cpu_tuning),
-        why)
+        lambda backend, tuning: _count2(backend, cparticles, battrs, mattrs,
+                                        wattrs=wattrs, sattrs=sattrs,
+                                        spattrs=spattrs, tuning=tuning),
+        cuda_tuning, cpu_tuning)
 
 
 def _get_ells(battrs):
@@ -1559,29 +1622,48 @@ def count3close(*particles: Particles,
 
     assert close_pair in [(1, 2), (1, 3), (2, 3)]
 
+    # Which pair the default meshes are sized for. close_pair names the search
+    # strategy, and each strategy bounds a different leg: CUDA's (2, 3) walks
+    # catalogue 3 from each particle 2, so there the tight window belongs to
+    # the (2, 3) leg. The CPU backend has one traversal -- walk 2, then 3,
+    # from each primary -- so whatever close_pair says, it needs the (1, 2)
+    # and (1, 3) windows, and a mesh sized for (2, 3) makes it sweep too
+    # narrowly and silently drop triplets. (1, 2) sizing is correct for every
+    # strategy, since a wider window only costs candidates that the binning
+    # and the selections then reject; it is merely not the tightest for CUDA.
+    # 'compare' runs both backends on one mesh set, so it takes the sizing
+    # that serves both.
+    mesh_pair = close_pair if mode == 'cuda' else (1, 2)
+
     if mattrs1 is None:
         mattrs1 = MeshAttrs(
             particles[0],
-            sattrs=sattrs13 if close_pair == (1, 3) else sattrs12,
-            battrs=battrs13 if close_pair == (1, 3) else battrs12,
+            sattrs=sattrs13 if mesh_pair == (1, 3) else sattrs12,
+            battrs=battrs13 if mesh_pair == (1, 3) else battrs12,
             backend=mode,
         )
 
     if mattrs2 is None:
         mattrs2 = MeshAttrs(
             particles[1],
-            sattrs=sattrs23 if close_pair == (2, 3) else sattrs12,
-            battrs=battrs23 if close_pair == (2, 3) else battrs12,
+            sattrs=sattrs23 if mesh_pair == (2, 3) else sattrs12,
+            battrs=battrs23 if mesh_pair == (2, 3) else battrs12,
             backend=mode,
         )
 
     if mattrs3 is None:
         mattrs3 = MeshAttrs(
             particles[2],
-            sattrs=sattrs23 if close_pair == (2, 3) else sattrs13,
-            battrs=battrs23 if close_pair == (2, 3) else battrs13,
+            sattrs=sattrs23 if mesh_pair == (2, 3) else sattrs13,
+            battrs=battrs23 if mesh_pair == (2, 3) else battrs13,
             backend=mode,
         )
+
+    # The defaults above are already wide enough; this catches a mesh passed
+    # in by hand, which the CPU traversal would otherwise walk too narrowly.
+    if mode != 'cuda':
+        _check_mesh_reaches(mattrs2, 'mattrs2', '(1, 2)', sattrs12, battrs12)
+        _check_mesh_reaches(mattrs3, 'mattrs3', '(1, 3)', sattrs13, battrs13)
 
     cparticles = [_to_c_particles(p) for p in particles]
     mattrs = (mattrs1, mattrs2, mattrs3)
@@ -1589,16 +1671,12 @@ def count3close(*particles: Particles,
     sattrs = (sattrs12, sattrs13, sattrs23)
     vetos = (veto12, veto13, veto23)
 
-    why = _unavailable(mode) if mode != 'compare' else (_unavailable('cuda') or _unavailable('cpu'))
     return _dispatch(
         mode,
-        lambda: _cuda_count3close(cparticles, mattrs, battrs, wattrs=wattrs,
-                                  sattrs=sattrs, vetos=vetos,
-                                  close_pair=close_pair, tuning=cuda_tuning),
-        lambda: _cpu_count3close(cparticles, mattrs, battrs, wattrs=wattrs,
-                                 sattrs=sattrs, vetos=vetos,
-                                 close_pair=close_pair, tuning=cpu_tuning),
-        why)
+        lambda backend, tuning: _count3close(backend, cparticles, mattrs, battrs,
+                                             wattrs=wattrs, sattrs=sattrs, vetos=vetos,
+                                             close_pair=close_pair, tuning=tuning),
+        cuda_tuning, cpu_tuning)
 
 
 def count3(*particles: Particles,
@@ -1694,16 +1772,12 @@ def count3(*particles: Particles,
     cparticles = [_to_c_particles(p) for p in particles]
     mattrs = (mattrs1, mattrs2, mattrs3)
 
-    why = _unavailable(mode) if mode != 'compare' else (_unavailable('cuda') or _unavailable('cpu'))
     return _dispatch(
         mode,
-        lambda: _cuda_count3(cparticles, mattrs, battrs12, battrs13, wattrs=wattrs,
-                             sattrs=(sattrs12, sattrs13), vetos=(veto12, veto13),
-                             tuning=cuda_tuning),
-        lambda: _cpu_count3(cparticles, mattrs, battrs12, battrs13, wattrs=wattrs,
-                            sattrs=(sattrs12, sattrs13), vetos=(veto12, veto13),
-                            tuning=cpu_tuning),
-        why)
+        lambda backend, tuning: _count3(backend, cparticles, mattrs, battrs12, battrs13,
+                                        wattrs=wattrs, sattrs=(sattrs12, sattrs13),
+                                        vetos=(veto12, veto13), tuning=tuning),
+        cuda_tuning, cpu_tuning)
 
 
 # Create a lookup table for set bits per byte

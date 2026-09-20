@@ -50,7 +50,7 @@ find_package(pybind11 CONFIG REQUIRED)
 # not vectorise; it is a plain translation unit, compiled once, so nothing it
 # adds can reach the kernel's inner loop.
 pybind11_add_module(cucount_cpu src/count2.cpp src/generic.cpp src/count3.cpp src/count3close.cpp src/bind.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp)
-# ../include for pair_math.h, the scalar per-pair math shared with CUDA (the
+# ../include for cmath.h, the scalar per-pair math shared with CUDA (the
 # other headers there are CUDA-only and are not included from this target).
 target_include_directories(cucount_cpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_link_libraries(cucount_cpu PRIVATE hwy OpenMP::OpenMP_CXX)

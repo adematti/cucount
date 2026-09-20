@@ -1,6 +1,6 @@
 # CUDA backend: the cucountlib.cuda extension and, when jax provides its
 # FFI headers, the cucountlib.ffi_cuda module. Mirrors cpu/. The shared
-# code (attrs, pair_math, common types, logger) lives at the repository root.
+# code (attrs, cmath, common types, logger) lives at the repository root.
 
 # Overridable: CUDA 13 dropped compute_70, so builds against a recent
 # toolkit must narrow this, e.g. -DCMAKE_CUDA_ARCHITECTURES=80.

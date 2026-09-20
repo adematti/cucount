@@ -1,12 +1,12 @@
-// Factorized triplet counts: see cpu/include/cucount/cpu/triplet.h.
+// Factorized triplet counts: see cpu/include/count3.h.
 //
 // A port of cuda/src/count3.cu. The per-primary histograms, the projection
 // onto the local frame's real spherical harmonics and the contraction over m
 // all follow the CUDA original line for line; the shared math comes from
-// include/pair_math.h and the shared output layout from include/layout.h.
+// include/cmath.h and the shared output layout from include/layout.h.
 
-#include "cucount/cpu/triplet.h"
-#include "cucount/cpu/walk.h"
+#include "count3.h"
+#include "mesh.h"
 #include "layout.h"
 
 #include <algorithm>

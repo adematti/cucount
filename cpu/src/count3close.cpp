@@ -1,12 +1,12 @@
-// Close triplet counts: see cpu/include/cucount/cpu/triplet.h.
+// Close triplet counts: see cpu/include/count3.h.
 //
 // A port of add_weight3 and the close_pair == (1, 2) traversal in
 // cuda/src/count3close.cu. The CUDA backend's other two strategies enumerate
 // the same triplets in a different loop order, so this one implementation
 // serves every close_pair.
 
-#include "cucount/cpu/triplet.h"
-#include "cucount/cpu/walk.h"
+#include "count3close.h"
+#include "mesh.h"
 #include "layout.h"
 
 #include <algorithm>

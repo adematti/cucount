@@ -21,14 +21,12 @@
 #include <string>
 #include <vector>
 
-#include "cucount/cpu/generic.h"
-#include "cucount/cpu/triplet.h"
+#include "count2.h"
+#include "count3close.h"
 
 #define CUCOUNT_NO_CUDA
 #include "attrs.h"
 #include "layout.h"
-
-#include "cucount/cpu/types.h"
 
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/api/ffi.h"
@@ -353,25 +351,24 @@ ffi::Error count2Impl(ffi::Buffer<ffi::F64> positions1, ffi::Buffer<ffi::F64> va
         for (int ell : ells) if (ell % 2) a.ells_even = false;
     }
 
-    if (battrs2.bin[0] == BIN_LIN) a.cfg.sbin = BinKind::Linear;
+    // s-bin policy from the shared classification: data() marks BIN_LIN via
+    // is_linear, but flags BIN_LOG only above 1000 bins; re-check smaller
+    // grids here so they keep the Log fast path.
+    if (battrs2.bin[0] == BIN_LIN) a.cfg.sbin = BIN_LIN;
     else if (battrs2.bin[0] == BIN_LOG ||
              (battrs2.asize[0] > 2 && battrs2.array[0][0] > 0. &&
               is_log(battrs2.array[0], battrs2.asize[0],
                      battrs2.array[0][1] / battrs2.array[0][0])))
-        a.cfg.sbin = BinKind::Log;
-    else a.cfg.sbin = BinKind::Edges;
+        a.cfg.sbin = BIN_LOG;
+    else a.cfg.sbin = BIN_CUSTOM;
 
     a.cfg.ndim = ok2 ? 2 : 1;
     if (ok2 || okp) {
-        switch (battrs2.los[1]) {
-            case LOS_Z: a.cfg.los = LosKind::AxisZ; break;
-            case LOS_X: a.cfg.los = LosKind::AxisX; break;
-            case LOS_Y: a.cfg.los = LosKind::AxisY; break;
-            case LOS_MIDPOINT: a.cfg.los = LosKind::Midpoint; break;
-            case LOS_FIRSTPOINT: a.cfg.los = LosKind::FirstPoint; break;
-            case LOS_ENDPOINT: a.cfg.los = LosKind::EndPoint; break;
-            default: return ffi::Error::Internal("cpu backend: line of sight not implemented");
-        }
+        // LOS_NONE is the one LOS_TYPE the kernel cannot serve: an axis has to
+        // be named once mu is binned or projected on.
+        if (battrs2.los[1] == LOS_NONE)
+            return ffi::Error::Internal("cpu backend: line of sight not implemented");
+        a.cfg.los = battrs2.los[1];
     }
     a.cfg.periodic = mattrs2.periodic;
     a.nthreads = staged_nthreads;

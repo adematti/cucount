@@ -52,10 +52,6 @@ counts = cpu.count2(particles1, particles2, mattrs, battrs,
 # counts is {'weight': array} -- or the spin channels, named as CUDA names them
 ```
 
-A low-level raw-array entry point, `cpu.count2_arrays`, keeps the old
-`(pos1, w1, pos2, w2, sedges, ...)` signature for tests and benchmarks that
-want to bypass the attrs layer.
-
 Every ordered pair is visited, matching the CUDA backend: an autocorrelation
 counts each pair twice and includes self-pairs.
 
@@ -97,9 +93,11 @@ creation, which can add ~100 ms; warm it up before reading the ratio.
 
 Per-call tuning goes through `count2(..., tuning={...})`, addressed to the
 selected backend: the CPU backend accepts `nthreads` (CPU threads), `isa`
-(pin one Highway target for the call) and `scatter`. Defaults remain
+(pin one Highway target for the call), `scatter`, and `float32` (run the
+geometry in single precision, for twice the lanes per vector; the
+accumulators stay double, and count2 alone serves it). Defaults remain
 `CUCOUNT_CPU_NTHREADS` (else the affinity mask), automatic ISA selection,
-and `'scalar'`. In `compare` mode the dict nests per backend:
+`'scalar'` and double precision. In `compare` mode the dict nests per backend:
 `tuning={'cpu': {...}, 'cuda': {...}}`.
 
 This backend declines nothing the other serves. What cannot be served --
@@ -120,7 +118,7 @@ axes in any combination, non-linear `mu` edges, the angular mesh, jackknife
 splits — goes to the scalar generic path in [src/generic.cpp](src/generic.cpp),
 one pair per iteration. The choice is made in the binding and is invisible
 from Python: same call, same result, only slower. `tuning={'isa': ...}`,
-`'scatter'` and single precision are kernel knobs and have no effect on the
+`'scatter'` and `'float32'` are kernel knobs and have no effect on the
 generic path.
 
 ## Mesh
@@ -182,7 +180,7 @@ Covered: `s` and `(s, mu)` binning; linear, log and arbitrary edges; every
 LOS (`z`, `x`, `y`, midpoint, firstpoint, endpoint); periodic and
 non-periodic; `float`/`double`; per-object weights;
 spin/shear (galaxy-shear and shear-shear channels, via the scalar projection
-shared with CUDA in `include/pair_math.h` — the SIMD distance cull is
+shared with CUDA in `include/cmath.h` — the SIMD distance cull is
 unchanged and surviving lanes take the shared per-pair math); bitwise (PIP),
 negative and 1D angular weights (same scalar-tail pattern, via the shared
 `pair_bitwise_weight` and `lookup_angular_weight`; the bit patterns ride
@@ -209,9 +207,9 @@ projection contracted over m when both legs carry a multipole axis) and
 `count3close` (every triplet formed and binned, with an optional (2, 3) axis
 and the 3-dimensional angular upweight). They share the mesh and the candidate
 walk with the pair counts, through
-[include/cucount/cpu/walk.h](include/cucount/cpu/walk.h), and the local frame
+[include/mesh.h](include/mesh.h), and the local frame
 and the normalized associated Legendre functions with CUDA, through
-`include/pair_math.h`. Legs bin in `s` or `theta`, with multipoles up to
+`include/cmath.h`. Legs bin in `s` or `theta`, with multipoles up to
 `ell = 5`; `close_pair` is accepted and ignored, because all of the CUDA
 backend's search strategies enumerate the same triplets and the choice is a
 performance hint.
@@ -252,7 +250,7 @@ What the two backends hold in common lives in `include/`, so neither can drift:
 | request | `args.h` — `Count2Attrs`, `Count3Attrs` | both |
 | output layout | `layout.h` — `Count2Layout`, `Count3Layout` | both bindings |
 | multipole layout | `layout.h` — `Count2PoleLayout`, `Count3PoleLayout`, `fill_ells` | both kernels |
-| per-pair math | `pair_math.h` | both kernels |
+| per-pair math | `cmath.h` | both kernels |
 
 `Count2Attrs` and `Count3Attrs` are what an entry point is asked to count. Each
 backend adds what it needs to *run* it: this one takes `Count2Args` /

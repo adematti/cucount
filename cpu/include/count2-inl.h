@@ -9,12 +9,12 @@
 
 #include <chrono>
 
-#include "cucount/cpu/mesh.h"
-#include "cucount/cpu/types.h"
+#include "mesh.h"
+#include "count2.h"
 // Scalar per-pair math shared with the CUDA backend (plain inline templates,
 // no SIMD attributes, so a single definition per program is fine even though
 // this file is re-included per target).
-#include "pair_math.h"
+#include "cmath.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/highway.h"
 // Log() for the BIN_LOG policy; must be included per-target, like this file.
@@ -148,10 +148,10 @@ inline AxisRange axis_range(int i, int n, bool periodic, int delta) {
 // per-lane tail below is compiled OUT of the inner loop, keeping its codegen
 // identical to the pre-spin kernel -- carrying the dead branch cost the plain
 // path 2-8% in the A/B benchmark.
-template <class Float, int NDim, bool Poles, class SBin, LosKind LOS,
+template <class Float, int NDim, bool Poles, class SBin, LOS_TYPE LOS,
           bool Periodic, ScatterKind SC, bool ScalarTail>
-void Count2Impl(const Count2KernelArgs& a, const Mesh<Float>& m1,
-                const Mesh<Float>& m2, const BinSpec<Float>& sb,
+void Count2Impl(const Count2KernelArgs& a, const VectorMesh<Float>& m1,
+                const VectorMesh<Float>& m2, const BinSpec<Float>& sb,
                 const BinSpec<Float>& mb) {
     const hn::ScalableTag<Float> d;
     const hn::RebindToSigned<decltype(d)> di;
@@ -234,13 +234,11 @@ void Count2Impl(const Count2KernelArgs& a, const Mesh<Float>& m1,
     const long ncells1 = static_cast<long>(m1.ncells());
 
     // How many cells each way can hold a neighbour within smax, for the mesh
-    // the caller chose. The raw-array entry point has no MeshAttrs, so smax
-    // falls back to the last s edge there.
-    const double smax_eff = (a.smax > 0.) ? a.smax : a.sedges[a.nsbins];
+    // MeshAttrs chose -- the same object the CUDA backend is given.
     const int dcell[3] = {
-        std::max(1, static_cast<int>(std::ceil(smax_eff / bx[0] * nx))),
-        std::max(1, static_cast<int>(std::ceil(smax_eff / bx[1] * ny))),
-        std::max(1, static_cast<int>(std::ceil(smax_eff / bx[2] * nz)))};
+        std::max(1, static_cast<int>(std::ceil(a.smax / bx[0] * nx))),
+        std::max(1, static_cast<int>(std::ceil(a.smax / bx[1] * ny))),
+        std::max(1, static_cast<int>(std::ceil(a.smax / bx[2] * nz)))};
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(nthreads)
@@ -291,11 +289,11 @@ void Count2Impl(const Count2KernelArgs& a, const Mesh<Float>& m1,
                             const auto w1 = hn::Set(d, m1.w[i]);
 
 
-                            // FirstPoint LOS: particle 1's unit-sphere
+                            // LOS_FIRSTPOINT: particle 1's unit-sphere
                             // position is constant across the j vector.
                             auto sx1 = hn::Zero(d), sy1 = hn::Zero(d),
                                  sz1 = hn::Zero(d);
-                            if constexpr (LOS == LosKind::FirstPoint) {
+                            if constexpr (LOS == LOS_FIRSTPOINT) {
                                 sx1 = hn::Set(d, m1.sx[i]);
                                 sy1 = hn::Set(d, m1.sy[i]);
                                 sz1 = hn::Set(d, m1.sz[i]);
@@ -357,23 +355,19 @@ void Count2Impl(const Count2KernelArgs& a, const Mesh<Float>& m1,
                                 if constexpr (NeedMu) {
                                     hn::VFromD<decltype(d)> num;
                                     hn::VFromD<decltype(d)> den;
-                                    if constexpr (LOS == LosKind::AxisZ) {
+                                    if constexpr (LOS == LOS_Z) {
                                         num = dz;
                                         den = s;
-                                    } else if constexpr (LOS ==
-                                                         LosKind::AxisX) {
+                                    } else if constexpr (LOS == LOS_X) {
                                         num = dx;
                                         den = s;
-                                    } else if constexpr (LOS ==
-                                                         LosKind::AxisY) {
+                                    } else if constexpr (LOS == LOS_Y) {
                                         num = dy;
                                         den = s;
-                                    } else if constexpr (LOS ==
-                                                         LosKind::FirstPoint) {
+                                    } else if constexpr (LOS == LOS_FIRSTPOINT) {
                                         num = dx * sx1 + dy * sy1 + dz * sz1;
                                         den = s;
-                                    } else if constexpr (LOS ==
-                                                         LosKind::EndPoint) {
+                                    } else if constexpr (LOS == LOS_ENDPOINT) {
                                         const auto sx2 =
                                             hn::LoadN(d, &m2.sx[j], n);
                                         const auto sy2 =
@@ -383,7 +377,7 @@ void Count2Impl(const Count2KernelArgs& a, const Mesh<Float>& m1,
                                         num = dx * sx2 + dy * sy2 + dz * sz2;
                                         den = s;
                                     } else {
-                                        // Midpoint: los = p1 + p2, so
+                                        // LOS_MIDPOINT: los = p1 + p2, so
                                         // mu = (dr . los) / (|los| |dr|).
                                         const auto lx = x2 + x1;
                                         const auto ly = y2 + y1;
@@ -595,10 +589,10 @@ void Count2Impl(const Count2KernelArgs& a, const Mesh<Float>& m1,
 // Highway does the SIMD dispatch at the outermost level; here, we're just dispatching
 // on our own config parameters.
 
-template <class Float, int NDim, bool Poles, class SBin, LosKind LOS,
+template <class Float, int NDim, bool Poles, class SBin, LOS_TYPE LOS,
           bool Periodic>
-static void DispatchScatter(const Count2KernelArgs& a, const Mesh<Float>& m1,
-                            const Mesh<Float>& m2, const BinSpec<Float>& sb,
+static void DispatchScatter(const Count2KernelArgs& a, const VectorMesh<Float>& m1,
+                            const VectorMesh<Float>& m2, const BinSpec<Float>& sb,
                             const BinSpec<Float>& mb) {
     // Spin/bitwise/negative/angular accumulation is scalar per surviving lane,
     // so BinMajor's replicated histogram has nothing to offer; those requests
@@ -625,9 +619,9 @@ static void DispatchScatter(const Count2KernelArgs& a, const Mesh<Float>& m1,
     }
 }
 
-template <class Float, int NDim, bool Poles, class SBin, LosKind LOS>
-static void DispatchPeriodic(const Count2KernelArgs& a, const Mesh<Float>& m1,
-                             const Mesh<Float>& m2, const BinSpec<Float>& sb,
+template <class Float, int NDim, bool Poles, class SBin, LOS_TYPE LOS>
+static void DispatchPeriodic(const Count2KernelArgs& a, const VectorMesh<Float>& m1,
+                             const VectorMesh<Float>& m2, const BinSpec<Float>& sb,
                              const BinSpec<Float>& mb) {
     if (a.cfg.periodic) {
         DispatchScatter<Float, NDim, Poles, SBin, LOS, true>(a, m1, m2, sb, mb);
@@ -637,39 +631,39 @@ static void DispatchPeriodic(const Count2KernelArgs& a, const Mesh<Float>& m1,
 }
 
 template <class Float, int NDim, bool Poles, class SBin>
-static void DispatchLos(const Count2KernelArgs& a, const Mesh<Float>& m1,
-                        const Mesh<Float>& m2, const BinSpec<Float>& sb,
+static void DispatchLos(const Count2KernelArgs& a, const VectorMesh<Float>& m1,
+                        const VectorMesh<Float>& m2, const BinSpec<Float>& sb,
                         const BinSpec<Float>& mb) {
     // Without a mu axis and without multipoles there is no mu at all, so
-    // AxisZ stands in for every LOS.
+    // LOS_Z stands in for every LOS.
     constexpr bool need_mu = (NDim == 2) || Poles;
-    if (!need_mu || a.cfg.los == LosKind::AxisZ) {
-        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::AxisZ>(a, m1, m2, sb, mb);
-    } else if (a.cfg.los == LosKind::AxisX) {
-        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::AxisX>(a, m1, m2, sb, mb);
-    } else if (a.cfg.los == LosKind::AxisY) {
-        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::AxisY>(a, m1, m2, sb, mb);
-    } else if (a.cfg.los == LosKind::FirstPoint) {
-        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::FirstPoint>(a, m1, m2, sb, mb);
-    } else if (a.cfg.los == LosKind::EndPoint) {
-        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::EndPoint>(a, m1, m2, sb, mb);
+    if (!need_mu || a.cfg.los == LOS_Z) {
+        DispatchPeriodic<Float, NDim, Poles, SBin, LOS_Z>(a, m1, m2, sb, mb);
+    } else if (a.cfg.los == LOS_X) {
+        DispatchPeriodic<Float, NDim, Poles, SBin, LOS_X>(a, m1, m2, sb, mb);
+    } else if (a.cfg.los == LOS_Y) {
+        DispatchPeriodic<Float, NDim, Poles, SBin, LOS_Y>(a, m1, m2, sb, mb);
+    } else if (a.cfg.los == LOS_FIRSTPOINT) {
+        DispatchPeriodic<Float, NDim, Poles, SBin, LOS_FIRSTPOINT>(a, m1, m2, sb, mb);
+    } else if (a.cfg.los == LOS_ENDPOINT) {
+        DispatchPeriodic<Float, NDim, Poles, SBin, LOS_ENDPOINT>(a, m1, m2, sb, mb);
     } else {
-        DispatchPeriodic<Float, NDim, Poles, SBin, LosKind::Midpoint>(a, m1, m2, sb, mb);
+        DispatchPeriodic<Float, NDim, Poles, SBin, LOS_MIDPOINT>(a, m1, m2, sb, mb);
     }
 }
 
 template <class Float, int NDim, bool Poles>
-static void DispatchSBin(const Count2KernelArgs& a, const Mesh<Float>& m1,
-                         const Mesh<Float>& m2, const BinSpec<Float>& sb,
+static void DispatchSBin(const Count2KernelArgs& a, const VectorMesh<Float>& m1,
+                         const VectorMesh<Float>& m2, const BinSpec<Float>& sb,
                          const BinSpec<Float>& mb) {
     switch (a.cfg.sbin) {
-        case BinKind::Linear:
+        case BIN_LIN:
             DispatchLos<Float, NDim, Poles, BinLinear>(a, m1, m2, sb, mb);
             break;
-        case BinKind::Log:
+        case BIN_LOG:
             DispatchLos<Float, NDim, Poles, BinLog>(a, m1, m2, sb, mb);
             break;
-        case BinKind::Edges:
+        case BIN_CUSTOM:
             DispatchLos<Float, NDim, Poles, BinEdges>(a, m1, m2, sb, mb);
             break;
     }
@@ -679,8 +673,8 @@ static void DispatchSBin(const Count2KernelArgs& a, const Mesh<Float>& m1,
 // Multipoles ride the s axis only ((s, pole)); the binding declines any other
 // combination, so Poles=true is never instantiated for NDim == 2.
 template <class Float, int NDim>
-static void DispatchPoles(const Count2KernelArgs& a, const Mesh<Float>& m1,
-                          const Mesh<Float>& m2, const BinSpec<Float>& sb,
+static void DispatchPoles(const Count2KernelArgs& a, const VectorMesh<Float>& m1,
+                          const VectorMesh<Float>& m2, const BinSpec<Float>& sb,
                           const BinSpec<Float>& mb) {
     if constexpr (NDim == 1) {
         if (a.nells) {
@@ -693,13 +687,11 @@ static void DispatchPoles(const Count2KernelArgs& a, const Mesh<Float>& m1,
 
 template <class Float>
 static void DispatchNDim(const Count2KernelArgs& a) {
-    const double smax = a.sedges[a.nsbins];
-
     BinSpec<Float> sb, mb;
     sb.set(a.sedges, a.nsbins, /*squared=*/true);
-    if (a.cfg.sbin == BinKind::Linear) {
+    if (a.cfg.sbin == BIN_LIN) {
         sb.inv_step = static_cast<Float>(1.0 / (a.sedges[1] - a.sedges[0]));
-    } else if (a.cfg.sbin == BinKind::Log) {
+    } else if (a.cfg.sbin == BIN_LOG) {
         // Half, because the policy feeds log(s^2) rather than log(s).
         sb.inv_step =
             static_cast<Float>(0.5 / std::log(a.sedges[1] / a.sedges[0]));
@@ -712,22 +704,15 @@ static void DispatchNDim(const Count2KernelArgs& a) {
     }
 
     // One dims for both meshes: the kernel walks m1's cell coordinates on
-    // m2's grid. The mesh is the one MeshAttrs chose, the same object the CUDA
-    // backend is given; mesh_dims is only the fallback for the raw-array entry
-    // point, which has no MeshAttrs to take one from.
+    // m2's grid. Always the mesh MeshAttrs chose, the same object the CUDA
+    // backend is given, so meshsize= and refine= mean the same on both.
     int dims[3];
-    if (a.meshsize[0]) {
-        for (int axis = 0; axis < 3; ++axis)
-            dims[axis] = static_cast<int>(a.meshsize[axis]);
-    }
-    else {
-        mesh_dims(a.boxsize, smax, (a.n1 + a.n2) / 2, dims);
-    }
-    // Every mesh gives the same counts, so which one ran is invisible in the
-    // result and only this says so.
-    log_message(LOG_LEVEL_DEBUG, "cpu kernel: mesh %d x %d x %d (%s).\n",
-                dims[0], dims[1], dims[2],
-                a.meshsize[0] ? "from MeshAttrs" : "no MeshAttrs, own heuristic");
+    for (int axis = 0; axis < 3; ++axis)
+        dims[axis] = static_cast<int>(a.meshsize[axis]);
+    // Every resolution gives the same counts, so which one ran is invisible
+    // in the result and only this says so.
+    log_message(LOG_LEVEL_DEBUG, "cpu kernel: mesh %d x %d x %d.\n",
+                dims[0], dims[1], dims[2]);
 
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
@@ -735,14 +720,14 @@ static void DispatchNDim(const Count2KernelArgs& a) {
     const bool with_spos =
         (a.spin1 != nullptr) || (a.spin2 != nullptr) ||
         (a.angular_weight != nullptr) || a.sel_theta ||
-        (needs_mu && (a.cfg.los == LosKind::FirstPoint ||
-                      a.cfg.los == LosKind::EndPoint));
-    const Mesh<Float> m1 = build_mesh<Float>(a.pos1, a.w1, a.n1, a.boxsize,
-                                             a.origin, dims, a.spin1, with_spos,
-                                             a.bw1, a.nbitwise, a.nw1);
-    const Mesh<Float> m2 = build_mesh<Float>(a.pos2, a.w2, a.n2, a.boxsize,
-                                             a.origin, dims, a.spin2, with_spos,
-                                             a.bw2, a.nbitwise, a.nw2);
+        (needs_mu && (a.cfg.los == LOS_FIRSTPOINT ||
+                      a.cfg.los == LOS_ENDPOINT));
+    const VectorMesh<Float> m1 = build_mesh<Float>(
+        a.pos1, a.w1, a.n1, a.boxsize, a.origin, dims, a.spin1, with_spos,
+        a.bw1, a.nbitwise, a.nw1);
+    const VectorMesh<Float> m2 = build_mesh<Float>(
+        a.pos2, a.w2, a.n2, a.boxsize, a.origin, dims, a.spin2, with_spos,
+        a.bw2, a.nbitwise, a.nw2);
     const auto t1 = Clock::now();
 
     if (a.cfg.ndim == 1) {

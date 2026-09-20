@@ -377,11 +377,10 @@ def test_scatter_strategies_agree(kind, ndim):
     """Both histogram strategies must give identical answers."""
     pos1, w1 = catalog(1)
     pos2, w2 = catalog(2)
-    sedges = EDGES[kind]
-    kw = dict(muedges=MU if ndim == 2 else None, boxsize=(BOX,) * 3,
-              bin=kind, periodic=True, nthreads=4)
-    a = cpulib.count2_arrays(pos1, w1, pos2, w2, sedges, scatter='scalar', **kw)
-    b = cpulib.count2_arrays(pos1, w1, pos2, w2, sedges, scatter='binmajor', **kw)
+    particles, battrs, mattrs, _, _ = setup(kind, ndim, 'z', True)
+    kw = dict(battrs=battrs, mattrs=mattrs, backend='cpu')
+    a = count2(*particles, tuning={'scatter': 'scalar', 'nthreads': 4}, **kw)['weight']
+    b = count2(*particles, tuning={'scatter': 'binmajor', 'nthreads': 4}, **kw)['weight']
     # Non-triviality first: two dead kernels agree on all-zeros, which is how a
     # stale build once passed this test.
     assert a.sum() > 0
@@ -390,13 +389,10 @@ def test_scatter_strategies_agree(kind, ndim):
 
 @pytest.mark.parametrize('ndim', [1, 2])
 def test_float32_close_to_double(ndim):
-    pos1, w1 = catalog(1)
-    pos2, w2 = catalog(2)
-    sedges = EDGES['lin']
-    kw = dict(muedges=MU if ndim == 2 else None, boxsize=(BOX,) * 3,
-              periodic=True, nthreads=4)
-    f64 = cpulib.count2_arrays(pos1, w1, pos2, w2, sedges, float32=False, **kw)
-    f32 = cpulib.count2_arrays(pos1, w1, pos2, w2, sedges, float32=True, **kw)
+    particles, battrs, mattrs, _, _ = setup('lin', ndim, 'z', True)
+    kw = dict(battrs=battrs, mattrs=mattrs, backend='cpu')
+    f64 = count2(*particles, tuning={'float32': False, 'nthreads': 4}, **kw)['weight']
+    f32 = count2(*particles, tuning={'float32': True, 'nthreads': 4}, **kw)['weight']
     assert f64.sum() > 0  # see test_scatter_strategies_agree
     # Single precision moves pairs across bin edges, so compare loosely and
     # scale the floor to the typical bin population.
@@ -453,7 +449,7 @@ def test_nthreads_keyword_deprecated():
 
 # ---------------------------------------------------------------------------
 # Spin (galaxy-shear / shear-shear): the SIMD cull is unchanged and surviving
-# lanes take the scalar projection shared with CUDA (include/pair_math.h).
+# lanes take the scalar projection shared with CUDA (include/cmath.h).
 # ---------------------------------------------------------------------------
 
 def _unit_catalog(seed, n=500):
@@ -466,7 +462,7 @@ def _unit_catalog(seed, n=500):
 
 
 def _spin_projection(r1, r2, e0, e1, spin):
-    """Vectorized copy of compute_spin_projection_cartesian in pair_math.h.
+    """Vectorized copy of compute_spin_projection_cartesian in cmath.h.
 
     r1 (n1, 3), r2 (n2, 3): unit vectors. e0, e1: components pre-shaped to
     broadcast against (n1, n2) from whichever side carries them.
@@ -574,7 +570,7 @@ def test_spin_matches_cuda(mode, ndim):
 # ---------------------------------------------------------------------------
 # Bitwise (PIP) and negative weights: the pair weight stops factorizing as
 # w1 * w2, so surviving lanes take the scalar tail with the shared
-# pair_bitwise_weight (include/pair_math.h).
+# pair_bitwise_weight (include/cmath.h).
 # ---------------------------------------------------------------------------
 
 def _pip_reference(bits1, bits2, bw):
@@ -642,7 +638,7 @@ def test_bitwise_matches_cuda(mode, ndim):
 
 # ---------------------------------------------------------------------------
 # Angular (PIP) upweights: 1D tables, applied per surviving lane via the
-# lookup_angular_weight shared with CUDA (include/pair_math.h).
+# lookup_angular_weight shared with CUDA (include/cmath.h).
 # ---------------------------------------------------------------------------
 
 def _angular_reference(ct, angular):
@@ -731,7 +727,7 @@ def test_all_weight_schemes_combined_match_cuda():
 # ---------------------------------------------------------------------------
 # Multipole (pole) binning: mu is computed but not binned, and each pair adds
 # (2 ell + 1) P_ell(mu) into the nells bins that follow its s bin, using the
-# set_legendre shared with CUDA (include/pair_math.h).
+# set_legendre shared with CUDA (include/cmath.h).
 # ---------------------------------------------------------------------------
 
 def _pole_reference(pos1, w1, pos2, w2, sedges, ells, los='firstpoint'):
@@ -1276,6 +1272,21 @@ def test_meshsize_does_not_change_the_result(meshsize, periodic):
     want = brute(pos1, w1, pos2, w2, sedges, periodic=periodic)
     assert np.any(want), 'the reference must not be empty'
     assert np.allclose(got, want, rtol=1e-9, atol=0)
+
+
+@pytest.mark.parametrize('meshsize', [0, -1, (4, 0, 4)])
+def test_meshsize_below_one_is_declined(meshsize):
+    """A mesh of no cells is refused, not repaired.
+
+    The derived meshsizes are clamped, so only a caller-supplied one can get
+    here. It used to reach the CPU kernel, which quietly substituted a
+    resolution heuristic of its own; CUDA, with no such fallback, would divide
+    by the cell size instead. Refusing in MeshAttrs is what makes the two
+    backends meet it the same way.
+    """
+    particles = (Particles(*catalog(50)), Particles(*catalog(51)))
+    with pytest.raises(ValueError, match='meshsize'):
+        MeshAttrs(*particles, battrs=BinAttrs(s=EDGES['lin']), meshsize=meshsize)
 
 
 @pytest.mark.parametrize('refine', [0.5, 1., 4.])

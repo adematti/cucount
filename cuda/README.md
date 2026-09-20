@@ -8,7 +8,7 @@ CUDA sources, mirroring [cpu/](../cpu/).
 
 Backend-neutral code lives at the repository root and is compiled into these
 modules too: `include/attrs.h` (the attribute classes and their shared
-pybind registration), `include/pair_math.h` (scalar per-pair math shared
+pybind registration), `include/cmath.h` (scalar per-pair math shared
 with the CPU backend — Legendre, spherical Bessel, spin projection) and
 `include/common.h` (type definitions).
 

@@ -1,4 +1,112 @@
-// Mesh construction and candidate traversal for the scalar CPU paths.
+// Cell mesh construction and candidate traversal for the CPU backend.
+//
+// Two meshes, because the two paths want opposite layouts: VectorMesh is SoA
+// for the Highway kernel, ScalarMesh interleaved like the CUDA Mesh for the
+// scalar paths. Both bucket the same particles into the same cells, and
+// for_each_candidate sweeps the window MeshAttrs describes.
+//
+// Plain C++, no Highway.
+#pragma once
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
+#include "count2.h"
+
+namespace cucount {
+namespace cpu {
+
+inline int wrap_index(int i, int n) {
+    int r = i % n;
+    return (r < 0) ? r + n : r;
+}
+
+// spin: this catalogue's interleaved (e1, e2) components, or null.
+// with_spos: fill unit-sphere positions, needed on BOTH meshes whenever either
+// side of the pair count carries spin (the projection frame uses both ends).
+// bw/nbit: this catalogue's interleaved bitwise (PIP) columns, or null;
+// nw: its negative-weight column, or null.
+template <class Float>
+VectorMesh<Float> build_mesh(const double* pos, const double* w, size_t n,
+                             const double boxsize[3], const double origin[3],
+                             const int dims[3], const double* spin = nullptr,
+                             bool with_spos = false, const double* bw = nullptr,
+                             size_t nbit = 0, const double* nw = nullptr) {
+    VectorMesh<Float> m;
+    for (int a = 0; a < 3; ++a) {
+        m.dims[a] = dims[a];
+        m.cell[a] = static_cast<Float>(boxsize[a] / m.dims[a]);
+        m.origin[a] = static_cast<Float>(origin[a]);
+    }
+
+    const size_t nc = m.ncells();
+    std::vector<size_t> cell_of(n);
+    m.start.assign(nc + 1, 0);
+
+    for (size_t i = 0; i < n; ++i) {
+        size_t idx = 0;
+        for (int a = 0; a < 3; ++a) {
+            const double rel = (pos[3 * i + a] - origin[a]) / boxsize[a];
+            int ia = static_cast<int>(std::floor(rel * m.dims[a]));
+            idx = idx * m.dims[a] + wrap_index(ia, m.dims[a]);
+        }
+        cell_of[i] = idx;
+        ++m.start[idx + 1];
+    }
+
+    for (size_t c = 0; c < nc; ++c) m.start[c + 1] += m.start[c];
+
+    m.x.resize(n);
+    m.y.resize(n);
+    m.z.resize(n);
+    m.w.resize(n);
+    if (with_spos) {
+        m.sx.resize(n);
+        m.sy.resize(n);
+        m.sz.resize(n);
+    }
+    if (spin) {
+        m.e1.resize(n);
+        m.e2.resize(n);
+    }
+    if (bw && nbit) m.bw.resize(n * nbit);
+    if (nw) m.nw.resize(n);
+
+    std::vector<size_t> fill(m.start.begin(), m.start.end() - 1);
+    for (size_t i = 0; i < n; ++i) {
+        const size_t o = fill[cell_of[i]]++;
+        m.x[o] = static_cast<Float>(pos[3 * i + 0]);
+        m.y[o] = static_cast<Float>(pos[3 * i + 1]);
+        m.z[o] = static_cast<Float>(pos[3 * i + 2]);
+        m.w[o] = static_cast<Float>(w ? w[i] : 1.0);
+        if (with_spos) {
+            // Normalized in double before narrowing, like the CUDA mesh.
+            const double px = pos[3 * i + 0], py = pos[3 * i + 1],
+                         pz = pos[3 * i + 2];
+            const double r = std::sqrt(px * px + py * py + pz * pz);
+            m.sx[o] = static_cast<Float>(px / r);
+            m.sy[o] = static_cast<Float>(py / r);
+            m.sz[o] = static_cast<Float>(pz / r);
+        }
+        if (spin) {
+            m.e1[o] = static_cast<Float>(spin[2 * i + 0]);
+            m.e2[o] = static_cast<Float>(spin[2 * i + 1]);
+        }
+        if (bw && nbit) {
+            // Bit patterns: copied verbatim, never narrowed.
+            for (size_t ib = 0; ib < nbit; ++ib)
+                m.bw[o * nbit + ib] = bw[i * nbit + ib];
+        }
+        if (nw) m.nw[o] = static_cast<Float>(nw[i]);
+    }
+    return m;
+}
+
+
+// ---------------------------------------------------------------------------
+// The scalar paths' mesh
+// ---------------------------------------------------------------------------
 //
 // A port of cuda/src/mesh.cu and the for_each_candidate macros in
 // cuda/include/count2.h, kept line-for-line close: same cell index, same
@@ -6,18 +114,9 @@
 // individual weight never enters the mesh. The pair and triplet counts then
 // form exactly the candidate sets the CUDA kernels do.
 //
-// Header-only and scalar; the Highway kernel has its own, SoA mesh in
-// cucount/cpu/mesh.h and does not use any of this.
-#pragma once
-
-#include "pair_math.h"
-
-#include <algorithm>
-#include <cmath>
-#include <vector>
-
-namespace cucount {
-namespace cpu {
+// Interleaved like the CUDA Mesh, so the shared per-pair math reads it
+// unchanged -- unlike the SoA VectorMesh above, which the Highway kernel
+// needs in order to load whole vectors of one coordinate at a time.
 
 constexpr double kPi = 3.14159265358979323846;
 

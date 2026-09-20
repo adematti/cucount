@@ -1,29 +1,57 @@
-// Runtime configuration and data layout for the CPU count2.
-// Nothing here depends on Highway, so this header is safe to include once
-// per program rather than once per SIMD target.
+// The CPU pair counts: both entry points, and the data layout they share.
+//
+// Count2Kernel is the vectorised Highway path, over the shapes worth
+// vectorising -- s, (s, mu) and (s, pole) binning on a cartesian mesh. Count2
+// is the scalar path serving everything else the CUDA backend accepts (theta
+// / rp / pi / k axes in any combination, the angular mesh, jackknife splits),
+// one pair at a time over the shared attrs structs.
+//
+// The two are deliberately separate translation units. Folding the generic
+// cases into the kernel would put runtime branches in its inner loop, which
+// the A/B benchmark has twice shown costs the plain path 2-8% even when the
+// branch is never taken.
+//
+// Nothing here depends on Highway, so this header is safe to include once per
+// program rather than once per SIMD target; the kernel body that is compiled
+// per target lives in count2-inl.h.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
+// BIN_TYPE, LOS_TYPE and the rest of the shared vocabulary. Both backends
+// classify a request with the same enumerators, so this header carries no
+// mirror of its own. The CUDA include is skipped: nothing here needs it.
+//
+// common.h defines its convenience macros (FLOAT, INT, MIN, MAX, CLIP)
+// outside its include guard; cmath.h undefines them again, so a SIMD
+// translation unit includes this header before that one and the macros never
+// reach the per-target code.
+#ifndef CUCOUNT_NO_CUDA
+#define CUCOUNT_NO_CUDA
+#endif
+#include "common.h"
+// The scalar per-pair math, and the shared request bundle: what to count,
+// identical on both backends.
+#include "cmath.h"
+#include "args.h"
+
 namespace cucount {
 namespace cpu {
 
-// Mirrors BIN_LIN / BIN_LOG / BIN_CUSTOM in include/common.h.
-enum class BinKind { Linear, Log, Edges };
-
-// Full parity with the CUDA LOS_TYPE choices (minus LOS_NONE).
-// FirstPoint/EndPoint project on the unit-sphere position of particle 1 / 2,
-// so those two need spositions carried through the mesh.
-enum class LosKind { AxisZ, AxisX, AxisY, Midpoint, FirstPoint, EndPoint };
-
+// How the histogram is written back. No CUDA counterpart: it is a CPU tuning
+// knob, not part of what a request asks for. See the scatter note in
+// kernel-inl.h for what the two strategies cost.
 enum class ScatterKind { Scalar, BinMajor };
 
 struct Config {
     int ndim = 1;  // 1 -> bin in s; 2 -> bin in (s, mu)
-    BinKind sbin = BinKind::Linear;
-    LosKind los = LosKind::AxisZ;  // ignored when ndim == 1
+    // The vectorised kernel serves BIN_LIN, BIN_LOG and BIN_CUSTOM (arbitrary
+    // edges); the line of sight is ignored when ndim == 1, and LOS_FIRSTPOINT
+    // / LOS_ENDPOINT need spositions carried through the mesh.
+    BIN_TYPE sbin = BIN_LIN;
+    LOS_TYPE los = LOS_Z;
     bool periodic = false;
     bool float32 = false;
     ScatterKind scatter = ScatterKind::Scalar;
@@ -31,7 +59,7 @@ struct Config {
 
 // Bin edges held in the working precision.
 //
-// Only the Linear policy needs s itself; Log and Edges are evaluated against
+// Only BIN_LIN needs s itself; BIN_LOG and BIN_CUSTOM are evaluated against
 // s^2 so the kernel can skip the square root entirely when ndim == 1. sq holds
 // the squared edges for those two, and is left empty for the mu axis.
 template <class Float>
@@ -60,9 +88,11 @@ struct BinSpec {
 
 // Particles bucketed into cells and stored SoA, so the candidate loop can
 // load whole vectors of x (then y, then z) without a gather. This is the one
-// deliberate layout divergence from the CUDA mesh, which interleaves xyz.
+// deliberate layout divergence from the CUDA Mesh, which interleaves xyz;
+// the scalar paths keep that interleaved layout, in cpu/walk.h's ScalarMesh,
+// so the shared per-pair math reads either backend's mesh unchanged.
 template <class Float>
-struct Mesh {
+struct VectorMesh {
     std::vector<Float> x, y, z, w;
     // Filled only when the pair count involves spin: unit-sphere positions
     // (both meshes; the projection frame needs both endpoints) and this
@@ -157,9 +187,11 @@ struct Count2KernelArgs {
 
     // The mesh, from MeshAttrs, exactly as the CUDA backend receives it: the
     // kernel sweeps ceil(smax / boxsize * meshsize) cells each way, so any
-    // resolution is correct and the caller's choice is honoured. Left at zero
-    // by the raw-array entry point, which has no MeshAttrs; the kernel then
-    // falls back to mesh_dims and to the last s edge for smax.
+    // resolution is correct and the caller's choice is honoured. Both are
+    // required -- every entry point has a MeshAttrs to take them from, and
+    // MeshAttrs rejects a meshsize below 1, so the kernel has no heuristic of
+    // its own to fall back to and no way for the two backends to disagree on
+    // which mesh ran.
     size_t meshsize[3] = {0, 0, 0};
     double smax = 0.;
 
@@ -177,6 +209,27 @@ struct Count2KernelArgs {
 };
 
 void Count2Kernel(const Count2KernelArgs& args);
+
+
+// What the scalar entry point needs: the shared request bundle, plus what
+// this backend runs it with. Plain descriptors holding borrowed pointers into
+// buffers the caller keeps alive for the duration of the call.
+struct Count2Args {
+    Particles p1;
+    Particles p2;
+    Count2Attrs attrs;
+
+    int nthreads = 1;
+
+    // nweights * spattrs.size * battrs.size accumulators, channel-major, the
+    // layout get_count2_layout describes. Zeroed by the caller.
+    double* out = nullptr;
+
+    // Optional [mesh_seconds, count_seconds], to separate setup from the counting.
+    double* timings = nullptr;
+};
+
+void Count2(const Count2Args& args);
 
 // Force Highway to a specific ISA, for the cross-target determinism check and
 // the SIMD-width scaling measurement. Empty string restores the default.

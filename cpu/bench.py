@@ -44,21 +44,26 @@ def configs(n, n1t, nthreads):
 
 def run(args):
     from cucountlib import cpu
+    # The attrs binding rather than the public count2: only this level returns
+    # the split timings, and the metric here is kernel-only count_seconds.
+    from cucount.numpy import BinAttrs, MeshAttrs, Particles, _to_c_particles
 
     rows = []
     for name, cfg in configs(args.n, args.n1t, args.nthreads):
         n = cfg.pop('n')
-        pos1, w1 = catalog(1, n)
-        pos2, w2 = catalog(2, n)
+        particles = [Particles(*catalog(seed, n)) for seed in (1, 2)]
+        battrs = (BinAttrs(s=SEDGES, mu=(MUEDGES, cfg['los'])) if cfg['ndim'] == 2
+                  else BinAttrs(s=SEDGES))
+        mattrs = MeshAttrs(*particles, boxsize=BOX, battrs=battrs,
+                           periodic=True, backend='cpu')
+        cparticles = [_to_c_particles(p) for p in particles]
         best = np.inf
         for _ in range(args.repeats):
-            _, (_, pair_s) = cpu.count2_arrays(
-                pos1, w1, pos2, w2, SEDGES,
-                muedges=MUEDGES if cfg['ndim'] == 2 else None,
-                boxsize=(BOX,) * 3, bin='lin', los=cfg['los'],
-                periodic=True, scatter=cfg['scatter'],
-                nthreads=cfg['nthreads'], return_timings=True)
-            best = min(best, pair_s)
+            _, (_, count_s) = cpu.count2(
+                *cparticles, mattrs._to_c(), battrs,
+                scatter=cfg['scatter'], nthreads=cfg['nthreads'],
+                return_timings=True)
+            best = min(best, count_s)
         rows.append(dict(name=name, n=n, seconds=best))
         print(f'{name:26s} {best * 1e3:9.1f} ms', flush=True)
     return dict(machine=platform.node(), isa=cpu.current_target(),

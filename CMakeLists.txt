@@ -10,7 +10,7 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 set(CMAKE_CXX_STANDARD 17)  # Use C++17
 
 # Layout: backend-neutral code lives here at the root -- include/ (attrs.h,
-# pair_math.h, common.h) and src/ (attrs.cpp, logger.cpp) -- while each
+# cmath.h, common.h) and src/ (attrs.cpp, logger.cpp) -- while each
 # backend owns its own subdirectory, cuda/ and cpu/, with the same shape.
 
 # Backend-neutral attrs extension: always built, no nvcc. This is what lets

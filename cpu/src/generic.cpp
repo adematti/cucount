@@ -1,15 +1,15 @@
-// Generic scalar count2: see cpu/include/cucount/cpu/generic.h for why this
+// Generic scalar count2: see cpu/include/count2.h for why this
 // lives beside the Highway kernel rather than inside it.
 //
 // Every routine here is a port of its CUDA counterpart in cuda/src/count2.cu
 // and cuda/src/mesh.cu, kept line-for-line close so the two backends bucket
 // particles, walk candidates and weight pairs identically. The per-pair math
-// itself is not duplicated: it comes from the shared include/pair_math.h.
+// itself is not duplicated: it comes from the shared include/cmath.h.
 
-#include "cucount/cpu/generic.h"
+#include "count2.h"
 // The scalar mesh, candidate walk and per-pair geometry, shared with the
 // triplet counts.
-#include "cucount/cpu/walk.h"
+#include "mesh.h"
 // The shared output layout: channel names and ordering come from the same
 // place as the CUDA binding's, so the two cannot disagree.
 #include "layout.h"

@@ -9,12 +9,12 @@
 // line-of-sight frame, and the outer product contracts over m.
 //
 // A port of cuda/src/count3.cu, over the same attrs structs and the same
-// mesh; the per-pair math comes from the shared include/pair_math.h.
+// mesh; the per-pair math comes from the shared include/cmath.h.
 #pragma once
 
-// Before attrs.h in any translation unit that needs both: pair_math.h
+// Before attrs.h in any translation unit that needs both: cmath.h
 // undefines common.h's convenience macros on its way out.
-#include "pair_math.h"
+#include "cmath.h"
 // The shared request bundle: what to count, identical on both backends.
 #include "args.h"
 
@@ -42,19 +42,6 @@ struct Count3Args {
 
 
 void Count3(const Count3Args& args);
-
-
-// Close triplet counts: every (1, 2, 3) triplet is formed and binned, with an
-// optional (2, 3) axis, so unlike Count3 there is no factorization. This is
-// where the 3-dimensional angular upweight applies, indexed by the three
-// cos(theta) of the triangle.
-//
-// The CUDA backend picks among several search strategies with `close_pair`;
-// all of them enumerate the same triplets, and the choice is a performance
-// hint. This backend has one strategy -- walk catalogue 2 and then catalogue 3
-// from each primary -- so `close_pair` is accepted and ignored. A request that
-// only bounds the (2, 3) separation will therefore be slow here, not wrong.
-void Count3Close(const Count3Args& args);
 
 }  // namespace cpu
 }  // namespace cucount

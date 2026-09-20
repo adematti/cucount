@@ -344,7 +344,7 @@ __device__ inline void for_each_candidate(                                      
 
 
 // DEFINE_ANGULAR_WEIGHT retired: get_interp_sep_index and
-// lookup_angular_weight now live in pair_math.h, shared with the CPU
+// lookup_angular_weight now live in cmath.h, shared with the CPU
 // backend (as do search_bin_index / get_sep_bin_index).
 
 
