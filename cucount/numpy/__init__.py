@@ -25,9 +25,12 @@ def _log_level_name():
 BACKENDS = ('cuda', 'cpu', 'compare')
 """Backend selection, via a backend= keyword or the CUCOUNT_BACKEND variable.
 
-cuda     (default) CUDA
+cuda     CUDA
 cpu      the portable CPU backend, raising if it cannot serve the request
 compare  run both and raise if they disagree
+
+With neither given: 'cuda' when this build has it and the process sees a GPU,
+else 'cpu'.
 """
 
 # The two backends accumulate in different orders (per-thread histograms on the
@@ -252,7 +255,8 @@ def _count3close(backend, cparticles, mattrs, battrs, wattrs=None, sattrs=None,
 
 
 def _resolve_backend(backend=None):
-    """Return the backend to run: the argument, else $CUCOUNT_BACKEND, else cuda.
+    """Return the backend to run: the argument, else $CUCOUNT_BACKEND, else 'cuda' when this
+    build has the CUDA backend and the process sees a GPU, else 'cpu'.
 
     Mirrors cucount.jax's _resolve_ffi_backend, except that this one returns a
     name rather than an extension handle, because 'compare' needs both. Naming
@@ -260,7 +264,10 @@ def _resolve_backend(backend=None):
     resolves a name only to pick its cell size, and a mesh outlives the choice
     of kernel, so it must keep working on a build without that backend.
     """
-    mode = (backend or os.environ.get('CUCOUNT_BACKEND') or 'cuda').lower()
+    mode = backend or os.environ.get('CUCOUNT_BACKEND')
+    if not mode:
+        mode = 'cuda' if cudalib is not None and (cpulib is None or cudalib.device_count()) else 'cpu'
+    mode = mode.lower()
     if mode not in BACKENDS:
         raise ValueError(f'backend must be one of {BACKENDS}, got {mode!r}')
     return mode
@@ -972,7 +979,7 @@ class MeshAttrs(object):
             < 1 to decrease the resolution (only impact running time).
         backend : str, optional
             Backend the mesh is built for, 'cuda' or 'cpu' (default: the CUCOUNT_BACKEND
-            variable, else 'cuda'). This sets the default resolution only, which ``refine``
+            variable, else 'cuda' if a GPU is visible, else 'cpu'). This sets the default resolution only, which ``refine``
             then scales and an explicit ``meshsize`` overrides; it is not stored on the
             instance. A mesh built for one backend stays correct on the other, only slower.
         battrs : BinAttrs, optional
@@ -1377,7 +1384,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs=None, sa
         Use ``tuning={'nthreads': ...}`` instead.
     backend : str, optional
         Override the CUCOUNT_BACKEND environment variable for this call:
-        'cuda' (default), 'cpu' or 'compare'. See BACKENDS.
+        'cuda', 'cpu' or 'compare' (default: 'cuda' if a GPU is visible, else 'cpu'). See BACKENDS.
     tuning : dict, optional
         Tuning options for the selected backend, passed through opaquely;
         unknown keys are rejected by name. CUDA accepts ``nthreads`` (number of

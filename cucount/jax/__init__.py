@@ -38,8 +38,27 @@ BACKENDS = ('cuda', 'cpu')
 
 The numpy frontend also accepts 'compare'; here there is nothing to compare
 against inside a traced computation, so a run picks one backend and stays on
-it. No backend is ever chosen implicitly.
+it. With neither given, see _resolve_backend().
 """
+
+
+def _resolve_backend(backend=None):
+    """Return the backend to run: the argument, else $CUCOUNT_BACKEND, else the one matching jax's platform.
+
+    That is the platform jax places arrays on (the default device if one is
+    set, else jax's default backend): each FFI target is registered for one
+    platform only, so any other choice would fail as a missing handler.
+    """
+    backend = backend or os.environ.get('CUCOUNT_BACKEND')
+    if backend:
+        return backend.lower()
+    device = jax.config.jax_default_device
+    platform = getattr(device, 'platform', device) or jax.default_backend()
+    backends = {'cpu': 'cpu', 'gpu': 'cuda', 'cuda': 'cuda'}
+    if platform not in backends:
+        raise ValueError(f'no cucount backend for jax platform {platform!r}; pass backend=')
+    return backends[platform]
+
 
 # One FFI target per (entry point, backend), named alike: count2_cuda and
 # count2_cpu, never a bare count2. A computation lowered before this carried
@@ -63,7 +82,7 @@ del _name, _mode, _module, _platform
 
 def _resolve_ffi_backend(backend=None):
     """Return (mode, ffi module, target-name suffix) for the selected backend."""
-    mode = (backend or os.environ.get('CUCOUNT_BACKEND') or 'cuda').lower()
+    mode = _resolve_backend(backend)
     if mode == 'compare':
         raise ValueError("backend='compare' is a numpy-frontend mode; the jax "
                          "frontend runs one backend per computation")
@@ -77,15 +96,30 @@ def _resolve_ffi_backend(backend=None):
     return mode, module, _FFI_SUFFIX[mode]
 
 
-def set_cpu_nthreads(nthreads: int):
+_cpu_nthreads = None
+
+
+def set_cpu_nthreads(nthreads: int = None):
     """CPU threads each FFI call uses.
 
     This is per device, so under shard_map over N jax CPU devices there are N
     such calls in flight and the machine sees N * nthreads threads.
+
+    ``None`` restores the default, which is what :func:`cucount.numpy.cpu_nthreads`
+    gives (``CUCOUNT_CPU_NTHREADS``, else the CPUs this process may run on)
+    shared evenly among the process's local jax CPU devices.
     """
+    global _cpu_nthreads
     if ffi_cpulib is None:
         raise NotImplementedError('the cpu JAX FFI module is not built')
-    ffi_cpulib.set_nthreads(int(nthreads))
+    _cpu_nthreads = None if nthreads is None else int(nthreads)
+
+
+def get_cpu_nthreads():
+    """CPU threads each FFI call will use: the value set by :func:`set_cpu_nthreads`, else the default."""
+    if _cpu_nthreads is not None:
+        return _cpu_nthreads
+    return max(numpy.cpu_nthreads() // len(jax.local_devices(backend='cpu')), 1)
 
 
 def create_sharding_mesh(device_mesh_shape=None):
@@ -175,6 +209,10 @@ class MeshAttrs(numpy.MeshAttrs):
 
     _np = jnp
 
+    def __init__(self, *positions, backend=None, **kwargs):
+        # Size the mesh for the kernel this frontend will run, which follows jax's platform
+        super().__init__(*positions, backend=_resolve_backend(backend), **kwargs)
+
 
 @tree_util.register_pytree_node_class
 class IndexValue(numpy.IndexValue):
@@ -238,6 +276,8 @@ symmetrize_poles = partial(numpy.symmetrize_poles, np=jnp)
 def _count2_no_shard(*particles: Particles, mattrs: MeshAttrs, battrs: BinAttrs, wattrs: WeightAttrs = None,
                      sattrs: SelectionAttrs = None, spattrs: SplitAttrs = None, backend=None):
     mode, ffi_module, suffix = _resolve_ffi_backend(backend)
+    if mode == 'cpu':
+        ffi_module.set_nthreads(get_cpu_nthreads())
     mattrs._to_c()
     ffi_module.set_count2_attrs(
         mattrs._to_c(), battrs, wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs
@@ -363,7 +403,7 @@ def count2(*particles: Particles, battrs: BinAttrs, wattrs: WeightAttrs = None, 
     if spattrs is None:
         spattrs = SplitAttrs()
     if mattrs is None:
-        mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs)
+        mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs, backend=backend)
     wattrs.check(*particles)
     spattrs.check(*particles)
     count2 = _count2 = partial(
@@ -402,6 +442,8 @@ def _count3close_no_shard(
 ):
     assert len(particles) == 3
     mode, ffi_module, suffix = _resolve_ffi_backend(backend)
+    if mode == 'cpu':
+        ffi_module.set_nthreads(get_cpu_nthreads())
 
     ffi_module.set_count3close_attrs(
         mattrs1._to_c(),
@@ -531,6 +573,7 @@ def count3close(
             particles[0],
             sattrs=sattrs13 if close_pair == (1, 3) else sattrs12,
             battrs=battrs13 if close_pair == (1, 3) else battrs12,
+            backend=backend,
         )
 
     if mattrs2 is None:
@@ -538,6 +581,7 @@ def count3close(
             particles[1],
             sattrs=sattrs23 if close_pair == (2, 3) else sattrs12,
             battrs=battrs23 if close_pair == (2, 3) else battrs12,
+            backend=backend,
         )
 
     if mattrs3 is None:
@@ -545,6 +589,7 @@ def count3close(
             particles[2],
             sattrs=sattrs23 if close_pair == (2, 3) else sattrs13,
             battrs=battrs23 if close_pair == (2, 3) else battrs13,
+            backend=backend,
         )
 
     wattrs.check(*particles)
@@ -605,6 +650,8 @@ def _count3_no_shard(
 ):
     assert len(particles) == 3
     mode, ffi_module, suffix = _resolve_ffi_backend(backend)
+    if mode == 'cpu':
+        ffi_module.set_nthreads(get_cpu_nthreads())
 
     ffi_module.set_count3_attrs(
         mattrs1._to_c(),
@@ -787,11 +834,11 @@ def count3(
         veto13 = SelectionAttrs()
 
     if mattrs1 is None:
-        mattrs1 = MeshAttrs(particles[0], sattrs=sattrs12, battrs=battrs12)
+        mattrs1 = MeshAttrs(particles[0], sattrs=sattrs12, battrs=battrs12, backend=backend)
     if mattrs2 is None:
-        mattrs2 = MeshAttrs(particles[1], sattrs=sattrs12, battrs=battrs12)
+        mattrs2 = MeshAttrs(particles[1], sattrs=sattrs12, battrs=battrs12, backend=backend)
     if mattrs3 is None:
-        mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13)
+        mattrs3 = MeshAttrs(particles[2], sattrs=sattrs13, battrs=battrs13, backend=backend)
 
     wattrs.check(*particles)
 

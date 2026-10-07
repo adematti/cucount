@@ -236,6 +236,59 @@ def test_unknown_backend_is_rejected():
         cj.count2(*p, battrs=battrs, mattrs=mattrs, backend='compare')
 
 
+def test_cpu_nthreads_default_and_override(monkeypatch):
+    """Without set_cpu_nthreads, each call gets the process's CPUs shared among its jax CPU devices.
+
+    The FFI used to stage 1 thread unless told otherwise, so a pipeline that
+    never called set_cpu_nthreads ran single-threaded without a word.
+    """
+    staged = []
+    real = cj.ffi_cpulib.set_nthreads
+    monkeypatch.setattr(cj.ffi_cpulib, 'set_nthreads', lambda n: (staged.append(n), real(n)))
+    pos, w = catalog(23, n=100)
+    battrs = BinAttrs(s=SEDGES)
+    ndevices = len(jax.local_devices(backend='cpu'))
+
+    def run():
+        with on_cpu():
+            p = (cj.Particles(pos, w), cj.Particles(pos, w))
+            return cj.count2(*p, battrs=battrs, mattrs=cj.MeshAttrs(*p, battrs=battrs), backend='cpu')['weight']
+
+    try:
+        cj.set_cpu_nthreads(None)
+        monkeypatch.setenv('CUCOUNT_CPU_NTHREADS', str(4 * ndevices))
+        want = run()
+        assert staged[-1] == cj.get_cpu_nthreads() == 4
+        monkeypatch.delenv('CUCOUNT_CPU_NTHREADS')
+        run()
+        assert staged[-1] == max(len(os.sched_getaffinity(0)) // ndevices, 1)
+        cj.set_cpu_nthreads(3)
+        close(run(), want)
+        assert staged[-1] == 3
+    finally:
+        cj.set_cpu_nthreads(None)
+
+
+def test_default_backend_follows_jax_platform(monkeypatch):
+    """With no keyword and no CUCOUNT_BACKEND, arrays on a jax CPU device run the CPU kernel on a CPU-sized mesh."""
+    monkeypatch.delenv('CUCOUNT_BACKEND', raising=False)
+    pos1, w1 = catalog(24)
+    pos2, w2 = catalog(25)
+    battrs = BinAttrs(s=SEDGES)
+    nparticles = (Particles(pos1, w1), Particles(pos2, w2))
+    want = count2(*nparticles, battrs=battrs, mattrs=MeshAttrs(*nparticles, battrs=battrs, backend='cpu'),
+                  backend='cpu')['weight']
+    with on_cpu():
+        assert cj._resolve_backend() == 'cpu'
+        jparticles = (cj.Particles(pos1, w1), cj.Particles(pos2, w2))
+        assert np.all(cj.MeshAttrs(*jparticles, battrs=battrs).meshsize
+                      == MeshAttrs(*nparticles, battrs=battrs, backend='cpu').meshsize)
+        close(cj.count2(*jparticles, battrs=battrs)['weight'], want)
+        # the variable still wins over the platform
+        monkeypatch.setenv('CUCOUNT_BACKEND', 'cuda')
+        assert cj._resolve_backend() == 'cuda'
+
+
 NDEVICES = len(jax.devices('cpu')) if jax is not None else 0
 
 

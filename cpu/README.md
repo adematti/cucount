@@ -67,11 +67,16 @@ change to calling code. Select with `CUCOUNT_BACKEND` or a `backend=` keyword:
 
 | mode | behaviour |
 |---|---|
-| `cuda` | default |
+| `cuda` | CUDA backend |
 | `cpu` | CPU backend, raising a precise reason if it cannot serve the request |
 | `compare` | run both and raise if they disagree |
 
-No backend is ever chosen implicitly.
+With neither, `cucount.numpy` picks `cuda` when the build has it and the
+process sees a GPU (asked of the driver, no context created), else
+`cpu`. `cucount.jax` instead follows the platform jax places arrays on, since
+each FFI target is registered for one platform only. Either way the default
+`MeshAttrs` is sized for the backend that will run, so a CPU node needs no
+setting at all.
 
 ```bash
 CUCOUNT_BACKEND=compare pytest tests/   # differential-test the CPU backend
@@ -217,8 +222,8 @@ performance hint.
 JAX: [src/ffi_bind.cpp](src/ffi_bind.cpp) builds `cucountlib.ffi_cpu`, the
 same three FFI entry points the CUDA arm provides, registered on the `cpu`
 platform as `count2_cpu` / `count3_cpu` / `count3close_cpu`. `cucount.jax`
-takes a `backend=` keyword ('cuda' or 'cpu', or `CUCOUNT_BACKEND`) and picks
-the target; the CUDA targets keep their unqualified names, so anything already
+takes a `backend=` keyword ('cuda' or 'cpu', or `CUCOUNT_BACKEND`, else jax's
+platform) and picks the target; the CUDA targets keep their unqualified names, so anything already
 lowered still resolves. The handlers take no stream, and the scratch buffer
 the CUDA handlers carve device allocations out of is accepted and ignored.
 
@@ -227,7 +232,10 @@ across devices and the counts are `psum`ed, so it is the device count that
 changes, not the code. Run jax with several CPU devices
 (`XLA_FLAGS=--xla_force_host_platform_device_count=N`) and pass a
 `sharding_mesh`. `cucount.jax.set_cpu_nthreads` sets the threads each FFI call
-uses, which is per device -- N devices at M threads occupy N * M cores.
+uses, which is per device -- N devices at M threads occupy N * M cores. Left
+unset, each call gets what `cucount.numpy.cpu_nthreads()` gives
+(`CUCOUNT_CPU_NTHREADS`, else the affinity mask) divided by the number of local
+jax CPU devices, so `srun -n 4 -c 64` runs every rank on its own 64 CPUs.
 
 Not covered: nothing in `count2`, `count3` or `count3close` that the CUDA
 backend serves, apart from the deliberate limits above (spin needs exactly two

@@ -9,6 +9,7 @@ the port. The CUDA backend is used as a second oracle where it is built.
 
 import numpy as np
 import pytest
+import cucount.numpy
 from cucount.numpy import (BinAttrs, MeshAttrs, Particles, SelectionAttrs,
                            cpu_available, cpulib, count3)
 
@@ -24,8 +25,9 @@ def _cuda_available():
         return False
 
 
-CUDA = _cuda_available()
-needs_cuda = pytest.mark.skipif(not CUDA, reason='CUDA extension not built')
+# Built is not enough: on a node without a GPU the CUDA kernels exit the process.
+CUDA = _cuda_available() and cucount.numpy.cudalib.device_count() > 0
+needs_cuda = pytest.mark.skipif(not CUDA, reason='CUDA extension not built, or no GPU visible')
 
 E12 = np.linspace(10., 400., 5)
 E13 = np.linspace(10., 400., 5)

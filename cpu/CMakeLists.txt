@@ -23,6 +23,14 @@ endif()
 
 option(CUCOUNT_CPU_ALL_TARGETS
        "Compile every attainable SIMD target, not just Highway's default set" ON)
+# For a development loop on one machine: compile only the build host's SIMD
+# target. The Highway kernel is one translation unit compiled once per target,
+# so this is what its build time scales with -- count2.cpp alone on a Milan
+# node (gcc 14): 646 s with every attainable target, 575 s with Highway's
+# default set, 75 s with the host's only. The result runs on that ISA and
+# newer only; never install it.
+option(CUCOUNT_CPU_NATIVE_ONLY
+       "Compile only the build host's SIMD target (fast builds; not portable)" OFF)
 
 include(FetchContent)
 # contrib/math/math-inl.h (Log, for the log-binning policy) is header-only and
@@ -44,17 +52,34 @@ FetchContent_MakeAvailable(highway)
 find_package(OpenMP REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 
+# Everything but the bindings, compiled once and linked into both modules
+# (cucountlib.cpu and cucountlib.ffi_cpu): the Highway kernel in count2.cpp is
+# by far the most expensive translation unit to build, and the two used to
+# compile it each. Objects are linked, not shared, so each module still gets
+# its own copy of the module-local state below.
 # ../src/logger.cpp: register_attrs binds setup_logging, which needs the
 # module-local global_log_level.
 # src/generic.cpp is the scalar path for everything the Highway kernel does
 # not vectorise; it is a plain translation unit, compiled once, so nothing it
 # adds can reach the kernel's inner loop.
-pybind11_add_module(cucount_cpu src/count2.cpp src/generic.cpp src/count3.cpp src/count3close.cpp src/bind.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp)
+add_library(cucount_cpu_kernels OBJECT src/count2.cpp src/generic.cpp src/count3.cpp src/count3close.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp)
 # ../include for cmath.h, the scalar per-pair math shared with CUDA (the
 # other headers there are CUDA-only and are not included from this target).
-target_include_directories(cucount_cpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../include)
-target_link_libraries(cucount_cpu PRIVATE hwy OpenMP::OpenMP_CXX)
+target_include_directories(cucount_cpu_kernels PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(cucount_cpu_kernels PUBLIC hwy OpenMP::OpenMP_CXX)
+target_compile_options(cucount_cpu_kernels PRIVATE -O3 -fno-math-errno)
+# As pybind11_add_module sets for the modules the objects end up in
+set_target_properties(cucount_cpu_kernels PROPERTIES POSITION_INDEPENDENT_CODE ON
+                      CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+if(CUCOUNT_CPU_NATIVE_ONLY)
+  target_compile_definitions(cucount_cpu_kernels PRIVATE HWY_COMPILE_ONLY_STATIC)
+  target_compile_options(cucount_cpu_kernels PRIVATE -march=native)
+elseif(CUCOUNT_CPU_ALL_TARGETS)
+  target_compile_definitions(cucount_cpu_kernels PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
+endif()
 
+pybind11_add_module(cucount_cpu src/bind.cpp)
+target_link_libraries(cucount_cpu PRIVATE cucount_cpu_kernels)
 target_compile_options(cucount_cpu PRIVATE -O3 -fno-math-errno)
 
 # Land in a build-tree cucountlib/ (a namespace package), so a standalone
@@ -62,14 +87,9 @@ target_compile_options(cucount_cpu PRIVATE -O3 -fno-math-errno)
 #   PYTHONPATH=<build dir> python -c "from cucountlib import cpu"
 set_target_properties(cucount_cpu PROPERTIES OUTPUT_NAME cpu LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
 
-if(CUCOUNT_CPU_ALL_TARGETS)
-  target_compile_definitions(cucount_cpu PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
-endif()
 
 # The JAX FFI module, cucountlib.ffi_cpu, built when jax provides its headers.
-# Mirrors the cuda/ arm. It reuses the scalar paths but not the Highway kernel
-# source, which stays in cucount_cpu; the FFI module links that kernel in by
-# compiling count2.cpp again rather than depending on the extension.
+# Mirrors the cuda/ arm, and links the same kernel objects as cucount_cpu.
 if(NOT DEFINED XLA_DIR)
   find_package(Python COMPONENTS Interpreter REQUIRED)
   execute_process(
@@ -90,18 +110,10 @@ endif()
 
 if(BUILD_FFI_CUCOUNT_CPU)
   message(STATUS "Compilation of the CPU JAX FFI module (XLA headers: ${XLA_DIR})")
-  pybind11_add_module(cucount_ffi_cpu
-    src/count2.cpp src/generic.cpp src/count3.cpp src/count3close.cpp
-    src/ffi_bind.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp)
-  target_include_directories(cucount_ffi_cpu PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+  pybind11_add_module(cucount_ffi_cpu src/ffi_bind.cpp)
   target_include_directories(cucount_ffi_cpu PUBLIC ${XLA_DIR})
-  target_link_libraries(cucount_ffi_cpu PRIVATE hwy OpenMP::OpenMP_CXX)
+  target_link_libraries(cucount_ffi_cpu PRIVATE cucount_cpu_kernels)
   target_compile_options(cucount_ffi_cpu PRIVATE -O3 -fno-math-errno)
-  if(CUCOUNT_CPU_ALL_TARGETS)
-    target_compile_definitions(cucount_ffi_cpu PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
-  endif()
   set_target_properties(cucount_ffi_cpu PROPERTIES
     OUTPUT_NAME ffi_cpu LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/cucountlib)
 else()

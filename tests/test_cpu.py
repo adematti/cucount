@@ -36,8 +36,9 @@ def _cuda_available():
 
 # CUDA-oracle checks are skipped on a CUDA-less build (-DCUCOUNT_BUILD_CUDA=OFF)
 # so the suite still validates the CPU backend against the numpy brute force.
-CUDA = _cuda_available()
-needs_cuda = pytest.mark.skipif(not CUDA, reason='CUDA extension not built')
+# Built is not enough: on a node without a GPU the CUDA kernels exit the process.
+CUDA = _cuda_available() and cucount.numpy.cudalib.device_count() > 0
+needs_cuda = pytest.mark.skipif(not CUDA, reason='CUDA extension not built, or no GPU visible')
 
 BOX = 1000.0
 SMAX = 100.0
@@ -254,7 +255,8 @@ def test_simd_targets_agree():
     finally:
         cpulib.set_target('')
 
-    assert len(reached) >= 2, f'need >=2 targets to compare, got {reached}'
+    if len(reached) < 2:
+        pytest.skip(f'only {reached} compiled in (a CUCOUNT_CPU_NATIVE_ONLY build?): nothing to compare')
     for name, res in zip(reached[1:], results[1:]):
         assert np.allclose(res, results[0], rtol=1e-12, atol=0), \
             f'{name} disagrees with {reached[0]}'
@@ -390,6 +392,23 @@ def test_backend_env_var(monkeypatch):
     if CUDA:
         monkeypatch.setenv('CUCOUNT_BACKEND', 'compare')
         count2(*particles, battrs=battrs, mattrs=mattrs)
+
+
+def test_default_backend_follows_visible_gpus(monkeypatch):
+    """With no keyword and no CUCOUNT_BACKEND, a process without a GPU runs on the CPU."""
+    monkeypatch.delenv('CUCOUNT_BACKEND', raising=False)
+    if _cuda_available():
+        monkeypatch.setattr(cucount.numpy.cudalib, 'device_count', lambda: 0)
+    assert cucount.numpy._resolve_backend() == 'cpu'
+    particles, battrs, mattrs, raw, sedges = setup('lin', 1, 'z', True)
+    got = count2(*particles, battrs=battrs, mattrs=mattrs)['weight']
+    assert np.allclose(got, brute(*raw, sedges, periodic=True), rtol=1e-9)
+    # and the mesh is sized for the CPU kernel
+    assert np.all(MeshAttrs(*particles, battrs=battrs).meshsize
+                  == MeshAttrs(*particles, battrs=battrs, backend='cpu').meshsize)
+    if _cuda_available():
+        monkeypatch.setattr(cucount.numpy.cudalib, 'device_count', lambda: 1)
+        assert cucount.numpy._resolve_backend() == 'cuda'
 
 
 # --- axes the public API does not expose -----------------------------------

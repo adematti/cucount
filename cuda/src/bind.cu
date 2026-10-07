@@ -699,10 +699,26 @@ py::object count3_py(
 }
 
 
+// GPUs this process can use, honouring CUDA_VISIBLE_DEVICES. No device or no
+// usable driver is an answer, 0, not an error: this is how a frontend decides
+// whether to run on the GPU at all, including on nodes that have none.
+int device_count_py() {
+    int count = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess) {
+        cudaGetLastError();  // clear the sticky error state
+        return 0;
+    }
+    return count;
+}
+
+
 // Bind the function and structs to Python
 PYBIND11_MODULE(cuda, m) {
 
     register_attrs(m);
+
+    m.def("device_count", &device_count_py,
+          "Number of GPUs this process can use (honours CUDA_VISIBLE_DEVICES); 0 without a device or driver");
 
     m.def("count2", &count2_py, "Take particle positions and weights (numpy arrays), perform 2-pt counts on the GPU and return a numpy array",
         py::arg("particles1"),

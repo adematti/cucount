@@ -627,36 +627,46 @@ def test_readme():
 
 
 def test_readme2():
-    # Prepare catalogs
-    size = int(1e5)
-    boxsize = np.array((3000.,) * 3)
-    rng = np.random.RandomState(seed=42)
+    # The README's distributed example opens with jax.distributed.initialize(), which jax
+    # refuses once any computation has run in the process -- as earlier tests in the suite
+    # do. Run it as the README shows it, in a fresh interpreter.
+    import sys
+    import subprocess
+    code = """
+import numpy as np
+size = int(1e5)
+boxsize = np.array((3000.,) * 3)
+rng = np.random.RandomState(seed=42)
 
-    def generate_catalog(rng, size):
-        offset = boxsize
-        positions = rng.uniform(0., 1., (size, 3)) * boxsize + offset
-        weights = rng.uniform(0., 1., size)
-        return positions, weights
+def generate_catalog(rng, size):
+    offset = boxsize
+    positions = rng.uniform(0., 1., (size, 3)) * boxsize + offset
+    weights = rng.uniform(0., 1., size)
+    return positions, weights
 
-    positions1, weights1 = generate_catalog(rng, size)
-    positions2, weights2 = generate_catalog(rng, size)
-    edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
-    los = 'midpoint'
+positions1, weights1 = generate_catalog(rng, size)
+positions2, weights2 = generate_catalog(rng, size)
+edges = (np.linspace(1., 201, 201), np.linspace(-1., 1., 201))
+los = 'midpoint'
 
-    import jax
-    jax.config.update("jax_enable_x64", True)
-    # Initialize distributed environment (if needed)
-    jax.distributed.initialize()
-    from cucount.jax import count2, Particles, BinAttrs, create_sharding_mesh
+import jax
+jax.config.update("jax_enable_x64", True)
+# Initialize distributed environment (if needed)
+jax.distributed.initialize()
+from cucount.jax import count2, Particles, BinAttrs, create_sharding_mesh
 
-    battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
+battrs = BinAttrs(s=edges[0], mu=(edges[1], los))
 
-    # Run distributed pair counts
-    with create_sharding_mesh():
-        # Pass exchange=True if input is distributed over multiple processes
-        particles1 = Particles(positions1, weights1)
-        particles2 = Particles(positions2, weights2)
-        counts = count2(particles1, particles2, battrs=battrs)
+# Run distributed pair counts
+with create_sharding_mesh():
+    # Pass exchange=True if input is distributed over multiple processes
+    particles1 = Particles(positions1, weights1)
+    particles2 = Particles(positions2, weights2)
+    counts = count2(particles1, particles2, battrs=battrs)
+
+assert np.asarray(counts['weight']).sum() > 0
+"""
+    subprocess.run([sys.executable, '-c', code], check=True)
 
 
 def test_popcount():
