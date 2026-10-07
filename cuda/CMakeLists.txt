@@ -2,10 +2,18 @@
 # FFI headers, the cucountlib.ffi_cuda module. Mirrors cpu/. The shared
 # code (attrs, cmath, common types, logger) lives at the repository root.
 
-# Overridable: CUDA 13 dropped compute_70, so builds against a recent
-# toolkit must narrow this, e.g. -DCMAKE_CUDA_ARCHITECTURES=80.
+# Overridable with -DCMAKE_CUDA_ARCHITECTURES. The default depends on the
+# toolkit, so it has to be found before enable_language, whose first act is a
+# test compile for these very architectures: CUDA 13 dropped compute_70
+# (Volta), and nvcc refuses the whole list if it names one.
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
-    set(CMAKE_CUDA_ARCHITECTURES 70 75 80)
+    find_package(CUDAToolkit REQUIRED)
+    if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL 13)
+        set(CMAKE_CUDA_ARCHITECTURES 75 80)
+    else()
+        set(CMAKE_CUDA_ARCHITECTURES 70 75 80)
+    endif()
+    message(STATUS "CUDA ${CUDAToolkit_VERSION}: building for architectures ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 enable_language(CUDA)
 
