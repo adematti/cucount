@@ -71,13 +71,19 @@ def _resolve_backend(backend=None):
 _FFI_SUFFIX = {'cuda': '_cuda', 'cpu': '_cpu'}
 _FFI_BACKENDS = {'cuda': (ffi_cudalib, 'CUDA'), 'cpu': (ffi_cpulib, 'cpu')}
 
-for _name in ('count2', 'count3', 'count3close'):
+# Soft binning is an extension: its targets exist in the CUDA module only, so a
+# backend that does not export one is simply skipped here, keeping
+# `import cucount.jax` working for every build.
+for _name in ('count2', 'count3', 'count3close', 'count2_soft', 'count2_soft_vjp'):
     for _mode, (_module, _platform) in _FFI_BACKENDS.items():
         if _module is None:
             continue
+        _handler = getattr(_module, _name, None)
+        if _handler is None:
+            continue
         jax.ffi.register_ffi_target(_name + _FFI_SUFFIX[_mode],
-                                    getattr(_module, _name)(), platform=_platform)
-del _name, _mode, _module, _platform
+                                    _handler(), platform=_platform)
+del _name, _mode, _module, _platform, _handler
 
 
 def _resolve_ffi_backend(backend=None):
@@ -874,3 +880,12 @@ def count3(
         )
 
     return count3_fn(*particles)
+
+
+# Soft (Gaussian-softmax) pair counts live in their own module, next to this one;
+# re-exported here for convenience only, so a build without the soft kernel still
+# imports the hard path untouched.
+try:
+    from .soft import count2_soft  # noqa: F401
+except ImportError:  # pragma: no cover
+    pass

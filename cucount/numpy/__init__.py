@@ -2019,3 +2019,12 @@ def count3_analytic(battrs12: BinAttrs, battrs13: BinAttrs, mattrs: MeshAttrs=No
             factor[ells.index(ell0)] = 1.
         dv = dv[..., None] * factor
     return dv
+
+# Soft binning lives in its own module (soft.py) and is re-exported here only
+# for convenience. The import is at the end and inside a try so that a build
+# without the soft kernel -- an older extension, or a CPU-only build -- still
+# imports the package and keeps every hard-binning entry point working.
+try:
+    from .soft import count2_soft, count2_soft_vjp, soft_weights, default_sigma
+except ImportError:  # pragma: no cover - depends on which extension was built
+    pass
