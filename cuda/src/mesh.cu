@@ -141,11 +141,16 @@ __global__ void fill_particles_kernel(const Particles particles, const size_t *i
         for (size_t ivalue = 0; ivalue < index_value.size; ivalue++) {
             mesh.values[index_value.size * offset + ivalue] = value[ivalue];
         }
+        // Only allocated on request, so the forward paths skip this write.
+        if (mesh.original_index) {
+            mesh.original_index[offset] = i;
+        }
     }
 }
 
 
-void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs, DeviceMemoryBuffer *buffer, cudaStream_t stream) {
+void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs, DeviceMemoryBuffer *buffer, cudaStream_t stream,
+              bool keep_original_index) {
 
     int nblocks, nthreads_per_block;
     CONFIGURE_KERNEL_LAUNCH(count_particles_kernel, nblocks, nthreads_per_block, buffer);
@@ -155,38 +160,46 @@ void set_mesh(const Particles *list_particles, Mesh *list_mesh, MeshAttrs mattrs
         if (particles.size == 0) continue;
         Mesh &mesh = list_mesh[imesh];
         mesh.index_value = particles.index_value;
+        mesh.original_index = nullptr;
         mesh.size = 1;
         for (size_t axis = 0; axis < NDIM; axis++) mesh.size *= mattrs.meshsize[axis];
         // Allocate memory for mesh variables
         //printf("Allocating mesh %d\n", imesh);
         size_t *index = (size_t*) my_device_malloc(particles.size * sizeof(size_t), buffer);
         mesh.nparticles = (size_t*) my_device_malloc(mesh.size * sizeof(size_t), buffer);
-        CUDA_CHECK(cudaMemset(mesh.nparticles, 0, mesh.size * sizeof(size_t)));
+        CUDA_CHECK(cudaMemsetAsync(mesh.nparticles, 0, mesh.size * sizeof(size_t), stream));
         mesh.cumnparticles = (size_t*) my_device_malloc(mesh.size * sizeof(size_t), buffer);
-        CUDA_CHECK(cudaMemset(mesh.cumnparticles, 0, mesh.size * sizeof(size_t)));
+        CUDA_CHECK(cudaMemsetAsync(mesh.cumnparticles, 0, mesh.size * sizeof(size_t), stream));
         mesh.positions = (FLOAT*) my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
         mesh.spositions = (FLOAT*) my_device_malloc(NDIM * particles.size * sizeof(FLOAT), buffer);
         mesh.values = (FLOAT*) my_device_malloc(particles.index_value.size * particles.size * sizeof(FLOAT), buffer);
-        // Assign particle positions to boxes
-        CUDA_CHECK(cudaDeviceSynchronize());
+        if (keep_original_index) {
+            mesh.original_index = (size_t*) my_device_malloc(particles.size * sizeof(size_t), buffer);
+        }
+        // Assign particle positions to boxes. Every device operation below is
+        // ordered on `stream`: the buffer the caller hands us is recycled between
+        // calls (cuda or XLA owns it), so a legacy-default-stream memset would
+        // race with the previous call's kernels and produce garbage cell counts.
         count_particles_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(mattrs, particles, index, mesh);
-        CUDA_CHECK(cudaDeviceSynchronize());
         /*
         thrust::device_ptr<size_t> d_nparticles = thrust::device_pointer_cast(mesh.nparticles);
         thrust::device_ptr<size_t> d_cumnparticles = thrust::device_pointer_cast(mesh.cumnparticles);
         thrust::exclusive_scan(d_nparticles, d_nparticles + mesh.size, d_cumnparticles);
         */
-        exclusive_scan_size_t_device(mesh.nparticles, mesh.cumnparticles, mesh.size, buffer);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        exclusive_scan_size_t_device(mesh.nparticles, mesh.cumnparticles, mesh.size, buffer, stream);
+        // The two counts are read on the host, so this one synchronisation is
+        // unavoidable; it also makes the copies below (legacy stream) valid.
+        CUDA_CHECK(cudaStreamSynchronize(stream));
         cudaMemcpy(&(mesh.total_nparticles), mesh.cumnparticles + (mesh.size - 1), sizeof(size_t), cudaMemcpyDeviceToHost);
         size_t last_bin_count;
         cudaMemcpy(&last_bin_count, mesh.nparticles + (mesh.size - 1), sizeof(size_t), cudaMemcpyDeviceToHost);
         mesh.total_nparticles += last_bin_count;
         //printf("Total nparticles %d %d %d %d\n", imesh, particles.size, mesh.total_nparticles, mesh.size);
-        cudaMemset(mesh.nparticles, 0, mesh.size * sizeof(size_t));  // reset
-        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemsetAsync(mesh.nparticles, 0, mesh.size * sizeof(size_t), stream));  // reset
         fill_particles_kernel<<<nblocks, nthreads_per_block, 0, stream>>>(particles, index, mesh);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        // `index` is scratch from the caller's buffer (or cudaMalloc in the
+        // pybind path), and the fill kernel reads it, so drain before freeing.
+        CUDA_CHECK(cudaStreamSynchronize(stream));
         my_device_free(index, buffer);
     }
     log_message(LOG_LEVEL_DEBUG, "Mesh variables successfully set.\n");

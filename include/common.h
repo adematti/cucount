@@ -84,6 +84,11 @@ typedef struct {
     FLOAT *spositions;
     FLOAT *positions;
     FLOAT *values;  // contains spin components, individual weights, bitwise weights in this order
+    // Slot -> input particle index. The mesh reorders particles by cell, so
+    // anything that has to write back per input particle (the soft adjoint)
+    // cannot use the slot number itself. NULL unless the builder was asked for
+    // it, so the forward paths allocate nothing extra.
+    size_t *original_index;
     IndexValue index_value;
 } Mesh;
 
@@ -238,7 +243,13 @@ void copy_weight_attrs_to_device(WeightAttrs *device_attrs, const WeightAttrs *h
 
 void free_device_weight_attrs(WeightAttrs *device_attrs, DeviceMemoryBuffer *buffer);
 
-void exclusive_scan_size_t_device(const size_t *d_in, size_t *d_out, size_t n, DeviceMemoryBuffer* buffer);
+// The stream matters: kernels queued on the legacy default stream are not
+// ordered against a caller's (possibly non-blocking) stream, and the mesh build
+// runs inside streams owned by cuda or XLA.
+#ifndef CUCOUNT_NO_CUDA
+void exclusive_scan_size_t_device(const size_t *d_in, size_t *d_out, size_t n, DeviceMemoryBuffer* buffer,
+                                  cudaStream_t stream = 0);
+#endif
 
 
 #endif //_CUCOUNT_COMMON_

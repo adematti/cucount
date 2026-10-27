@@ -120,6 +120,7 @@ void copy_mesh_to_device(Mesh mesh, Mesh *device_mesh, int mode) {
         device_mesh->spositions = mesh.spositions;
         device_mesh->positions = mesh.positions;
         device_mesh->values = mesh.values;
+        device_mesh->original_index = mesh.original_index;
     }
     else {
         CUDA_CHECK(cudaMalloc((void **) &(device_mesh->nparticles), mesh.size * sizeof(size_t)));
@@ -153,6 +154,7 @@ void copy_mesh_to_host(Mesh mesh, Mesh *host_mesh, int mode) {
         host_mesh->spositions = mesh.spositions;
         host_mesh->positions = mesh.positions;
         host_mesh->values = mesh.values;
+        host_mesh->original_index = mesh.original_index;
     }
     else {
         host_mesh->nparticles = (size_t*) my_malloc(mesh.size * sizeof(size_t));
@@ -189,6 +191,11 @@ void free_device_mesh(Mesh *mesh) {
     CUDA_CHECK(cudaFree(mesh->spositions));
     CUDA_CHECK(cudaFree(mesh->positions));
     CUDA_CHECK(cudaFree(mesh->values));
+
+    if (mesh->original_index) {
+        CUDA_CHECK(cudaFree(mesh->original_index));
+        mesh->original_index = nullptr;
+    }
 }
 
 
@@ -417,7 +424,7 @@ __global__ void add_block_sums_kernel(size_t *out, const size_t *block_sums, siz
 }
 
 
-void exclusive_scan_size_t_device(const size_t *d_in, size_t *d_out, size_t n, DeviceMemoryBuffer* buffer) {
+void exclusive_scan_size_t_device(const size_t *d_in, size_t *d_out, size_t n, DeviceMemoryBuffer* buffer, cudaStream_t stream) {
     if (n == 0) return;
 
     const size_t ITEMS_PER_BLOCK = 2 * BLOCK_SIZE;
@@ -431,17 +438,17 @@ void exclusive_scan_size_t_device(const size_t *d_in, size_t *d_out, size_t n, D
     }
 
     // First pass: scan each block
-    scan_block_kernel<<<nblocks, BLOCK_SIZE>>>(d_in, d_out, d_block_sums, n);
-    cudaDeviceSynchronize();
+    scan_block_kernel<<<nblocks, BLOCK_SIZE, 0, stream>>>(d_in, d_out, d_block_sums, n);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
 
     if (nblocks > 1) {
         // Recursively scan block sums
         d_block_sums_scanned = (size_t*) my_device_malloc(nblocks * sizeof(size_t), buffer);
-        exclusive_scan_size_t_device(d_block_sums, d_block_sums_scanned, nblocks, buffer);
+        exclusive_scan_size_t_device(d_block_sums, d_block_sums_scanned, nblocks, buffer, stream);
 
         // Add block sums to outputs
-        add_block_sums_kernel<<<nblocks, BLOCK_SIZE>>>(d_out, d_block_sums_scanned, n);
-        cudaDeviceSynchronize();
+        add_block_sums_kernel<<<nblocks, BLOCK_SIZE, 0, stream>>>(d_out, d_block_sums_scanned, n);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
 
         my_device_free(d_block_sums, buffer);
         my_device_free(d_block_sums_scanned, buffer);
