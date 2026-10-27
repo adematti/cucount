@@ -14,6 +14,7 @@
 
 #include "mesh.h"
 #include "count2.h"
+#include "count2_soft.h"
 #include "count3close.h"
 #include "count3.h"
 #include "common.h"
@@ -35,6 +36,8 @@ static SelectionAttrs sattrs2;
 static WeightAttrs wattrs2;
 static SplitAttrs spattrs2;
 static IndexValue index_value2[2] = {0};
+// Soft binning rides the same attrs; only the tap window is extra state.
+static SoftBinSpec soft_spec2;
 
 // -----------------------------------------------------------------------------
 // Static state for count3close
@@ -136,6 +139,46 @@ void set_count2_attrs_py(
 
     owned2.own(&battrs2);
     owned2.own(&wattrs2);
+}
+
+// -----------------------------------------------------------------------------
+// Python setter for the soft-binning request
+// -----------------------------------------------------------------------------
+
+// The soft kernel is an extension, so its request is resolved into a
+// SoftBinSpec here and kept beside the count2 attrs rather than inside them:
+// nothing the hard kernel reads grows a field for a feature it does not serve.
+void set_count2_soft_attrs_py(
+    MeshAttrs_py mattrs_py,
+    BinAttrs_py battrs_py,
+    WeightAttrs_py wattrs_py = WeightAttrs_py(),
+    const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
+    const SplitAttrs_py spattrs_py = SplitAttrs_py(),
+    double soft_sigma = 0.,
+    double soft_cutoff = 1e-13,
+    const std::string &soft_taps = "exact")
+{
+    owned2.clear();
+
+    mattrs2 = mattrs_py.data();
+    battrs2 = battrs_py.data();
+    wattrs2 = wattrs_py.data();
+    sattrs2 = sattrs_py.data();
+    spattrs2 = spattrs_py.data();
+
+    owned2.own(&battrs2);
+    owned2.own(&wattrs2);
+
+    size_t csize = 0;
+    soft_spec2 = make_soft_bin_spec(battrs2, wattrs2, spattrs2, soft_sigma, soft_cutoff, &csize);
+
+    if (soft_taps == "fast") {
+        soft_spec2.fast_taps = 1;
+    }
+    else if (soft_taps != "exact") {
+        throw std::invalid_argument(
+            "cuda backend, soft binning: soft_taps must be 'exact' or 'fast'");
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -345,6 +388,9 @@ ffi::Error count2Impl(
     for (size_t imesh = 0; imesh < MAX_NMESH; imesh++) {
         list_particles[imesh].size = 0;
         list_mesh[imesh].total_nparticles = 0;
+        // set_mesh skips empty catalogues, so leave no dangling slot -> input map
+        // behind for the free path to follow.
+        list_mesh[imesh].original_index = nullptr;
     }
 
     list_particles[0] = get_ffi_particles(positions1, values1, index_value2[0]);
@@ -375,6 +421,152 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<ffi::Buffer<ffi::F64>>()
         .Arg<ffi::Buffer<ffi::F64>>()
         .Arg<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+);
+
+// -----------------------------------------------------------------------------
+// soft count2 FFI impl
+// -----------------------------------------------------------------------------
+
+ffi::Error count2SoftImpl(
+    cudaStream_t stream,
+    ffi::Buffer<ffi::F64> positions1,
+    ffi::Buffer<ffi::F64> values1,
+    ffi::Buffer<ffi::F64> positions2,
+    ffi::Buffer<ffi::F64> values2,
+    ffi::ResultBuffer<ffi::F64> counts,
+    ffi::ResultBuffer<ffi::F64> buffer)
+{
+    Particles list_particles[MAX_NMESH];
+    Mesh list_mesh[MAX_NMESH];
+
+    for (size_t imesh = 0; imesh < MAX_NMESH; imesh++) {
+        list_particles[imesh].size = 0;
+        list_mesh[imesh].total_nparticles = 0;
+        // set_mesh skips empty catalogues, so leave no dangling slot -> input map
+        // behind for the free path to follow.
+        list_mesh[imesh].original_index = nullptr;
+    }
+
+    list_particles[0] = get_ffi_particles(positions1, values1, index_value2[0]);
+    list_particles[1] = get_ffi_particles(positions2, values2, index_value2[1]);
+
+    DeviceMemoryBuffer membuffer;
+    set_mem_buffer(&membuffer, buffer);
+    membuffer.nblocks = MAX_NBLOCKS;
+    membuffer.nthreads_per_block = MAX_NTHREADS_PER_BLOCK * 16;  // not used in memory allocation
+
+    set_mesh(list_particles, list_mesh, mattrs2, &membuffer, stream);
+    const Count2Attrs attrs{mattrs2, battrs2, wattrs2, sattrs2, spattrs2};
+    SoftBinSpec spec = soft_spec2;  // the kernel writes the staging path back into it
+    count2_soft(counts->typed_data(), list_mesh, attrs, spec, &membuffer, stream);
+
+    cudaError_t last_error = cudaGetLastError();
+    if (last_error != cudaSuccess) {
+        return ffi::Error::Internal(
+            std::string("CUDA error: ") + cudaGetErrorString(last_error));
+    }
+    return ffi::Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    count2Softffi, count2SoftImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+);
+
+// -----------------------------------------------------------------------------
+// soft count2 adjoint FFI impl
+// -----------------------------------------------------------------------------
+
+// Signature: two catalogues (positions, values), the histogram cotangent, and
+// five gradients. Every gradient operand is zeroed here because the kernel
+// accumulates with atomics; the mesh keeps the slot -> input-index map the
+// scatter/reorder in set_mesh would otherwise destroy.
+ffi::Error count2SoftVjpImpl(
+    cudaStream_t stream,
+    ffi::Buffer<ffi::F64> positions1,
+    ffi::Buffer<ffi::F64> values1,
+    ffi::Buffer<ffi::F64> positions2,
+    ffi::Buffer<ffi::F64> values2,
+    ffi::Buffer<ffi::F64> cotangent,
+    ffi::ResultBuffer<ffi::F64> grad_positions1,
+    ffi::ResultBuffer<ffi::F64> grad_positions2,
+    ffi::ResultBuffer<ffi::F64> grad_values1,
+    ffi::ResultBuffer<ffi::F64> grad_values2,
+    ffi::ResultBuffer<ffi::F64> grad_sigma,
+    ffi::ResultBuffer<ffi::F64> buffer)
+{
+    const size_t n1 = positions1.dimensions().front();
+    const size_t n2 = positions2.dimensions().front();
+
+    Particles list_particles[MAX_NMESH];
+    Mesh list_mesh[MAX_NMESH];
+
+    for (size_t imesh = 0; imesh < MAX_NMESH; imesh++) {
+        list_particles[imesh].size = 0;
+        list_mesh[imesh].total_nparticles = 0;
+        // set_mesh skips empty catalogues, so leave no dangling slot -> input map
+        // behind for the free path to follow.
+        list_mesh[imesh].original_index = nullptr;
+    }
+
+    list_particles[0] = get_ffi_particles(positions1, values1, index_value2[0]);
+    list_particles[1] = get_ffi_particles(positions2, values2, index_value2[1]);
+
+    DeviceMemoryBuffer membuffer;
+    set_mem_buffer(&membuffer, buffer);
+    membuffer.nblocks = MAX_NBLOCKS;
+    membuffer.nthreads_per_block = MAX_NTHREADS_PER_BLOCK * 16;
+
+    FLOAT *gpos1 = grad_positions1->typed_data();
+    FLOAT *gpos2 = grad_positions2->typed_data();
+    FLOAT *gw1 = grad_values1->typed_data();
+    FLOAT *gw2 = grad_values2->typed_data();
+    FLOAT *gsigma = grad_sigma->typed_data();
+
+    CUDA_CHECK(cudaMemsetAsync(gpos1, 0, NDIM * n1 * sizeof(FLOAT), stream));
+    CUDA_CHECK(cudaMemsetAsync(gpos2, 0, NDIM * n2 * sizeof(FLOAT), stream));
+    CUDA_CHECK(cudaMemsetAsync(gw1, 0, n1 * sizeof(FLOAT), stream));
+    CUDA_CHECK(cudaMemsetAsync(gw2, 0, n2 * sizeof(FLOAT), stream));
+    CUDA_CHECK(cudaMemsetAsync(gsigma, 0, sizeof(FLOAT), stream));
+
+    // true: keep the slot -> input index map, the adjoint needs it to write each
+    // pair's contribution back to the particles it came from.
+    set_mesh(list_particles, list_mesh, mattrs2, &membuffer, stream, true);
+
+    const Count2Attrs attrs{mattrs2, battrs2, wattrs2, sattrs2, spattrs2};
+    count2_soft_vjp(cotangent.typed_data(), gpos1, gpos2, gw1, gw2, gsigma,
+                    list_mesh, attrs, soft_spec2, &membuffer, stream);
+
+    cudaError_t last_error = cudaGetLastError();
+    if (last_error != cudaSuccess) {
+        return ffi::Error::Internal(
+            std::string("CUDA error: ") + cudaGetErrorString(last_error));
+    }
+    return ffi::Error::Success();
+}
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    count2SoftVjpffi, count2SoftVjpImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Arg<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
+        .Ret<ffi::Buffer<ffi::F64>>()
         .Ret<ffi::Buffer<ffi::F64>>()
         .Ret<ffi::Buffer<ffi::F64>>()
 );
@@ -595,6 +787,22 @@ PYBIND11_MODULE(ffi_cuda, m) {
         py::arg("size_negative_weight") = 0);
 
     m.def("count2", []() { return EncapsulateFfiCall(count2ffi); });
+
+    // Soft (Gaussian-softmax) binning: an extension with its own request setter,
+    // its own forward target and its own adjoint target, so the count2 path above
+    // is untouched.
+    m.def("set_count2_soft_attrs", &set_count2_soft_attrs_py, "Set soft count2 attributes",
+        py::arg("mattrs"),
+        py::arg("battrs"),
+        py::arg("wattrs") = WeightAttrs_py(),
+        py::arg("sattrs") = SelectionAttrs_py(),
+        py::arg("spattrs") = SplitAttrs_py(),
+        py::arg("soft_sigma") = 0.,
+        py::arg("soft_cutoff") = 1e-13,
+        py::arg("soft_taps") = "exact");
+
+    m.def("count2_soft", []() { return EncapsulateFfiCall(count2Softffi); });
+    m.def("count2_soft_vjp", []() { return EncapsulateFfiCall(count2SoftVjpffi); });
 
     // backward-compatible aliases
     m.def("set_attrs", &set_count2_attrs_py, "Set count2 attributes",

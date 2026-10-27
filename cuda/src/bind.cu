@@ -1,9 +1,11 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>  // for std::vector conversion
+#include <algorithm>
 #include <cstring>  // for std::memcpy
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <thread>
 #include <vector>
 #include <memory>
@@ -11,6 +13,7 @@
 
 #include "mesh.h"
 #include "count2.h"
+#include "count2_soft.h"
 #include "count3close.h"
 #include "count3.h"
 #include "common.h"
@@ -712,6 +715,355 @@ int device_count_py() {
 }
 
 
+// ---------------------------------------------------------------------------
+// Soft binning: resolve the request into the kernel's per-pair parameters.
+// ---------------------------------------------------------------------------
+//
+// Everything the v1 soft kernel does not serve is refused HERE, by name, in a
+// Python exception -- before a device buffer exists or a kernel is launched. A
+// kernel that quietly binned a request it cannot honour (hard-binning the mu
+// axis of a soft-s request, say) would produce plausible numbers, which is the
+// worst failure mode a counting code has.
+py::object count2_soft_py(
+    Particles_py& particles1, Particles_py& particles2,
+    MeshAttrs_py mattrs_py, BinAttrs_py battrs_py,
+    WeightAttrs_py wattrs_py = WeightAttrs_py(),
+    const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
+    const SplitAttrs_py spattrs_py = SplitAttrs_py(),
+    py::object soft_sigma_obj = py::none(),
+    const double soft_cutoff = 1e-13,
+    const std::string &soft_taps = "exact",
+    const int nthreads = 1,
+    const bool return_timings = false) {
+
+    BinAttrs battrs = battrs_py.data();
+    WeightAttrs wattrs = wattrs_py.data();
+    SelectionAttrs sattrs = sattrs_py.data();
+    MeshAttrs mattrs = mattrs_py.data();
+    SplitAttrs spattrs = spattrs_py.data();
+
+    Particles p1_host = particles1.data();
+    Particles p2_host = particles2.data();
+
+    // None means "the default width", half a bin, resolved in make_soft_bin_spec
+    // against the binning rather than here.
+    double soft_sigma = 0.;
+
+    if (!soft_sigma_obj.is_none()) {
+        soft_sigma = py::cast<double>(soft_sigma_obj);
+    }
+
+    size_t csize = 0;
+    SoftBinSpec spec = make_soft_bin_spec(
+        battrs, wattrs, spattrs, soft_sigma, soft_cutoff, &csize);
+
+    // The general (non-uniform) path pays one exp per tap per pass; 'fast'
+    // swaps them for __expf (~1e-6 relative) when the caller prefers speed.
+    if (soft_taps == "fast") {
+        spec.fast_taps = 1;
+    }
+    else if (soft_taps != "exact") {
+        throw std::invalid_argument(
+            "cuda backend, soft binning: soft_taps must be 'exact' or 'fast'");
+    }
+
+    int ngpus = 1;
+    CUDA_CHECK(cudaGetDeviceCount(&ngpus));
+    ngpus = MIN(nthreads, ngpus);
+
+    py::array_t<FLOAT> counts_py((ssize_t) csize);
+    auto counts_ptr = counts_py.mutable_data();
+    std::fill_n(counts_ptr, csize, static_cast<FLOAT>(0.0));
+
+    const size_t n1 = p1_host.size;
+    std::vector<size_t> starts(ngpus), ends(ngpus);
+    for (int d = 0; d < ngpus; ++d) {
+        starts[d] = (d * n1) / ngpus;
+        ends[d] = ((d + 1) * n1) / ngpus;
+    }
+
+    std::vector<std::vector<FLOAT>> dev_results(ngpus);
+    std::vector<std::array<double, 2>> dev_timings(ngpus, {0., 0.});
+
+    std::vector<std::thread> workers;
+    workers.reserve(ngpus);
+
+    for (int dev = 0; dev < ngpus; ++dev) {
+        const size_t start = starts[dev];
+        const size_t end = ends[dev];
+        const size_t nchunk = (end > start) ? (end - start) : 0;
+        if (nchunk == 0) continue;
+
+        workers.emplace_back([dev, start, nchunk, &p1_host, &p2_host, &battrs, &mattrs, &sattrs, &wattrs, &spattrs, &spec, csize, &dev_results, &dev_timings]() {
+            CUDA_CHECK(cudaSetDevice(dev));
+
+            cudaStream_t stream;
+            CUDA_CHECK(cudaStreamCreate(&stream));
+
+            DeviceMemoryBuffer *membuffer = NULL;
+
+            Particles chunk_p1 = p1_host;
+            chunk_p1.size = nchunk;
+            chunk_p1.positions = p1_host.positions + (start * NDIM);
+            if (p1_host.values != nullptr) {
+                size_t width = p1_host.index_value.size;
+                chunk_p1.values = p1_host.values + (start * width);
+            }
+
+            Particles list_particles_dev[MAX_NMESH];
+            for (size_t i = 0; i < MAX_NMESH; ++i) list_particles_dev[i].size = 0;
+            copy_particles_to_device(chunk_p1, &list_particles_dev[0], 2);
+            copy_particles_to_device(p2_host, &list_particles_dev[1], 2);
+
+            using Clock = std::chrono::steady_clock;
+            using Sec = std::chrono::duration<double>;
+            const auto t_mesh0 = Clock::now();
+
+            Mesh list_mesh_dev[MAX_NMESH];
+            for (size_t i = 0; i < MAX_NMESH; ++i) list_mesh_dev[i].total_nparticles = 0;
+            set_mesh(list_particles_dev, list_mesh_dev, mattrs, membuffer, stream);
+
+            const auto t_mesh1 = Clock::now();
+
+            for (size_t i = 0; i < 2; ++i) free_device_particles(&(list_particles_dev[i]));
+
+            FLOAT *device_counts = (FLOAT*) my_device_malloc(csize * sizeof(FLOAT), membuffer);
+            CUDA_CHECK(cudaMemsetAsync(device_counts, 0, csize * sizeof(FLOAT), stream));
+
+            const Count2Attrs attrs{mattrs, battrs, wattrs, sattrs, spattrs};
+            count2_soft(device_counts, list_mesh_dev, attrs, spec, membuffer, stream);
+
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+
+            dev_timings[dev] = {Sec(t_mesh1 - t_mesh0).count(),
+                                Sec(Clock::now() - t_mesh1).count()};
+
+            dev_results[dev].assign(csize, static_cast<FLOAT>(0.0));
+            CUDA_CHECK(cudaMemcpy(dev_results[dev].data(), device_counts, csize * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+
+            my_device_free(device_counts, membuffer);
+            for (size_t i = 0; i < 2; ++i) free_device_mesh(&(list_mesh_dev[i]));
+
+            CUDA_CHECK(cudaStreamDestroy(stream));
+        });
+    }
+
+    for (auto &t : workers) t.join();
+
+    double mesh_seconds = 0., count_seconds = 0.;
+    for (int dev = 0; dev < ngpus; ++dev) {
+        mesh_seconds = MAX(mesh_seconds, dev_timings[dev][0]);
+        count_seconds = MAX(count_seconds, dev_timings[dev][1]);
+    }
+
+    for (int dev = 0; dev < ngpus; ++dev) {
+        if (dev_results[dev].empty()) continue;
+        for (size_t i = 0; i < csize; ++i) counts_ptr[i] += dev_results[dev][i];
+    }
+
+    // Same shape as count2's output -- one 'weight' array, here with shape
+    // (nbins,) -- plus what the kernel actually did, so a caller can tell the
+    // shared-tile path from the fallback and see the width it used when sigma
+    // was left at its default.
+    py::dict result;
+    result["weight"] = counts_py;
+
+    py::dict soft;
+    soft["sigma"] = spec.inv2sig2 > 0 ? 1. / std::sqrt(2. * spec.inv2sig2) : 0.;
+    soft["sigma_units"] = "separation";
+    soft["sigma_kind"] = spec.per_bin_sigma ? "width" : "absolute";
+    soft["uniform"] = spec.uniform != 0;
+    soft["fast_taps"] = spec.fast_taps != 0;
+    soft["cutoff"] = spec.cutoff;
+    soft["kmax"] = spec.kmax;
+    // Only the uniform path has a fixed window length; the general path expands
+    // until the cutoff stops it, so its tap count depends on the pair.
+    soft["taps"] = spec.uniform ? 2 * spec.kmax + 1 : -1;
+    soft["path"] = spec.path > 0 ? "shared" : "global";
+    soft["copies"] = spec.path;  // private histogram copies per warp
+    soft["nbins"] = spec.nbins;
+
+    result["soft"] = soft;
+
+    if (return_timings) {
+        return py::make_tuple(result, py::make_tuple(mesh_seconds, count_seconds));
+    }
+    return result;
+}
+
+
+py::object count2_soft_vjp_py(
+    Particles_py& particles1, Particles_py& particles2,
+    MeshAttrs_py mattrs_py, BinAttrs_py battrs_py,
+    py::array_t<FLOAT, py::array::c_style | py::array::forcecast> cotangent,
+    WeightAttrs_py wattrs_py = WeightAttrs_py(),
+    const SelectionAttrs_py sattrs_py = SelectionAttrs_py(),
+    const SplitAttrs_py spattrs_py = SplitAttrs_py(),
+    py::object soft_sigma_obj = py::none(),
+    const double soft_cutoff = 1e-13,
+    const std::string &soft_taps = "exact",
+    const int nthreads = 1,
+    const bool return_timings = false) {
+
+    (void) nthreads;  // v1 adjoint runs on one device; see the note below
+
+    BinAttrs battrs = battrs_py.data();
+    WeightAttrs wattrs = wattrs_py.data();
+    SelectionAttrs sattrs = sattrs_py.data();
+    MeshAttrs mattrs = mattrs_py.data();
+    SplitAttrs spattrs = spattrs_py.data();
+
+    Particles p1_host = particles1.data();
+    Particles p2_host = particles2.data();
+
+    double soft_sigma = 0.;
+
+    if (!soft_sigma_obj.is_none()) {
+        soft_sigma = py::cast<double>(soft_sigma_obj);
+    }
+
+    size_t csize = 0;
+    SoftBinSpec spec = make_soft_bin_spec(
+        battrs, wattrs, spattrs, soft_sigma, soft_cutoff, &csize);
+
+    // The general (non-uniform) path pays one exp per tap per pass; 'fast'
+    // swaps them for __expf (~1e-6 relative) when the caller prefers speed.
+    if (soft_taps == "fast") {
+        spec.fast_taps = 1;
+    }
+    else if (soft_taps != "exact") {
+        throw std::invalid_argument(
+            "cuda backend, soft binning: soft_taps must be 'exact' or 'fast'");
+    }
+
+    const auto *pairs = cotangent.data();
+
+    if ((size_t) cotangent.size() != csize) {
+        throw std::invalid_argument(
+            "cuda backend, soft binning: the cotangent must have one entry per "
+            "s bin (" + std::to_string(csize) + "), got "
+            + std::to_string(cotangent.size()));
+    }
+
+    // One device: the adjoint accumulates per input particle, so splitting the
+    // first catalogue across devices would need a reduction of the second
+    // catalogue's gradients that is not worth the plumbing while a single GPU
+    // is the target. The forward still splits.
+    CUDA_CHECK(cudaSetDevice(0));
+
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+
+    DeviceMemoryBuffer *membuffer = NULL;
+
+    Particles list_particles_dev[MAX_NMESH];
+    for (size_t i = 0; i < MAX_NMESH; ++i) list_particles_dev[i].size = 0;
+    copy_particles_to_device(p1_host, &list_particles_dev[0], 2);
+    copy_particles_to_device(p2_host, &list_particles_dev[1], 2);
+
+    using Clock = std::chrono::steady_clock;
+    using Sec = std::chrono::duration<double>;
+    const auto t_mesh0 = Clock::now();
+
+    Mesh list_mesh_dev[MAX_NMESH];
+    for (size_t i = 0; i < MAX_NMESH; ++i) list_mesh_dev[i].total_nparticles = 0;
+    set_mesh(list_particles_dev, list_mesh_dev, mattrs, membuffer, stream, true);
+
+    const auto t_mesh1 = Clock::now();
+
+    for (size_t i = 0; i < 2; ++i) free_device_particles(&(list_particles_dev[i]));
+
+    const size_t n1 = p1_host.size;
+    const size_t n2 = p2_host.size;
+
+    py::array_t<FLOAT> gpos1_py((ssize_t) (NDIM * n1));
+    py::array_t<FLOAT> gpos2_py((ssize_t) (NDIM * n2));
+    py::array_t<FLOAT> gw1_py((ssize_t) n1);
+    py::array_t<FLOAT> gw2_py((ssize_t) n2);
+
+    FLOAT *d_gpos1 = (FLOAT*) my_device_malloc(NDIM * n1 * sizeof(FLOAT), membuffer);
+    FLOAT *d_gpos2 = (FLOAT*) my_device_malloc(NDIM * n2 * sizeof(FLOAT), membuffer);
+    FLOAT *d_gw1 = (FLOAT*) my_device_malloc(n1 * sizeof(FLOAT), membuffer);
+    FLOAT *d_gw2 = (FLOAT*) my_device_malloc(n2 * sizeof(FLOAT), membuffer);
+    FLOAT *d_gsigma = (FLOAT*) my_device_malloc(sizeof(FLOAT), membuffer);
+    FLOAT *d_cotangent = (FLOAT*) my_device_malloc(csize * sizeof(FLOAT), membuffer);
+
+    CUDA_CHECK(cudaMemsetAsync(d_gpos1, 0, NDIM * n1 * sizeof(FLOAT), stream));
+    CUDA_CHECK(cudaMemsetAsync(d_gpos2, 0, NDIM * n2 * sizeof(FLOAT), stream));
+    CUDA_CHECK(cudaMemsetAsync(d_gw1, 0, n1 * sizeof(FLOAT), stream));
+    CUDA_CHECK(cudaMemsetAsync(d_gw2, 0, n2 * sizeof(FLOAT), stream));
+    CUDA_CHECK(cudaMemsetAsync(d_gsigma, 0, sizeof(FLOAT), stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_cotangent, pairs, csize * sizeof(FLOAT),
+                               cudaMemcpyHostToDevice, stream));
+
+    const Count2Attrs attrs{mattrs, battrs, wattrs, sattrs, spattrs};
+    count2_soft_vjp(d_cotangent, d_gpos1, d_gpos2, d_gw1, d_gw2, d_gsigma,
+                    list_mesh_dev, attrs, spec, membuffer, stream);
+
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    const double count_seconds = Sec(Clock::now() - t_mesh1).count();
+
+    FLOAT grad_sigma = 0;
+
+    CUDA_CHECK(cudaMemcpy(gpos1_py.mutable_data(), d_gpos1, NDIM * n1 * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(gpos2_py.mutable_data(), d_gpos2, NDIM * n2 * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(gw1_py.mutable_data(), d_gw1, n1 * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(gw2_py.mutable_data(), d_gw2, n2 * sizeof(FLOAT), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&grad_sigma, d_gsigma, sizeof(FLOAT), cudaMemcpyDeviceToHost));
+
+    my_device_free(d_gpos1, membuffer);
+    my_device_free(d_gpos2, membuffer);
+    my_device_free(d_gw1, membuffer);
+    my_device_free(d_gw2, membuffer);
+    my_device_free(d_gsigma, membuffer);
+    my_device_free(d_cotangent, membuffer);
+    for (size_t i = 0; i < 2; ++i) free_device_mesh(&(list_mesh_dev[i]));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+
+    // Shapes mirror the inputs: one gradient row per particle, and one weight
+    // gradient per particle only when the catalogue carries individual weights.
+    py::dict result;
+    result["grad_position1"] = gpos1_py.reshape({(ssize_t) n1, (ssize_t) NDIM});
+    result["grad_position2"] = gpos2_py.reshape({(ssize_t) n2, (ssize_t) NDIM});
+    // The keys are always present so callers can index them unconditionally;
+    // without individual weights there is no weight to differentiate.
+    if (p1_host.index_value.size_individual_weight) {
+        result["grad_weight1"] = gw1_py;
+    }
+    else {
+        result["grad_weight1"] = py::none();
+    }
+    if (p2_host.index_value.size_individual_weight) {
+        result["grad_weight2"] = gw2_py;
+    }
+    else {
+        result["grad_weight2"] = py::none();
+    }
+    result["grad_sigma"] = grad_sigma;
+
+    py::dict soft;
+    soft["sigma"] = spec.inv2sig2 > 0 ? 1. / std::sqrt(2. * spec.inv2sig2) : 0.;
+    soft["sigma_units"] = "separation";
+    soft["sigma_kind"] = spec.per_bin_sigma ? "width" : "absolute";
+    soft["uniform"] = spec.uniform != 0;
+    soft["fast_taps"] = spec.fast_taps != 0;
+    soft["cutoff"] = spec.cutoff;
+    soft["kmax"] = spec.kmax;
+    // Only the uniform path has a fixed window length; the general path expands
+    // until the cutoff stops it, so its tap count depends on the pair.
+    soft["taps"] = spec.uniform ? 2 * spec.kmax + 1 : -1;
+    soft["nbins"] = spec.nbins;
+
+    result["soft"] = soft;
+
+    if (return_timings) {
+        return py::make_tuple(result, py::make_tuple(Sec(t_mesh1 - t_mesh0).count(), count_seconds));
+    }
+    return result;
+}
+
+
 // Bind the function and structs to Python
 PYBIND11_MODULE(cuda, m) {
 
@@ -728,6 +1080,42 @@ PYBIND11_MODULE(cuda, m) {
         py::arg("wattrs") = WeightAttrs_py(), // Default value
         py::arg("sattrs") = SelectionAttrs_py(),
         py::arg("spattrs") = SplitAttrs_py(),
+        py::arg("nthreads") = 1,
+        py::arg("return_timings") = false);
+
+    m.def("count2_soft", &count2_soft_py,
+        "Take particle positions and weights (numpy arrays), perform 2-pt counts on the GPU with "
+        "Gaussian-softmax soft binning on the separation axis, and return a numpy array. "
+        "soft_sigma is in separation units; None means half a bin.",
+        py::arg("particles1"),
+        py::arg("particles2"),
+        py::arg("mattrs"),
+        py::arg("battrs"),
+        py::arg("wattrs") = WeightAttrs_py(),
+        py::arg("sattrs") = SelectionAttrs_py(),
+        py::arg("spattrs") = SplitAttrs_py(),
+        py::arg("soft_sigma") = py::none(),
+        py::arg("soft_cutoff") = 1e-13,
+        py::arg("soft_taps") = "exact",
+        py::arg("nthreads") = 1,
+        py::arg("return_timings") = false);
+
+    m.def("count2_soft_vjp", &count2_soft_vjp_py,
+        "Vector-Jacobian product of count2_soft: given the cotangent of the soft "
+        "histogram, return the gradients with respect to the two catalogues' "
+        "positions, individual weights and soft_sigma. Gradients are per input "
+        "particle (the kernel undoes the mesh's cell reordering).",
+        py::arg("particles1"),
+        py::arg("particles2"),
+        py::arg("mattrs"),
+        py::arg("battrs"),
+        py::arg("cotangent"),
+        py::arg("wattrs") = WeightAttrs_py(),
+        py::arg("sattrs") = SelectionAttrs_py(),
+        py::arg("spattrs") = SplitAttrs_py(),
+        py::arg("soft_sigma") = py::none(),
+        py::arg("soft_cutoff") = 1e-13,
+        py::arg("soft_taps") = "exact",
         py::arg("nthreads") = 1,
         py::arg("return_timings") = false);
 

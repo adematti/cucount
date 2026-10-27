@@ -22,6 +22,7 @@ set(CUCOUNT_CUDA_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/logger.cpp
     src/mesh.cu
     src/count2.cu
+    src/count2_soft.cu
     src/count3close.cu
     src/count3.cu)
 
