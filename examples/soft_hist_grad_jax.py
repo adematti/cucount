@@ -247,6 +247,8 @@ def main():
         pos1, w1, pos2, w2))
 
     fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.2), layout='constrained')
+    fig.suptitle('Soft counts and their adjoint through the XLA FFI custom call',
+                 fontsize=11.5)
     centres = 0.5 * (EDGES[1:] + EDGES[:-1])
 
     ax = axes[0, 0]
