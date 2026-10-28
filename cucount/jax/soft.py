@@ -21,14 +21,28 @@ costs about one forward pass instead of carrying per-pair taps through autodiff.
 Gradients are exact w.r.t. positions and individual weights. The kernel also
 returns a ``sigma`` cotangent, but ``soft_sigma`` is a static argument here, so
 it is discarded.
+
+Multi-GPU works the way the hard ``count2`` does it: inside
+``with create_sharding_mesh() as mesh:`` catalogue 1 is split over the mesh axis
+and catalogue 2 is replicated, each shard counts its own slice against the whole
+of catalogue 2, and the partial histograms are summed with ``lax.psum``. The
+adjoint follows the same split: catalogue 1's gradient stays per-shard and the
+replicated catalogue's partial gradients are summed with ``psum``. The custom VJP
+sits *outside* the ``shard_map`` (differentiating a globally-shaped input) rather
+than inside it (differentiating a shard-local one), which is what keeps jax's
+manual-axis-type bookkeeping happy: a ``custom_vjp`` inside ``shard_map`` must
+return gradients whose avals carry the same ``{V:axis}`` annotations as the
+shard-local primals, and FFI result buffers do not.
 """
 
 import numpy as np
 import jax
 from jax import numpy as jnp
+from jax.experimental.shard_map import shard_map
+from jax.sharding import PartitionSpec as P
 
 from . import Particles, WeightAttrs, MeshAttrs, SelectionAttrs, SplitAttrs, BinAttrs
-from . import _resolve_ffi_backend, _stack_values
+from . import _resolve_ffi_backend, _stack_values, default_sharding_mesh
 from ..numpy.soft import default_sigma, is_uniform
 
 NDIM = 3
@@ -78,15 +92,15 @@ def _soft_spec(edges, soft_sigma=None, soft_cutoff=1e-13, soft_taps='exact'):
                 taps=(2 * kmax + 1) if uniform else -1, nbins=nbins)
 
 
-def _vjp_bufsize(particles, mattrs, nbins=0):
-    """Scratch bytes the adjoint asks XLA for.
+def _bufsize(meshsize, n, nbins=0):
+    """Scratch bytes one adjoint call asks XLA for, for ``n = [n1, n2]`` inputs.
 
     The adjoint allocates no histogram of its own (the cotangent is an input), but
     it keeps a slot -> input-index map per mesh so gradients reach the right
     particle after ``set_mesh`` reorders them, plus the reordered particle arrays.
+    ``n`` must be the particle count *this* call sees: the global count when
+    running on one device, the shard-local count under ``shard_map``.
     """
-    meshsize = int(np.prod(np.asarray(mattrs.meshsize, dtype=np.int64)))
-    n = [int(p.positions.shape[0]) for p in particles]
     return (2 * meshsize  # nparticles + cumnparticles, both meshes
             + sum(n) * (2 * (NDIM + 1) + 1)  # positions+spositions, values, index map
             + 2 * meshsize * 16  # launch bookkeeping and slack
@@ -94,11 +108,19 @@ def _vjp_bufsize(particles, mattrs, nbins=0):
             ) * 8 + 65536
 
 
+def _vjp_bufsize(particles, mattrs, nbins=0):
+    """Scratch bytes for the whole (unsharded) pair of catalogues."""
+    meshsize = int(np.prod(np.asarray(mattrs.meshsize, dtype=np.int64)))
+    return _bufsize(meshsize, [int(p.positions.shape[0]) for p in particles], nbins)
+
+
+@default_sharding_mesh
 def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = None,
                 soft_cutoff: float = 1e-13, soft_taps: str = 'exact',
                 wattrs: WeightAttrs = None,
                 sattrs: SelectionAttrs = None, spattrs: SplitAttrs = None,
-                mattrs: MeshAttrs = None, backend: str = None):
+                mattrs: MeshAttrs = None, backend: str = None,
+                sharding_mesh: jax.sharding.Mesh = None):
     """Differentiable soft pair counts.
 
     Drop-in neighbour of :func:`cucount.jax.count2` for the isotropic soft case:
@@ -131,6 +153,12 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
         As in :func:`cucount.jax.count2`. Spin, angular upweighting,
         split/jackknife and a second binning axis are rejected: the soft kernel
         does not serve them.
+    sharding_mesh : jax.sharding.Mesh, optional
+        Usually taken from the active context, exactly as in
+        :func:`cucount.jax.count2`: inside ``with create_sharding_mesh() as mesh:``
+        the counts are computed in parallel over the mesh axis with catalogue 1
+        split and catalogue 2 replicated, and ``jax.grad`` works through the same
+        distribution.
 
     Returns
     -------
@@ -174,10 +202,11 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
         ffi_module.set_index_value(icat, **p.index_value._to_c())
 
     has_weights = [bool(p.index_value('individual_weight')) for p in particles]
-    n = [int(p.positions.shape[0]) for p in particles]
+    meshsize = int(np.prod(np.asarray(mattrs.meshsize, dtype=np.int64)))
 
-    counts_type = jax.ShapeDtypeStruct((nbins,), jnp.float64)
-    buffer_type = jax.ShapeDtypeStruct((_vjp_bufsize(particles, mattrs, nbins),), jnp.float64)
+    def _values(p):
+        values = _stack_values(p.values, np=jnp)
+        return jnp.zeros((p.positions.shape[0], 0), jnp.float64) if values is None else values
 
     def _operands(ps):
         """Positions (and weight columns, when present) for each catalogue."""
@@ -188,19 +217,29 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
                 ops.append(_values(p))
         return ops
 
-    def _values(p):
-        values = _stack_values(p.values, np=jnp)
-        return jnp.zeros((p.positions.shape[0], 0), jnp.float64) if values is None else values
+    # Flat operand layout: [pos1, (w1), pos2, (w2)]. `owners` says which catalogue
+    # each operand belongs to, and `starts` where that catalogue's positions sit,
+    # so a traced call can read the particle count it actually sees (global on one
+    # device, shard-local under shard_map).
+    owners, starts = [], []
+    for icat, hw in enumerate(has_weights):
+        starts.append(len(owners))
+        owners.append(icat)
+        if hw:
+            owners.append(icat)
 
-    @jax.custom_vjp
-    def _counts(*ops):
+    def _lens(ops):
+        return [int(ops[starts[icat]].shape[0]) for icat in range(2)]
+
+    def _local_forward(*ops):
+        n = _lens(ops)
+        counts_type = jax.ShapeDtypeStruct((nbins,), jnp.float64)
+        buffer_type = jax.ShapeDtypeStruct((_bufsize(meshsize, n, nbins),), jnp.float64)
         fwd = jax.ffi.ffi_call('count2_soft' + suffix, (counts_type, buffer_type))
         return fwd(*ops)[0]
 
-    def _counts_fwd(*ops):
-        return _counts(*ops), ops
-
-    def _counts_bwd(ops, cotangent):
+    def _local_bwd(ops, cotangent):
+        n = _lens(ops)
         # All gradients are FFI result buffers (XLA allocates them and zero-fills
         # nothing, so the kernel zeroes them itself before accumulating).
         outputs = (
@@ -209,19 +248,64 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
             jax.ShapeDtypeStruct((n[0],), jnp.float64),
             jax.ShapeDtypeStruct((n[1],), jnp.float64),
             jax.ShapeDtypeStruct((1,), jnp.float64),
-            buffer_type,
+            jax.ShapeDtypeStruct((_bufsize(meshsize, n, nbins),), jnp.float64),
         )
         vjp = jax.ffi.ffi_call('count2_soft_vjp' + suffix, outputs)
         gpos1, gpos2, gw1, gw2, _gsigma, _buf = vjp(*ops, cotangent)
-
         grads = []
-        for ip, (p, hw, gpos, gw) in enumerate(zip(particles, has_weights, (gpos1, gpos2), (gw1, gw2))):
-            grads.append(gpos.reshape(p.positions.shape))
+        for p, hw, gpos, gw in zip(particles, has_weights, (gpos1, gpos2), (gw1, gw2)):
+            grads.append(gpos.reshape((-1, NDIM)))
             if hw:
                 grads.append(gw.reshape((-1, 1)))
         # For one Particles the operand list holds the same arrays twice, so the
         # four cotangents accumulate onto one primal: exactly dL/dp.
         return tuple(grads)
+
+    # Distribution, when a non-empty mesh axis is in scope: catalogue 1 is split
+    # over the axis and catalogue 2 is replicated -- the pattern the hard count2
+    # uses. Every shard counts the pairs of its own slice of catalogue 1 against the
+    # whole of catalogue 2, and the partial histograms are summed with lax.psum.
+    axes = tuple(sharding_mesh.axis_names) if sharding_mesh is not None else ()
+    distribute = bool(axes)
+
+    def _cat_spec(icat):
+        return P(axes) if (distribute and icat == 0) else P(None)
+
+    def _in_specs():
+        specs = []
+        for icat, hw in enumerate(has_weights):
+            specs.append(_cat_spec(icat))
+            if hw:
+                specs.append(_cat_spec(icat))
+        return tuple(specs)
+
+    def _forward(*ops):
+        if not distribute:
+            return _local_forward(*ops)
+        return shard_map(lambda *o: jax.lax.psum(_local_forward(*o), axes),
+                         mesh=sharding_mesh, in_specs=_in_specs(), out_specs=P())(*ops)
+
+    def _sharded_bwd(*ops_and_cot):
+        ops, cotangent = ops_and_cot[:-1], ops_and_cot[-1]
+        grads = _local_bwd(ops, cotangent)
+        # The split catalogue's gradient is already per-shard; the replicated one
+        # needs the per-shard partial gradients summed back together.
+        return tuple(g if owners[i] == 0 else jax.lax.psum(g, axes)
+                     for i, g in enumerate(grads))
+
+    @jax.custom_vjp
+    def _counts(*ops):
+        return _forward(*ops)
+
+    def _counts_fwd(*ops):
+        return _counts(*ops), ops
+
+    def _counts_bwd(ops, cotangent):
+        if not distribute:
+            return _local_bwd(ops, cotangent)
+        return shard_map(_sharded_bwd, mesh=sharding_mesh,
+                         in_specs=_in_specs() + (P(None),),
+                         out_specs=_in_specs())(*ops, cotangent)
 
     _counts.defvjp(_counts_fwd, _counts_bwd)
 

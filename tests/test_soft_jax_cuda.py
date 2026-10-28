@@ -227,3 +227,59 @@ def test_non_uniform_edges_match_numpy_and_gradient():
             fd = (np.dot(_reference_counts(plus, pos2, w1, w2, battrs, mattrs, sigma=None), cot)
                   - np.dot(_reference_counts(minus, pos2, w1, w2, battrs, mattrs, sigma=None), cot)) / (2 * h)
             assert fd == pytest.approx(gpos[i, d], rel=2e-4, abs=1e-6)
+
+
+def _n_devices():
+    return len(_gpu_devices())
+
+
+needs_two_gpus = pytest.mark.skipif(
+    _n_devices() < 2 or not hasattr(cjax, 'count2_soft'),
+    reason='the sharded soft path needs at least two GPUs')
+
+
+@needs_two_gpus
+def test_sharded_counts_and_gradients_match_single_device():
+    """Under ``create_sharding_mesh`` the soft path splits and sums like count2.
+
+    Catalogue 1 is split over the mesh axis and catalogue 2 replicated; each shard
+    counts its own slice against the whole of catalogue 2 and the partial
+    histograms are summed, so the sharded answer must equal the single-device one.
+    The adjoint runs the same way: catalogue 1's gradient is per-shard, the
+    replicated catalogue's partial gradients are summed back with ``psum``.
+    """
+    ndev = _n_devices()
+    n = 8 * ndev  # divisible by the mesh size, as shard_map requires
+    rng = np.random.default_rng(53)
+    pos = rng.uniform(0., BOX, (n, 3))
+    w = rng.uniform(0.5, 1.5, n)
+    battrs = BinAttrs(s=EDGES)
+    p = Particles(pos, w)
+    mattrs = MeshAttrs(p, p, boxsize=BOX, battrs=battrs, periodic=True)
+    cot = rng.normal(size=EDGES.size - 1)
+
+    ref = np.asarray(_reference_counts(pos, pos, w, w, battrs, mattrs))
+    vjp = nsoft.count2_soft_vjp(
+        Particles(pos, w), Particles(pos, w), battrs=battrs, cotangent=cot,
+        soft_sigma=SIGMA, soft_cutoff=CUTOFF, mattrs=mattrs, backend='cuda')
+    ref_gpos = np.asarray(vjp['grad_position1']) + np.asarray(vjp['grad_position2'])
+    ref_gw = (np.asarray(vjp['grad_weight1']).reshape(-1)
+              + np.asarray(vjp['grad_weight2']).reshape(-1))
+
+    with cjax.create_sharding_mesh() as mesh:
+        assert mesh.devices.size == ndev
+        pj = cjax.Particles(pos, w)
+
+        def loss(pp):
+            counts = cjax.count2_soft(pp, pp, battrs=battrs, soft_sigma=SIGMA,
+                                      soft_cutoff=CUTOFF, mattrs=mattrs,
+                                      backend='cuda')['weight']
+            return (counts * cot).sum()
+
+        value, grad = jax.value_and_grad(loss)(pj)
+
+    np.testing.assert_allclose(float(value), float(np.dot(ref, cot)), rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(grad.positions), ref_gpos,
+                               rtol=1e-12, atol=1e-9 * np.abs(ref_gpos).max())
+    np.testing.assert_allclose(np.asarray(grad.values[0]).reshape(-1), ref_gw,
+                               rtol=1e-12, atol=1e-9 * np.abs(ref_gw).max())
