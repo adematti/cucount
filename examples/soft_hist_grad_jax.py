@@ -19,6 +19,11 @@ The point of the example is the caching contract of the soft-histogram FFI pair:
 * changing the particle count or ``soft_sigma`` re-traces and recompiles;
 * after the first call the steady-state cost of a gradient is one forward plus
   one adjoint kernel launch, and that is what a fit loop pays.
+
+The run ends with a figure (``examples/figures/soft_hist_grad_jax.png``): the
+soft histogram next to the hard one, what the kernel does to the bin contents,
+the adjoint checked against central differences, and the loss of a short fit
+that recovers a known weight amplitude without recompiling after step 0.
 """
 
 import re
@@ -70,10 +75,23 @@ def _counts(pos1, w1, pos2, w2, battrs, mattrs, sigma):
                             backend='cuda')['weight']
 
 
+def _clustered(rng, n, nclusters=48, sigma=6.0):
+    """A clustered catalogue: uniform clusters, Gaussian scatter inside.
+
+    A uniform catalogue has scale-free pair statistics inside a periodic box,
+    so an isotropic stretch barely changes its histogram -- useless for a fit
+    demo.  Clusters make the counts respond to the stretch and give the
+    objective landscape a real minimum.
+    """
+    centres = rng.uniform(0., BOX, (nclusters, 3))
+    labels = rng.integers(0, nclusters, n)
+    return (centres[labels] + rng.normal(0., sigma, (n, 3))) % BOX
+
+
 def main():
     rng = np.random.default_rng(5)
-    pos1 = rng.uniform(0., BOX, (N, 3))
-    pos2 = rng.uniform(0., BOX, (N, 3))
+    pos1 = _clustered(rng, N)
+    pos2 = _clustered(rng, N)
     w1 = rng.uniform(0.5, 1.5, N)
     w2 = rng.uniform(0.5, 1.5, N)
     battrs = BinAttrs(s=EDGES)
@@ -164,33 +182,141 @@ def main():
           f'value+grad median {np.median(times) * 1e3:.2f} ms '
           f'(ratio {np.median(times) / t_fwd:.2f}x, one extra kernel)')
 
-    # 6. A short fit: stretch the second catalogue along z until the one-hot
-    #    bin is matched.  Only floats move, so nothing recompiles.
-    def model(a):
-        z = pos2 * jnp.array([1.0, 1.0, a])
-        return (_counts(pos1, w1, z, w2, battrs, mattrs, SIGMA) * target).sum()
+    # 6. A short fit: recover an amplitude on the second catalogue.  The soft
+    #    histogram is exactly linear in that amplitude, so the objective is a
+    #    well-posed quadratic and the minimum sits exactly at a = 1.  Only
+    #    floats move: JAX does not recompile inside the loop.
+    A_TRUE = 1.0
+    A_START = 0.62
 
-    value_grad_a = jax.jit(jax.value_and_grad(model))
-    a = jnp.array(1.0)
-    lr = 0.05
+    reference_vec = np.asarray(jax.jit(
+        lambda ww: _counts(pos1, w1, pos2, ww, battrs, mattrs, SIGMA))(
+            w2 * A_TRUE))
+    scale = float(np.sqrt((reference_vec ** 2).sum()))
+
+    def residual(a):
+        c = _counts(pos1, w1, pos2, w2 * a, battrs, mattrs, SIGMA)
+        return (((c - reference_vec) / scale) ** 2).sum()
+
+    value_grad_a = jax.jit(jax.value_and_grad(residual))
+    a = jnp.array(A_START)
+    lr = 0.03
     m = v = jnp.zeros(())
-    print('\n[6] fitting an anisotropic stretch (Adam, 15 steps)')
+    print(f'\n[6] recovering an amplitude a = {A_TRUE} from a = {A_START} '
+          '(Adam, 15 steps)')
     first = None
+    history = []
     for step in range(15):
         t0 = time.perf_counter()
         l, dl = value_grad_a(a)
         dl.block_until_ready()
         dt = time.perf_counter() - t0
         first = first or dt
+        history.append((float(l), float(a), float(dl)))
         m = 0.9 * m + 0.1 * dl
         v = 0.999 * v + 0.001 * dl ** 2
         a = a - lr * (m / (1 - 0.9 ** (step + 1))) / (
             jnp.sqrt(v / (1 - 0.999 ** (step + 1))) + 1e-8)
         if step in (0, 1, 2, 14):
-            print(f'    step {step:2d}: target-window counts = {float(l):.6f}, '
-                  f'd/da = {float(dl): .3e}, a = {float(a):.4f}, {dt * 1e3:.1f} ms')
+            print(f'    step {step:2d}: L = {float(l):.3e}, '
+                  f'dL/da = {float(dl): .3e}, a = {float(a):.4f}, '
+                  f'{dt * 1e3:.1f} ms')
     print(f'    first step {first * 1e3:.1f} ms, later steps '
           f'{dt * 1e3:.1f} ms -> the loop pays no compile after step 0')
+
+    # 7. The same story as a figure: what the soft kernel does to the counts,
+    #    that the adjoint is the derivative it claims to be, and what a fit
+    #    through it looks like.
+    import os
+    import tempfile
+
+    os.environ.setdefault('MPLCONFIGDIR',
+                          os.path.join(tempfile.gettempdir(), 'cucount-mpl'))
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    hard_counts = np.asarray(jax.jit(
+        lambda p1, w1, p2, w2: cjax.count2(cjax.Particles(p1, w1),
+                                           cjax.Particles(p2, w2),
+                                           battrs=battrs, mattrs=mattrs,
+                                           backend='cuda')['weight'])(
+        pos1, w1, pos2, w2))
+    soft_counts = np.asarray(jax.jit(
+        lambda p1, w1, p2, w2: _counts(p1, w1, p2, w2, battrs, mattrs, SIGMA))(
+        pos1, w1, pos2, w2))
+
+    fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.2), layout='constrained')
+    centres = 0.5 * (EDGES[1:] + EDGES[:-1])
+
+    ax = axes[0, 0]
+    ax.step(np.repeat(EDGES, 2)[1:-1], np.repeat(hard_counts, 2), where='mid',
+            color='0.3', lw=1.6, label='hard binning')
+    ax.plot(centres, hard_counts, 'o', ms=3.5, color='0.3')
+    ax.plot(centres, soft_counts, '-', marker='o', ms=3.5, lw=1.4,
+            color=plt.get_cmap('viridis')(0.45),
+            label=rf'soft, $\sigma={SIGMA:g}$')
+    ax.set_yscale('log')
+    ax.set_xlabel(r'$s$')
+    ax.set_ylabel('pair counts')
+    ax.set_title('Soft versus hard pair counts (jax FFI path)')
+    ax.legend(fontsize=8.5)
+    ax.grid(alpha=0.25, which='both')
+
+    ax = axes[0, 1]
+    ax.axhline(1.0, color='0.3', lw=1.2)
+    ax.plot(centres, soft_counts / hard_counts, '-', marker='o', ms=3.5,
+            lw=1.4, color=plt.get_cmap('viridis')(0.45))
+    ax.set_xlabel(r'$s$')
+    ax.set_ylabel('soft / hard counts')
+    ax.set_title('The kernel smooths the bin contents')
+    ax.grid(alpha=0.25)
+
+    # The adjoint against central differences of the same scalar loss.
+    cot = target
+    loss_pos2 = jax.jit(lambda q: (_counts(pos1, w1, q, w2, battrs,
+                                           mattrs, SIGMA) * cot).sum())
+    grad_pos2 = np.asarray(jax.grad(loss_pos2)(pos2))
+    flat = np.argsort(-np.abs(grad_pos2).ravel())[:8]
+    picked, axis = np.unravel_index(flat, grad_pos2.shape)
+    h = 1e-4
+    fd = []
+    for i, ax_i in zip(picked, axis):
+        plus = np.array(pos2, copy=True)
+        minus = np.array(pos2, copy=True)
+        plus[i, ax_i] += h
+        minus[i, ax_i] -= h
+        fd.append((float(loss_pos2(plus)) - float(loss_pos2(minus))) / (2 * h))
+    fd = np.array(fd)
+    adj = grad_pos2[picked, axis]
+
+    ax = axes[1, 0]
+    ax.loglog(fd, adj, 'o', ms=5, color=plt.get_cmap('viridis')(0.45),
+              label='adjoint from the custom VJP')
+    lim = [min(np.abs(fd).min(), np.abs(adj).min()) * 0.5,
+           max(np.abs(fd).max(), np.abs(adj).max()) * 2.]
+    ax.loglog(lim, lim, '-', lw=1.2, color='0.3', label='$y = x$')
+    ax.set_xlabel(r'central difference $dL/dp$')
+    ax.set_ylabel(r'adjoint $dL/dp$')
+    ax.set_title('The adjoint is the derivative of the same loss')
+    ax.legend(fontsize=8.5)
+    ax.grid(alpha=0.25, which='both')
+
+    ax = axes[1, 1]
+    steps = np.arange(len(history))
+    ax.semilogy(steps, [hh[0] for hh in history], 'o-', ms=3.5, lw=1.4,
+                color=plt.get_cmap('viridis')(0.45), label=r'$L$ along the fit')
+    ax.set_xlabel('Adam step')
+    ax.set_ylabel(r'$L$')
+    ax.set_title(r'Recovering an amplitude (no recompile after step 0)')
+    ax.legend(fontsize=8.5)
+    ax.grid(alpha=0.25, which='both')
+
+    figdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'figures')
+    os.makedirs(figdir, exist_ok=True)
+    out = os.path.join(figdir, 'soft_hist_grad_jax.png')
+    fig.savefig(out, dpi=150)
+    print(f'\n[7] figure saved to {out}')
 
     cache_dir = jax.config.jax_compilation_cache_dir
     print(f'\ncompilation cache dir: {cache_dir or "(none: set JAX_COMPILATION_CACHE_DIR)"}')

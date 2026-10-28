@@ -143,3 +143,6 @@ docs/_autosummary/
 
 tests/output/
 
+
+# Example figures and benchmarks output
+examples/figures/
