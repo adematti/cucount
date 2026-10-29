@@ -343,6 +343,10 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float=None,
     if spattrs is None: spattrs = SplitAttrs()
     wattrs.check(*particles)
     spattrs.check(*particles)
+    # The kernel writes one histogram, not one per split; raising here keeps a
+    # jackknife request from coming back as plausible-looking plain counts.
+    if getattr(spattrs, 'nsplits', 0):
+        raise NotImplementedError('split/jackknife counts are not served by the soft kernel yet')
     _check_count2(particles, battrs, wattrs, spattrs)
 
     mode = _resolve_backend(backend)
@@ -434,6 +438,10 @@ def count2_soft_vjp(*particles: Particles, battrs: BinAttrs, cotangent,
     if spattrs is None: spattrs = SplitAttrs()
     wattrs.check(*particles)
     spattrs.check(*particles)
+    # The kernel writes one histogram, not one per split; raising here keeps a
+    # jackknife request from coming back as plausible-looking plain counts.
+    if getattr(spattrs, 'nsplits', 0):
+        raise NotImplementedError('split/jackknife counts are not served by the soft kernel yet')
     _check_count2(particles, battrs, wattrs, spattrs)
 
     mode = _resolve_backend(backend)

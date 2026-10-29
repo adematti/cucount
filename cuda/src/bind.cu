@@ -730,7 +730,11 @@ static py::dict soft_meta(const SoftBinSpec &spec)
 {
     py::dict soft;
 
-    soft["sigma"] = spec.inv2sig2 > 0 ? 1. / std::sqrt(2. * spec.inv2sig2) : 0.;
+    // A width-scaled sigma (non-arithmetic grid, sigma <= 0) is reported as the
+    // multiplier of the local bin width, which is what actually ran; the
+    // absolute branch covers an arithmetic grid or an explicit sigma.
+    soft["sigma"] = spec.per_bin_sigma ? spec.alpha
+                    : (spec.inv2sig2 > 0 ? 1. / std::sqrt(2. * spec.inv2sig2) : 0.);
     soft["sigma_units"] = "separation";
     soft["sigma_kind"] = spec.per_bin_sigma ? "width" : "absolute";
     soft["uniform"] = spec.uniform != 0;

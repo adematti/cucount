@@ -339,6 +339,44 @@ counts = count3(data, battrs12=battrs12, battrs13=battrs13,
 All these functions accept `cucount.jax` `Particles` as well, and dispatch to the JAX backend
 automatically.
 
+### 🌫️ Soft binning
+
+`count2` places every pair in exactly one bin. `count2_soft` shares it between
+neighbouring bins with a Gaussian softmax around each bin centre instead: counts move
+between bins but total weight is conserved, and `soft_sigma -> 0` recovers `count2`.
+It returns the same `Count2` / `Count2Poles` containers, and `attrs` records the soft
+configuration (`soft_sigma`, `soft_cutoff`, `soft_multipoles`, ...).
+
+```python
+from cucount.types import count2_soft
+
+sedges = np.logspace(np.log10(1.), np.log10(100.), 21)  # any strictly increasing grid
+battrs = BinAttrs(s=sedges)
+DD = count2_soft(data, battrs=battrs, wattrs=wattrs, mattrs=mattrs)['weight']
+print(DD.attrs['soft_sigma'], DD.attrs['soft_sigma_kind'])  # 0.5, 'width'
+
+# Soft multipoles: the mu axis is smoothed too, so the poles stay differentiable
+battrs = BinAttrs(s=sedges, pole=([0, 2, 4], 'midpoint'))
+DD = count2_soft(data, battrs=battrs, wattrs=wattrs, mattrs=mattrs,
+                 soft_mu_sigma=0.05)['weight']  # Count2Poles
+```
+
+`soft_sigma` defaults to half a bin: on a non-uniform grid it is half of *each* bin, so
+`attrs['soft_sigma']` is the multiplier of the local width (`soft_sigma_kind='width'`),
+while on an arithmetic grid it is an absolute width (`'absolute'`). Pass a number for a
+constant width in separation units. `soft_cutoff` drops the Gaussian tail (the window is renormalized, so weight stays
+conserved) and `soft_taps='fast'` trades ~1e-6 weight accuracy for speed on non-uniform
+grids. For multipoles the mu quadrature is a uniform grid over the full `[-1, 1]` (mu is
+not folded, so odd multipoles keep their sign): `soft_mu_bins` sets its resolution and
+`soft_mu_edges` takes caller-supplied cells --- arithmetic ones still take the fast
+recurrence path. The small `soft_sigma -> 0` limit is the honest one for multipoles:
+softening mu shifts the poles at `O(sigma_mu^2)`, so it is opt-in.
+
+The soft kernel is CUDA-only and rejects spin, angular upweights and split/jackknife
+requests instead of silently ignoring them. Runnable examples:
+`examples/soft_counts_lsstypes.py` (this frontend, isotropic and multipoles),
+`examples/soft_hist_grad_jax.py` (gradients through `cucount.jax.soft`).
+
 ---
 
 ## 📎 References

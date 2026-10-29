@@ -177,6 +177,147 @@ def count2(*particles: Particles, battrs: BinAttrs=None, wattrs: WeightAttrs=Non
     return result
 
 
+def _soft_self_pair_mask(battrs: BinAttrs, soft_sigma=None, soft_cutoff=1e-13,
+                         soft_mu_sigma=None, soft_mu_bins=0, soft_mu_edges=None):
+    """The profile an autocorrelation self pair deposits, shape ``counts.shape``.
+
+    The soft counts include the diagonal pairs exactly as the kernel sees them,
+    so they must be removed with the same profile. A self pair sits at ``s = 0``
+    (the kernel also sets ``mu = 0`` there), so it spreads over the separation
+    bins with the ordinary Gaussian softmax and over the mu quadrature with the
+    soft moment profile -- like any other pair, because the kernel does not
+    special-case it. The hard wrapper subtracts ``sum_weights2`` from the bin
+    that contains zero; the soft wrapper subtracts ``sum_weights2 * this``.
+    """
+    from cucount.numpy.soft import soft_mu_weights, soft_weights
+    masks = []
+    for name, edges in battrs.edges().items():
+        if name == 'pole':
+            ells = np.asarray(edges, dtype=np.int64)
+            masks.append(soft_mu_weights(np.array([0.]), ells, soft_mu_sigma,
+                                         soft_mu_bins, soft_cutoff, soft_mu_edges)[0])
+        elif name == 's':
+            # edges() gives one (low, high) pair per bin; the kernel's window is
+            # [low[0], high[-1]), so a grid that excludes zero never counted the
+            # self pairs in the first place.
+            edges = np.asarray(edges, dtype=np.float64)
+            inside = edges[0, 0] <= 0. < edges[-1, 1]
+            masks.append(soft_weights(0., np.append(edges[:, 0], edges[-1, 1]), sigma=soft_sigma)[0]
+                         if inside else np.zeros(edges.shape[0]))
+        else:
+            raise NotImplementedError(f'soft binning does not serve the {name!r} axis')
+    return prod(np.meshgrid(*masks, indexing='ij'))
+
+
+def count2_soft(*particles: Particles, battrs: BinAttrs=None, wattrs: WeightAttrs=None, norm=None,
+                soft_sigma: float=None, soft_cutoff: float=1e-13, soft_taps: str='exact',
+                soft_mu_sigma: float=None, soft_mu_bins: int=0, soft_mu_edges=None, **kwargs):
+    """
+    Perform soft pair counts, exporting to :mod:`lsstypes` format.
+
+    Drop-in neighbour of :func:`count2` for the Gaussian-softmax soft binning:
+    the counts are spread over the separation bins (and, with a ``pole`` axis,
+    over the mu quadrature as soft multipoles) instead of being placed in a
+    single bin. Normalization, self-pair removal and the ``Count2`` /
+    ``Count2Poles`` packing are the same as in :func:`count2`.
+
+    Because the self pairs of an autocorrelation carry soft weight too, they are
+    removed with the soft profile (see :func:`_soft_self_pair_mask`) rather than
+    from a single bin; the rest of the normalization is unchanged.
+
+    Parameters
+    ----------
+    *particles : Particles
+        One (autocorrelation) or two Particles instances, exactly as in
+        :func:`count2`. If from :mod:`cucount.jax`, they dispatch to
+        :func:`cucount.jax.count2_soft` (and :func:`cucount.jax.count2_soft_vjp`
+        remains available for gradients).
+    battrs : BinAttrs
+        ``BinAttrs(s=edges)`` for soft isotropic counts, or
+        ``BinAttrs(s=edges, pole=(ells, los))`` for soft multipoles. Any strictly
+        increasing ``s`` edges are served; arithmetic grids take the fast
+        recurrence kernel.
+    wattrs : WeightAttrs, optional
+        Weight attributes; a default :class:`WeightAttrs` (no weights) is used
+        when ``None``.
+    norm : array, optional
+        Override the computed normalization.
+    soft_sigma : float, optional
+        Gaussian width in separation units; ``None`` means half a bin (half of
+        *each* bin on a non-uniform grid).
+    soft_cutoff : float, optional
+        Relative weight below which the Gaussian tail is dropped (the window is
+        renormalized, so weight stays conserved). Speed knob: taps grow as
+        ``sqrt(2 ln(1 / cutoff))``. Default ``1e-13``.
+    soft_taps : {'exact', 'fast'}
+        Only affects a non-uniform ``s`` grid: ``'exact'`` (default) uses double
+        ``exp``, ``'fast'`` uses ``__expf`` for ~1e-6 weight accuracy.
+    soft_mu_sigma : float, optional
+        Width of the mu kernel when ``battrs`` has a pole axis; ``None`` means
+        half a mu cell.
+    soft_mu_bins : int, optional
+        Resolution of the internal uniform mu quadrature; 0 derives it.
+    soft_mu_edges : array_like, optional
+        Caller-supplied mu cell edges (strictly increasing, inside ``[-1, 1]``,
+        mu is not folded) instead of the internal uniform grid.
+    **kwargs
+        Selection, split, mesh and backend arguments, forwarded to the count
+        function. The soft kernel is CUDA-only for now and rejects
+        spin/angular/split requests rather than ignoring them.
+
+    Returns
+    -------
+    result : dict of Count2 or Count2Poles
+        Pair counts in :mod:`lsstypes` format, with the soft configuration in
+        ``attrs`` (``soft_sigma``, ``soft_cutoff``, ``soft_multipoles``, ...).
+    """
+    if wattrs is None: wattrs = WeightAttrs()
+    autocorr = len(particles) == 1
+    use_jax = _use_jax(particles[0])
+    if use_jax:
+        from cucount.jax import count2_soft
+    else:
+        from cucount.numpy import count2_soft
+    # The soft kernel rejects split/jackknife, so the Count2Jackknife branch of
+    # count2 has no counterpart here; raise instead of silently dropping it.
+    if getattr(kwargs.get('spattrs'), 'nsplits', 0):
+        raise NotImplementedError('split/jackknife counts are not served by the soft kernel yet')
+
+    raw_counts = count2_soft(*(particles * 2 if autocorr else particles),
+                             battrs=battrs, wattrs=wattrs,
+                             soft_sigma=soft_sigma, soft_cutoff=soft_cutoff,
+                             soft_taps=soft_taps, soft_mu_sigma=soft_mu_sigma,
+                             soft_mu_bins=soft_mu_bins, soft_mu_edges=soft_mu_edges,
+                             **kwargs)
+    meta = dict(raw_counts.get('soft') or {})
+
+    norm_value, sum_weights1 = compute_norm2(*particles, wattrs=wattrs, return_sum_weights=True)
+    if norm is not None:
+        norm_value = norm
+
+    attrs = dict(wsum=sum_weights1)
+    # Keep the soft configuration with the counts: without it a saved
+    # correlation cannot be told apart from a hard-binned one.
+    for key in ('sigma', 'sigma_kind', 'cutoff', 'kmax', 'multipoles',
+                'mu_sigma', 'mu_bins', 'mu_kmax', 'mu_uniform', 'mu_sigma_kind', 'los'):
+        if key in meta:
+            attrs[f'soft_{key}'] = meta[key]
+
+    zero = None
+    if autocorr:
+        zero = _soft_self_pair_mask(battrs, soft_sigma=soft_sigma, soft_cutoff=soft_cutoff,
+                                    soft_mu_sigma=soft_mu_sigma, soft_mu_bins=soft_mu_bins,
+                                    soft_mu_edges=soft_mu_edges)
+    result = {}
+    for key, counts in raw_counts.items():
+        if key == 'soft':
+            continue
+        if autocorr:
+            counts = counts - wattrs(*(particles[:1] * 2)).sum() * zero
+        result[key] = _count2_to_lsstypes(counts=counts, norm=norm_value, battrs=battrs, attrs=attrs)
+    return result
+
+
 def count2_analytic(battrs: BinAttrs, mattrs: MeshAttrs=None):
     """
     Perform pair counts analytically for periodic boxes.
