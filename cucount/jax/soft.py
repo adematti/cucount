@@ -13,6 +13,16 @@ softmax of a Gaussian centred on the bin centres,
 so each pair's total weight is conserved and ``sigma -> 0`` recovers hard
 binning. Only the separation axis is softened, and only CUDA serves it so far.
 
+A request whose binning is ``BinAttrs(s=edges, pole=(ells, los))`` additionally
+softens the mu axis, which is what makes differentiable multipoles. Each pair
+then deposits ``w_pair * Ws_i * M_l(mu)`` in slot ``(i, l)``, where ``M_l`` is the
+truncated softmax over a mu quadrature grid projected onto the Legendre
+polynomials of the grid centres (see :func:`cucount.numpy.soft.soft_mu_weights`). ``M_0 == 1``
+exactly, so the monopole a soft-mu request returns is the soft-s count, and
+``sigma_mu -> 0`` lands on the hard multipoles up to the mu quadrature. mu is
+still a *coordinate* (it enters the kernel as the pair's own mu), so the adjoint
+carries dM_l/dmu; the mu grid itself is not differentiated.
+
 What is new here is differentiability. The counts are wrapped in
 ``jax.custom_vjp`` whose backward calls the CUDA adjoint kernel
 (``count2_soft_vjp``, the same VJP pyfcfc exposes as ``soft_hist_vjp``): the
@@ -43,18 +53,28 @@ from jax.sharding import PartitionSpec as P
 
 from . import Particles, WeightAttrs, MeshAttrs, SelectionAttrs, SplitAttrs, BinAttrs
 from . import _resolve_ffi_backend, _stack_values, default_sharding_mesh
-from ..numpy.soft import default_sigma, is_uniform
+from ..numpy.soft import default_sigma, is_uniform, mu_spec
 
 NDIM = 3
 
 
-def _s_edges(battrs):
-    """The single separation edge array of a 1-D ``BinAttrs``."""
+MAX_POLE = 8  # the kernel's ell cap; CUCOUNT_SOFT_MAXELL is MAX_POLE + 2
+
+
+def _soft_axes(battrs):
+    """Resolve the softened s axis, and the pole axis when there is one.
+
+    Returns ``(edges, ells, los)``; ``ells`` and ``los`` are ``None`` for a plain
+    isotropic request. A pole axis is served as a soft mu quadrature, so it needs
+    a line of sight and a strictly increasing, unique ell list within the kernel's
+    range -- the same restrictions ``make_soft_bin_spec`` enforces.
+    """
     names = list(battrs.varnames)
-    if names != ['s']:
+    if names not in (['s'], ['s', 'pole']):
         raise NotImplementedError(
-            'count2_soft softens the separation axis only, so battrs must be a single '
-            f's axis, e.g. BinAttrs(s=edges); got axes {names}')
+            'count2_soft softens the s axis and, optionally, a pole axis after it, so '
+            "battrs must be BinAttrs(s=edges) or BinAttrs(s=edges, pole=(ells, los)); "
+            f'got axes {names}')
     intervals = np.asarray(battrs.edges('s'), dtype=np.float64)
     edges = np.concatenate([intervals[:, 0], intervals[-1:, 1]])
     if edges.size < 2:
@@ -64,10 +84,26 @@ def _s_edges(battrs):
         raise ValueError('separation edges must be strictly increasing')
     # Both uniform and arbitrary monotone edges are served (the kernel switches
     # from the recurrence to the general path), so there is nothing to reject.
-    return edges
+    if names == ['s']:
+        return edges, None, None
+    ells = np.asarray(battrs.coords('pole'), dtype=np.int64)
+    if ells.size < 1 or ells.size > MAX_POLE + 1:
+        raise ValueError(f'1 to {MAX_POLE + 1} multipoles are served, got {ells.size}')
+    if ells.min() < 0 or ells.max() > MAX_POLE:
+        raise ValueError(f'multipoles must lie in [0, {MAX_POLE}], got {ells.tolist()}')
+    if np.unique(ells).size != ells.size or np.any(np.diff(ells) <= 0):
+        raise ValueError(f'multipoles must be unique and increasing, got {ells.tolist()}')
+    # losnames is aligned with the axes, and the s axis has none, so read the
+    # name off the pole axis itself.
+    los = str(battrs.losnames[names.index('pole')])
+    if not los:
+        raise ValueError("the pole axis needs a line of sight, e.g. pole=(ells, 'z')")
+    return edges, ells, los
 
 
-def _soft_spec(edges, soft_sigma=None, soft_cutoff=1e-13, soft_taps='exact'):
+def _soft_spec(edges, soft_sigma=None, soft_cutoff=1e-13, soft_taps='exact',
+               soft_mu_sigma=None, soft_mu_bins=0, ells=None, los=None,
+               soft_mu_edges=None):
     """Resolve the soft request the way the kernel will (sigma, window, taps)."""
     if not 0. < soft_cutoff < 1.:
         raise ValueError(f'soft_cutoff must be in (0, 1), got {soft_cutoff!r}')
@@ -85,14 +121,28 @@ def _soft_spec(edges, soft_sigma=None, soft_cutoff=1e-13, soft_taps='exact'):
         kmax = max(1, min(kmax, nbins - 1))
     else:
         kmax = nbins - 1  # adaptive: the kernel stops on the cutoff
-    return dict(sigma=sigma, sigma_units='separation',
+    meta = dict(sigma=sigma, sigma_units='separation',
                 sigma_kind='width' if width_scaled else 'absolute',
                 uniform=uniform, fast_taps=soft_taps == 'fast',
                 cutoff=float(soft_cutoff), kmax=kmax,
-                taps=(2 * kmax + 1) if uniform else -1, nbins=nbins)
+                taps=(2 * kmax + 1) if uniform else -1, nbins=nbins,
+                multipoles=[] if ells is None else [int(e) for e in ells],
+                nell=0 if ells is None else int(ells.size),
+                slots=nbins * (1 if ells is None else int(ells.size)))
+    if ells is not None:
+        mspec = mu_spec(soft_mu_sigma, soft_mu_bins, soft_mu_edges, soft_cutoff)
+        meta.update(mu_sigma=float(mspec['sigma']), mu_bins=int(mspec['nmu']),
+                    mu_kmax=int(mspec['kmax']), los=los,
+                    mu_uniform=bool(mspec['uniform']),
+                    mu_sigma_kind='width' if mspec['sigma'] <= 0 else 'absolute',
+                    mu_taps=(2 * int(mspec['kmax']) + 1) if mspec['uniform'] else -1)
+        if not mspec['uniform']:
+            meta['mu_edges'] = mspec['edges']
+
+    return meta
 
 
-def _bufsize(meshsize, n, nbins=0):
+def _bufsize(meshsize, n, nbins=0, mu_entries=0):
     """Scratch bytes one adjoint call asks XLA for, for ``n = [n1, n2]`` inputs.
 
     The adjoint allocates no histogram of its own (the cotangent is an input), but
@@ -105,18 +155,22 @@ def _bufsize(meshsize, n, nbins=0):
             + sum(n) * (2 * (NDIM + 1) + 1)  # positions+spositions, values, index map
             + 2 * meshsize * 16  # launch bookkeeping and slack
             + 3 * nbins + 1  # centres, 1/(2 sigma_i^2) and the edges, non-uniform only
+            + mu_entries  # same three tables for a non-arithmetic mu grid
             ) * 8 + 65536
 
 
-def _vjp_bufsize(particles, mattrs, nbins=0):
+def _vjp_bufsize(particles, mattrs, nbins=0, mu_entries=0):
     """Scratch bytes for the whole (unsharded) pair of catalogues."""
     meshsize = int(np.prod(np.asarray(mattrs.meshsize, dtype=np.int64)))
-    return _bufsize(meshsize, [int(p.positions.shape[0]) for p in particles], nbins)
+    return _bufsize(meshsize, [int(p.positions.shape[0]) for p in particles], nbins,
+                    mu_entries)
 
 
 @default_sharding_mesh
 def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = None,
                 soft_cutoff: float = 1e-13, soft_taps: str = 'exact',
+                soft_mu_sigma: float = None, soft_mu_bins: int = 0,
+                soft_mu_edges=None,
                 wattrs: WeightAttrs = None,
                 sattrs: SelectionAttrs = None, spattrs: SplitAttrs = None,
                 mattrs: MeshAttrs = None, backend: str = None,
@@ -136,8 +190,9 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
         internally as ``(p, p)``; jax sums the two cotangents for the shared
         operand, so ``jax.grad`` gives the exact total derivative.
     battrs : BinAttrs
-        A single ``BinAttrs(s=edges)`` with strictly increasing edges; uniform
-        grids take the fast recurrence kernel, other grids the general path.
+        ``BinAttrs(s=edges)`` with strictly increasing edges (uniform grids take
+        the fast recurrence kernel, other grids the general path), or
+        ``BinAttrs(s=edges, pole=(ells, los))`` for soft-mu multipoles.
     soft_sigma : float, optional
         Gaussian width in separation units. Default: half a bin (the pyfcfc
         default), which on a non-uniform grid means half of *each* bin, so the
@@ -149,6 +204,20 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
         ``~2 sqrt(2 ln(1/cutoff)) sigma/ds + 1``. Precision/speed knob: 1e-13
         reproduces the full softmax to double precision, 1e-6 is a fast
         production choice.
+    soft_mu_sigma : float, optional
+        Width of the mu kernel, in mu units, when ``battrs`` carries a pole axis.
+        ``None`` (or 0) means half a mu bin. The mu axis defaults to a uniform
+        grid on [-1, 1] but can be given as ``soft_mu_edges``.
+    soft_mu_bins : int, optional
+        Resolution of that mu quadrature; 0 derives it (``ceil(4 / sigma_mu)``,
+        or 40 for the default width). More bins resolve a sharper kernel.
+    soft_mu_edges : array_like, optional
+        The caller's own mu cell edges instead of the internal grid; strictly
+        increasing and inside ``[-1, 1]``. mu is used unfolded (a negative mu
+        stays negative), so odd multipoles keep their sign. Arithmetic edges
+        still take the fast recurrence path; any other grid pays one ``exp`` per
+        tap and gets per-cell widths (half the cell unless ``soft_mu_sigma`` is
+        given).
     wattrs, sattrs, spattrs, mattrs, backend
         As in :func:`cucount.jax.count2`. Spin, angular upweighting,
         split/jackknife and a second binning axis are rejected: the soft kernel
@@ -164,7 +233,8 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
     -------
     dict
         ``{'weight': counts, 'soft': spec}``: fractional, differentiable counts
-        shaped ``(nbins,)`` plus the resolved soft parameters.
+        shaped ``(nbins,)``, or ``(nbins, nell)`` when a pole axis was requested,
+        plus the resolved soft parameters.
     """
     mode, ffi_module, suffix = _resolve_ffi_backend(backend)
     if mode != 'cuda':
@@ -184,9 +254,16 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
     if getattr(spattrs, 'nsplits', 0):
         raise NotImplementedError('split/jackknife counts are not served by the soft kernel yet')
 
-    edges = _s_edges(battrs)
-    spec = _soft_spec(edges, soft_sigma, soft_cutoff, soft_taps)
+    edges, ells, los = _soft_axes(battrs)
+    spec = _soft_spec(edges, soft_sigma, soft_cutoff, soft_taps,
+                      soft_mu_sigma, soft_mu_bins, ells, los, soft_mu_edges)
     nbins = spec['nbins']
+    slots = spec['slots']
+    shape = (nbins,) if ells is None else (nbins, int(ells.size))
+    # A non-arithmetic mu grid needs the three device tables (centres, per-cell
+    # inverse variances, edges) inside the scratch buffer the FFI call is given.
+    mu_entries = (0 if ells is None or spec.get('mu_uniform', True)
+                  else 3 * int(spec['mu_bins']) + 1)
 
     if mattrs is None:
         mattrs = MeshAttrs(*particles, sattrs=sattrs, battrs=battrs, backend=mode)
@@ -197,7 +274,10 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
                                      sattrs=sattrs, spattrs=spattrs,
                                      soft_sigma=0. if soft_sigma is None else float(soft_sigma),
                                      soft_cutoff=float(soft_cutoff),
-                                     soft_taps=str(soft_taps))
+                                     soft_taps=str(soft_taps),
+                                     soft_mu_sigma=0. if soft_mu_sigma is None else float(soft_mu_sigma),
+                                     soft_mu_bins=int(soft_mu_bins),
+                                     soft_mu_edges=soft_mu_edges)
     for icat, p in enumerate(particles):
         ffi_module.set_index_value(icat, **p.index_value._to_c())
 
@@ -233,10 +313,13 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
 
     def _local_forward(*ops):
         n = _lens(ops)
-        counts_type = jax.ShapeDtypeStruct((nbins,), jnp.float64)
-        buffer_type = jax.ShapeDtypeStruct((_bufsize(meshsize, n, nbins),), jnp.float64)
+        # The kernel writes one flat slot per (s bin, multipole), so the FFI
+        # buffer is 1-D and the public shape is restored outside the kernel.
+        counts_type = jax.ShapeDtypeStruct((slots,), jnp.float64)
+        buffer_type = jax.ShapeDtypeStruct(
+            (_bufsize(meshsize, n, nbins, mu_entries),), jnp.float64)
         fwd = jax.ffi.ffi_call('count2_soft' + suffix, (counts_type, buffer_type))
-        return fwd(*ops)[0]
+        return fwd(*ops)[0].reshape(shape)
 
     def _local_bwd(ops, cotangent):
         n = _lens(ops)
@@ -248,10 +331,11 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float = Non
             jax.ShapeDtypeStruct((n[0],), jnp.float64),
             jax.ShapeDtypeStruct((n[1],), jnp.float64),
             jax.ShapeDtypeStruct((1,), jnp.float64),
-            jax.ShapeDtypeStruct((_bufsize(meshsize, n, nbins),), jnp.float64),
+            jax.ShapeDtypeStruct((_bufsize(meshsize, n, nbins, mu_entries),),
+                                 jnp.float64),
         )
         vjp = jax.ffi.ffi_call('count2_soft_vjp' + suffix, outputs)
-        gpos1, gpos2, gw1, gw2, _gsigma, _buf = vjp(*ops, cotangent)
+        gpos1, gpos2, gw1, gw2, _gsigma, _buf = vjp(*ops, cotangent.reshape((slots,)))
         grads = []
         for p, hw, gpos, gw in zip(particles, has_weights, (gpos1, gpos2), (gw1, gw2)):
             grads.append(gpos.reshape((-1, NDIM)))

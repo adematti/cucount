@@ -724,6 +724,80 @@ int device_count_py() {
 // kernel that quietly binned a request it cannot honour (hard-binning the mu
 // axis of a soft-s request, say) would produce plausible numbers, which is the
 // worst failure mode a counting code has.
+// What the soft kernel actually did, returned under result["soft"] by both
+// entries. One helper so the forward and the adjoint cannot drift apart.
+static py::dict soft_meta(const SoftBinSpec &spec)
+{
+    py::dict soft;
+
+    soft["sigma"] = spec.inv2sig2 > 0 ? 1. / std::sqrt(2. * spec.inv2sig2) : 0.;
+    soft["sigma_units"] = "separation";
+    soft["sigma_kind"] = spec.per_bin_sigma ? "width" : "absolute";
+    soft["uniform"] = spec.uniform != 0;
+    soft["fast_taps"] = spec.fast_taps != 0;
+    soft["cutoff"] = spec.cutoff;
+    soft["kmax"] = spec.kmax;
+    // Only the uniform path has a fixed window length; the general path expands
+    // until the cutoff stops it, so its tap count depends on the pair.
+    soft["taps"] = spec.uniform ? 2 * spec.kmax + 1 : -1;
+    soft["path"] = spec.path > 0 ? "shared" : "global";
+    soft["copies"] = spec.path;  // private histogram copies per warp
+    soft["nbins"] = spec.nbins;
+
+    // Multipoles: the ells that were summed over, and the mu quadrature that
+    // carried them. Empty/zero for a plain soft-s request.
+    py::list ells;
+
+    for (int i = 0; i < spec.nell; ++i) {
+        ells.append(spec.ells[i]);
+    }
+
+    soft["multipoles"] = ells;
+    soft["mu_sigma"] = spec.nell > 0 ? (double) spec.mu_sigma : 0.;
+    soft["mu_bins"] = spec.nmu;
+    soft["mu_kmax"] = spec.nell > 0 ? spec.mu_kmax : 0;
+    soft["los"] = spec.nell > 0 ? los_type_to_string(spec.los) : std::string("");
+    // Where the mu quadrature came from: an arithmetic grid (the default or a
+    // caller-supplied uniform one) takes the recurrence path, anything else the
+    // per-tap window; the edges are echoed so a caller can check what ran.
+    soft["mu_uniform"] = spec.mu_uniform != 0;
+    soft["mu_sigma_kind"] = spec.mu_per_bin_sigma ? "width" : "absolute";
+    soft["mu_taps"] = spec.mu_uniform ? 2 * spec.mu_kmax + 1 : -1;
+
+    if (spec.nell > 0 && !spec.mu_uniform && spec.host_mu_edges) {
+        py::list mu_edges;
+
+        for (int i = 0; i <= spec.nmu; ++i) {
+            mu_edges.append((double) spec.host_mu_edges[i]);
+        }
+
+        soft["mu_edges"] = mu_edges;
+    }
+
+    return soft;
+}
+
+
+// Host copy of the optional caller-supplied mu edges. The spec points into this
+// vector, so it must outlive the kernel launch; it does, because both entries
+// build the spec and run the kernel in the same scope.
+static std::vector<FLOAT> soft_mu_edges_from_py(const py::object &obj)
+{
+    std::vector<FLOAT> edges;
+
+    if (obj.is_none()) {
+        return edges;
+    }
+
+    py::array_t<FLOAT, py::array::c_style | py::array::forcecast> arr =
+        py::cast<py::array_t<FLOAT, py::array::c_style | py::array::forcecast>>(obj);
+
+    const auto *data = arr.data();
+    edges.assign(data, data + arr.size());
+    return edges;
+}
+
+
 py::object count2_soft_py(
     Particles_py& particles1, Particles_py& particles2,
     MeshAttrs_py mattrs_py, BinAttrs_py battrs_py,
@@ -733,6 +807,9 @@ py::object count2_soft_py(
     py::object soft_sigma_obj = py::none(),
     const double soft_cutoff = 1e-13,
     const std::string &soft_taps = "exact",
+    py::object soft_mu_sigma_obj = py::none(),
+    const int soft_mu_bins = 0,
+    py::object soft_mu_edges_obj = py::none(),
     const int nthreads = 1,
     const bool return_timings = false) {
 
@@ -753,9 +830,21 @@ py::object count2_soft_py(
         soft_sigma = py::cast<double>(soft_sigma_obj);
     }
 
+    double soft_mu_sigma = 0.;
+
+    if (!soft_mu_sigma_obj.is_none()) {
+        soft_mu_sigma = py::cast<double>(soft_mu_sigma_obj);
+    }
+
+    // Caller-supplied mu edges, if any; the spec keeps a pointer into this
+    // vector, which lives until the launches below have been enqueued.
+    std::vector<FLOAT> mu_edges = soft_mu_edges_from_py(soft_mu_edges_obj);
+
     size_t csize = 0;
     SoftBinSpec spec = make_soft_bin_spec(
-        battrs, wattrs, spattrs, soft_sigma, soft_cutoff, &csize);
+        battrs, wattrs, spattrs, soft_sigma, soft_cutoff, &csize,
+        soft_mu_sigma, soft_mu_bins,
+        mu_edges.empty() ? nullptr : mu_edges.data(), (int) mu_edges.size());
 
     // The general (non-uniform) path pays one exp per tap per pass; 'fast'
     // swaps them for __expf (~1e-6 relative) when the caller prefers speed.
@@ -862,28 +951,21 @@ py::object count2_soft_py(
     }
 
     // Same shape as count2's output -- one 'weight' array, here with shape
-    // (nbins,) -- plus what the kernel actually did, so a caller can tell the
+    // (nbins,) for a plain soft-s request and (nbins, nell) when multipoles were
+    // asked for -- plus what the kernel actually did, so a caller can tell the
     // shared-tile path from the fallback and see the width it used when sigma
     // was left at its default.
     py::dict result;
-    result["weight"] = counts_py;
 
-    py::dict soft;
-    soft["sigma"] = spec.inv2sig2 > 0 ? 1. / std::sqrt(2. * spec.inv2sig2) : 0.;
-    soft["sigma_units"] = "separation";
-    soft["sigma_kind"] = spec.per_bin_sigma ? "width" : "absolute";
-    soft["uniform"] = spec.uniform != 0;
-    soft["fast_taps"] = spec.fast_taps != 0;
-    soft["cutoff"] = spec.cutoff;
-    soft["kmax"] = spec.kmax;
-    // Only the uniform path has a fixed window length; the general path expands
-    // until the cutoff stops it, so its tap count depends on the pair.
-    soft["taps"] = spec.uniform ? 2 * spec.kmax + 1 : -1;
-    soft["path"] = spec.path > 0 ? "shared" : "global";
-    soft["copies"] = spec.path;  // private histogram copies per warp
-    soft["nbins"] = spec.nbins;
+    if (spec.nell > 0) {
+        result["weight"] = counts_py.attr("reshape")(
+            py::make_tuple((ssize_t) spec.nbins, (ssize_t) spec.nell));
+    }
+    else {
+        result["weight"] = counts_py;
+    }
 
-    result["soft"] = soft;
+    result["soft"] = soft_meta(spec);
 
     if (return_timings) {
         return py::make_tuple(result, py::make_tuple(mesh_seconds, count_seconds));
@@ -902,6 +984,9 @@ py::object count2_soft_vjp_py(
     py::object soft_sigma_obj = py::none(),
     const double soft_cutoff = 1e-13,
     const std::string &soft_taps = "exact",
+    py::object soft_mu_sigma_obj = py::none(),
+    const int soft_mu_bins = 0,
+    py::object soft_mu_edges_obj = py::none(),
     const int nthreads = 1,
     const bool return_timings = false) {
 
@@ -922,9 +1007,19 @@ py::object count2_soft_vjp_py(
         soft_sigma = py::cast<double>(soft_sigma_obj);
     }
 
+    double soft_mu_sigma = 0.;
+
+    if (!soft_mu_sigma_obj.is_none()) {
+        soft_mu_sigma = py::cast<double>(soft_mu_sigma_obj);
+    }
+
+    std::vector<FLOAT> mu_edges = soft_mu_edges_from_py(soft_mu_edges_obj);
+
     size_t csize = 0;
     SoftBinSpec spec = make_soft_bin_spec(
-        battrs, wattrs, spattrs, soft_sigma, soft_cutoff, &csize);
+        battrs, wattrs, spattrs, soft_sigma, soft_cutoff, &csize,
+        soft_mu_sigma, soft_mu_bins,
+        mu_edges.empty() ? nullptr : mu_edges.data(), (int) mu_edges.size());
 
     // The general (non-uniform) path pays one exp per tap per pass; 'fast'
     // swaps them for __expf (~1e-6 relative) when the caller prefers speed.
@@ -941,7 +1036,7 @@ py::object count2_soft_vjp_py(
     if ((size_t) cotangent.size() != csize) {
         throw std::invalid_argument(
             "cuda backend, soft binning: the cotangent must have one entry per "
-            "s bin (" + std::to_string(csize) + "), got "
+            "histogram slot (" + std::to_string(csize) + "), got "
             + std::to_string(cotangent.size()));
     }
 
@@ -1041,21 +1136,7 @@ py::object count2_soft_vjp_py(
         result["grad_weight2"] = py::none();
     }
     result["grad_sigma"] = grad_sigma;
-
-    py::dict soft;
-    soft["sigma"] = spec.inv2sig2 > 0 ? 1. / std::sqrt(2. * spec.inv2sig2) : 0.;
-    soft["sigma_units"] = "separation";
-    soft["sigma_kind"] = spec.per_bin_sigma ? "width" : "absolute";
-    soft["uniform"] = spec.uniform != 0;
-    soft["fast_taps"] = spec.fast_taps != 0;
-    soft["cutoff"] = spec.cutoff;
-    soft["kmax"] = spec.kmax;
-    // Only the uniform path has a fixed window length; the general path expands
-    // until the cutoff stops it, so its tap count depends on the pair.
-    soft["taps"] = spec.uniform ? 2 * spec.kmax + 1 : -1;
-    soft["nbins"] = spec.nbins;
-
-    result["soft"] = soft;
+    result["soft"] = soft_meta(spec);
 
     if (return_timings) {
         return py::make_tuple(result, py::make_tuple(Sec(t_mesh1 - t_mesh0).count(), count_seconds));
@@ -1086,7 +1167,8 @@ PYBIND11_MODULE(cuda, m) {
     m.def("count2_soft", &count2_soft_py,
         "Take particle positions and weights (numpy arrays), perform 2-pt counts on the GPU with "
         "Gaussian-softmax soft binning on the separation axis, and return a numpy array. "
-        "soft_sigma is in separation units; None means half a bin.",
+        "soft_sigma is in separation units; None means half a bin. With a 'pole' axis the "
+        "mu axis is softened too and the result is soft multipoles, shape (nbins, nell).",
         py::arg("particles1"),
         py::arg("particles2"),
         py::arg("mattrs"),
@@ -1097,6 +1179,9 @@ PYBIND11_MODULE(cuda, m) {
         py::arg("soft_sigma") = py::none(),
         py::arg("soft_cutoff") = 1e-13,
         py::arg("soft_taps") = "exact",
+        py::arg("soft_mu_sigma") = py::none(),
+        py::arg("soft_mu_bins") = 0,
+        py::arg("soft_mu_edges") = py::none(),
         py::arg("nthreads") = 1,
         py::arg("return_timings") = false);
 
@@ -1104,7 +1189,9 @@ PYBIND11_MODULE(cuda, m) {
         "Vector-Jacobian product of count2_soft: given the cotangent of the soft "
         "histogram, return the gradients with respect to the two catalogues' "
         "positions, individual weights and soft_sigma. Gradients are per input "
-        "particle (the kernel undoes the mesh's cell reordering).",
+        "particle (the kernel undoes the mesh's cell reordering). With soft mu "
+        "binning the cotangent is the flat (nbins * nell) array and the mu "
+        "weights contribute to the position gradients.",
         py::arg("particles1"),
         py::arg("particles2"),
         py::arg("mattrs"),
@@ -1116,6 +1203,9 @@ PYBIND11_MODULE(cuda, m) {
         py::arg("soft_sigma") = py::none(),
         py::arg("soft_cutoff") = 1e-13,
         py::arg("soft_taps") = "exact",
+        py::arg("soft_mu_sigma") = py::none(),
+        py::arg("soft_mu_bins") = 0,
+        py::arg("soft_mu_edges") = py::none(),
         py::arg("nthreads") = 1,
         py::arg("return_timings") = false);
 

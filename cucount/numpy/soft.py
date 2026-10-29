@@ -27,9 +27,20 @@ Both uniform and arbitrary monotone edges are served: the uniform grid keeps a
 multiplicative recurrence (two ``exp`` per pair), any other grid uses a binary
 search for the peak plus one ``exp`` per tap.
 
+With a ``pole`` axis the ``mu`` axis is softened as well and the result is
+soft multipoles: the same truncated softmax is applied to a uniform ``mu`` grid,
+and each pair deposits ``w_pair * Ws_i * M_l`` where
+
+    M_l(mu) = sum_j Wmu_j (2l+1) P_l(mu_j),    Wmu_j = softmax_j(-(mu - mu_j)^2 / (2 sigma_mu^2))
+
+so the mu weights never touch the histogram (that is what would make them
+expensive): the multipole profile is computed once per pair and multiplied by
+the separation weights, which keeps the cost at ``taps_s * nell``. ``M_0 = 1``
+exactly, so the monopole is the soft-s count.
+
 Differences from the oracle, both because the kernel is new rather than a port:
 
-* only the ``s`` axis is softened (the oracle now also softens ``mu``/``pi``);
+* the ``pi`` axis is not softened (soft ``s`` and ``mu`` are);
 * the kernel is a CUDA kernel with a shared-memory histogram tile, not the
   oracle's scalar CPU loop;
 * weights outside ``soft_cutoff`` of the peak are dropped and the window is
@@ -96,6 +107,152 @@ def sigmas(edges, sigma=None):
     return np.full(widths.shape, sigma, dtype=np.float64)
 
 
+def mu_spec(soft_mu_sigma=None, soft_mu_bins=0, soft_mu_edges=None,
+            soft_cutoff=1e-13):
+    """Resolve the mu quadrature the kernel will use.
+
+    Returns a dict with ``centres`` (midpoints), ``edges`` (``nmu + 1``),
+    ``sigmas`` (per-cell width), ``sigma`` (the one absolute width when a single
+    value applies, else 0), ``uniform`` (arithmetic grid, i.e. the fast
+    recurrence path), ``dmu`` (cell width for a uniform grid, else ``None``),
+    ``nmu`` and ``kmax``.
+
+    ``soft_mu_edges`` are the caller's own cell edges. They must be strictly
+    increasing and lie in ``[-1, 1]``; mu is **not** folded, so a grid that only
+    covers part of the interval leaves the pairs beyond it to the boundary cell,
+    which is what the kernel does too. Arithmetic edges are equivalent to the
+    internal grid and still take the recurrence path.
+    """
+    if not np.isfinite(soft_cutoff) or not 0.0 < float(soft_cutoff) < 1.0:
+        raise ValueError(f'soft_cutoff must be in (0, 1), got {soft_cutoff!r}')
+    cutoff = float(soft_cutoff)
+    sigma = 0.0 if soft_mu_sigma is None else float(soft_mu_sigma)
+
+    if not np.isfinite(sigma):
+        raise ValueError(f'soft_mu_sigma must be finite, got {soft_mu_sigma!r}')
+
+    if soft_mu_edges is not None:
+        if soft_mu_bins and int(soft_mu_bins) > 0:
+            raise ValueError('give soft_mu_edges or soft_mu_bins, not both')
+        edges = np.asarray(soft_mu_edges, dtype=np.float64)
+        if edges.ndim != 1:
+            raise ValueError('soft_mu_edges must be a 1D array of cell edges')
+        if edges.size < 2:
+            raise ValueError('soft_binning needs at least two mu edges')
+        if edges.size - 1 > 1024:
+            raise ValueError(f'at most 1024 mu bins are served, got {edges.size - 1}')
+        if not np.all(np.isfinite(edges)):
+            raise ValueError('mu edges must be finite')
+        if edges[0] < -1.0 - 1e-9 or edges[-1] > 1.0 + 1e-9:
+            raise ValueError(
+                f'mu edges must lie in [-1, 1] (mu is not folded); got '
+                f'[{edges[0]}, {edges[-1]}]')
+        if not np.all(np.diff(edges) > 0):
+            raise ValueError('mu edges must be strictly increasing')
+        uniform = is_uniform(edges)
+        dmu = float(edges[1] - edges[0]) if uniform else None
+    else:
+        if soft_mu_bins and int(soft_mu_bins) > 0:
+            nmu = int(soft_mu_bins)
+        elif sigma > 0.0:
+            nmu = int(np.ceil(4.0 / sigma))
+        else:
+            nmu = 40
+        nmu = min(max(nmu, 4), 1024)
+        dmu = 2.0 / nmu
+        edges = np.linspace(-1.0, 1.0, nmu + 1)
+        uniform = True
+
+    centres = 0.5 * (edges[1:] + edges[:-1])
+    widths = np.diff(edges)
+
+    if sigma > 0.0:
+        sigmas = np.full(centres.shape, sigma, dtype=np.float64)
+        sigma_out = sigma
+    else:
+        # Half of each cell, the mu analogue of the s default.
+        sigmas = 0.5 * widths
+        sigma_out = float(sigmas[0]) if uniform else 0.0
+
+    if uniform:
+        dmu = float(widths[0])
+        kmax = int(np.ceil(np.sqrt(2.0 * np.log(1.0 / cutoff)) * sigma_out / dmu))
+        kmax = min(max(kmax, 1), centres.size - 1)
+    else:
+        kmax = centres.size - 1  # adaptive: the kernel stops on the cutoff
+
+    return dict(centres=centres, edges=edges, sigmas=sigmas, sigma=sigma_out,
+                uniform=bool(uniform), dmu=dmu, nmu=int(centres.size),
+                kmax=int(kmax))
+
+
+def mu_grid(soft_mu_sigma=None, soft_mu_bins=0, soft_mu_edges=None):
+    """The mu quadrature the kernel uses: ``(centres, sigma_mu, dmu)``.
+
+    ``sigma_mu`` is one scalar when an absolute width applies (or the grid is
+    arithmetic, where every cell has the same width), and a per-cell array on a
+    non-arithmetic grid, in which case ``dmu`` is ``None``. See :func:`mu_spec`
+    for the full description.
+    """
+    spec = mu_spec(soft_mu_sigma, soft_mu_bins, soft_mu_edges)
+    sigma = spec['sigma'] if spec['uniform'] else spec['sigmas']
+    return spec['centres'], sigma, spec['dmu']
+
+
+def mu_kmax(soft_mu_sigma, soft_mu_bins, soft_cutoff=1e-13, soft_mu_edges=None):
+    """Half-width of the truncated mu window, in mu cells (``nmu - 1`` when the
+    grid is not arithmetic, because then the window adapts to the cutoff)."""
+    return mu_spec(soft_mu_sigma, soft_mu_bins, soft_mu_edges, soft_cutoff)['kmax']
+
+
+def soft_mu_weights(mu, ells, soft_mu_sigma=None, soft_mu_bins=0,
+                    soft_cutoff=1e-13, soft_mu_edges=None):
+    """Reference multipole profile, shape ``(len(mu), len(ells))``.
+
+    ``M_l(mu)`` for the requested ``ells`` on the kernel's truncated mu window,
+    renormalised so ``M_0 == 1``. This is the definition the kernel implements;
+    it exists so tests and plots do not have to re-derive it. mu is used
+    unfolded: a negative mu stays negative.
+    """
+    mu = np.atleast_1d(np.asarray(mu, dtype=np.float64))
+    ells = np.atleast_1d(np.asarray(ells, dtype=np.int64))
+    spec = mu_spec(soft_mu_sigma, soft_mu_bins, soft_mu_edges, soft_cutoff)
+    centres = spec['centres']
+    sigmas = spec['sigmas']
+    nmu = centres.size
+
+    # P_l at every centre, (nmu, nell), for the orders that were asked for.
+    leg = np.polynomial.legendre.legvander(centres, int(max(ells.max(), 1)))
+    leg = leg[:, ells]
+    pf = (2 * ells + 1).astype(np.float64)
+
+    out = np.zeros((mu.size, ells.size), dtype=np.float64)
+
+    if spec['uniform']:
+        kmax = spec['kmax']
+        c0, dmu = centres[0], spec['dmu']
+
+        for i, m_ in enumerate(mu):
+            peak = int(np.floor((m_ - c0) / dmu + 0.5))
+            peak = min(max(peak, 0), nmu - 1)
+            lo = max(peak - kmax, 0)
+            hi = min(peak + kmax, nmu - 1)
+            x = (m_ - centres[lo:hi + 1]) ** 2 / (2.0 * sigmas[lo:hi + 1] ** 2)
+            w = np.exp(-(x - x.min()))
+            w /= w.sum()
+            out[i] = w @ (pf * leg[lo:hi + 1])
+    else:
+        # Full-grid stable softmax. The kernel truncates the same weights at the
+        # cutoff, which drops less than `cutoff` of the normalisation.
+        for i, m_ in enumerate(mu):
+            x = (m_ - centres) ** 2 / (2.0 * sigmas ** 2)
+            w = np.exp(-(x - x.min()))
+            w /= w.sum()
+            out[i] = w @ (pf * leg)
+
+    return out
+
+
 def soft_weights(s, edges, sigma=None):
     """Reference weights, shape ``(len(s), len(edges) - 1)``.
 
@@ -115,6 +272,8 @@ def soft_weights(s, edges, sigma=None):
 
 def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float=None,
                 soft_cutoff: float=1e-13, soft_taps: str='exact',
+                soft_mu_sigma: float=None, soft_mu_bins: int=0,
+                soft_mu_edges=None,
                 wattrs: WeightAttrs=None,
                 sattrs: SelectionAttrs=None, spattrs: SplitAttrs=None,
                 mattrs: MeshAttrs=None, nthreads: int=1, backend: str=None,
@@ -144,6 +303,22 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float=None,
         Only affects the general (non-uniform) path. ``'exact'`` (default) uses
         double ``exp``; ``'fast'`` uses ``__expf``, trading ~1e-6 relative
         accuracy in the weights for roughly half the transcendental cost.
+    soft_mu_sigma : float, optional
+        Width of the mu kernel, in mu units, for a request whose second axis is
+        ``pole=(ells, los)``. ``None`` (or 0) means half a mu bin. The mu axis is
+        a uniform grid on [-1, 1] unless ``soft_mu_edges`` is given;
+        ``soft_mu_bins`` sets its resolution (default ``ceil(4 / sigma_mu)``, or
+        40 for the default sigma).
+    soft_mu_bins : int, optional
+        Number of mu bins in the quadrature; 0 means "derive it".
+    soft_mu_edges : array_like, optional
+        The caller's own mu cell edges instead of the internal grid. Must be
+        strictly increasing and lie in ``[-1, 1]`` (mu is not folded, so odd
+        multipoles keep their sign). Arithmetic edges still take the fast
+        recurrence path; any other grid gets one ``exp`` per tap and per-cell
+        widths (half the cell unless ``soft_mu_sigma`` is given). A grid that
+        covers part of the interval leaves the pairs beyond it to the boundary
+        cell.
     wattrs, sattrs, spattrs, mattrs, nthreads, backend, tuning
         As for :func:`cucount.numpy.count2`; the soft kernel is CUDA-only for
         now, and rejects spin, angular upweighting, split/jackknife and any
@@ -152,10 +327,14 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float=None,
     Returns
     -------
     result : dict
-        ``{'weight': array(nbins)}`` plus ``result['soft']`` describing what ran
+        ``{'weight': array(nbins)}``, or ``array(nbins, nell)`` for soft
+        multipoles, plus ``result['soft']`` describing what ran
         (``sigma`` after the default, ``sigma_kind`` = 'absolute' or 'width',
         ``uniform``, ``fast_taps``, ``cutoff``, ``kmax``, ``taps`` (``-1`` when
-        the window is adaptive), ``path`` = 'shared' or 'global', ``nbins``).
+        the window is adaptive), ``path`` = 'shared' or 'global', ``nbins``,
+        and for multipoles ``multipoles``, ``mu_sigma``, ``mu_bins``,
+        ``mu_kmax``, ``los``, ``mu_uniform``, ``mu_sigma_kind``, ``mu_taps``
+        and, on a caller-supplied non-arithmetic grid, ``mu_edges``).
     """
     _setup_cucount_logging()
     assert len(particles) == 2
@@ -185,6 +364,8 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float=None,
             wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs,
             soft_sigma=soft_sigma, soft_cutoff=float(soft_cutoff),
             soft_taps=str(soft_taps),
+            soft_mu_sigma=soft_mu_sigma, soft_mu_bins=int(soft_mu_bins),
+            soft_mu_edges=soft_mu_edges,
             nthreads=lib_nthreads, return_timings=True)
         _log_timings(which, *timings)
         return result
@@ -194,7 +375,9 @@ def count2_soft(*particles: Particles, battrs: BinAttrs, soft_sigma: float=None,
 
 def count2_soft_vjp(*particles: Particles, battrs: BinAttrs, cotangent,
                     soft_sigma: float=None, soft_cutoff: float=1e-13,
-                    soft_taps: str='exact', wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None,
+                    soft_taps: str='exact', soft_mu_sigma: float=None,
+                    soft_mu_bins: int=0, soft_mu_edges=None,
+                    wattrs: WeightAttrs=None, sattrs: SelectionAttrs=None,
                     spattrs: SplitAttrs=None, mattrs: MeshAttrs=None,
                     nthreads: int=1, backend: str=None, tuning: dict=None):
     """Vector-Jacobian product of :func:`count2_soft`.
@@ -221,8 +404,13 @@ def count2_soft_vjp(*particles: Particles, battrs: BinAttrs, cotangent,
         adjoint is of a different function than the forward you ran).
     battrs, soft_sigma, soft_cutoff, soft_taps, wattrs, sattrs, spattrs, mattrs
         As for :func:`count2_soft`; they must reproduce the forward's setup.
+    soft_mu_sigma, soft_mu_bins
+        As for :func:`count2_soft`. With soft mu binning the mu weights also
+        contribute to the position gradients (through ``dmu/dposition``), so the
+        adjoint is the derivative of the *multipoles*, not of a frozen mu.
     cotangent : array_like
-        One entry per separation bin, ``dL/dcounts``.
+        One entry per histogram slot, ``dL/dcounts``: ``(nbins,)`` for soft ``s``
+        or ``(nbins, nell)`` (any layout with ``nbins * nell`` entries).
 
     Returns
     -------
@@ -269,6 +457,8 @@ def count2_soft_vjp(*particles: Particles, battrs: BinAttrs, cotangent,
             wattrs=wattrs._to_c(), sattrs=sattrs, spattrs=spattrs,
             soft_sigma=soft_sigma, soft_cutoff=float(soft_cutoff),
             soft_taps=str(soft_taps),
+            soft_mu_sigma=soft_mu_sigma, soft_mu_bins=int(soft_mu_bins),
+            soft_mu_edges=soft_mu_edges,
             nthreads=lib_nthreads, return_timings=True)
         _log_timings(which, *timings)
         return result

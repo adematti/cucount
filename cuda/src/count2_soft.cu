@@ -11,6 +11,9 @@
 
 using cucount::pairmath::pair_bitwise_weight;
 using cucount::pairmath::get_sep_bin_index;
+using cucount::pairmath::compute_pair_mu;
+using cucount::pairmath::dot3;
+using cucount::pairmath::add3;
 
 DEFINE_COMPUTE_UTILS
 DEFINE_FOR_EACH_CANDIDATE_ANGULAR
@@ -54,12 +57,16 @@ __device__ __forceinline__ void soft_increment(FLOAT *p, FLOAT v)
 }
 
 
+// `stride` is the histogram stride between neighbouring s bins: 1 for a plain
+// soft-s request, nell when the multipoles are folded into `hist` (see
+// soft_add_pole below, which calls this once per multipole on hist + ill).
 template <bool ATOMIC>
 __device__ __forceinline__ void soft_add_uniform(
     FLOAT *hist,
     const SoftBinSpec &sp,
     FLOAT s,
-    FLOAT w)
+    FLOAT w,
+    const int stride)
 {
     // Same rule as the hard kernel's range check: a pair outside the binning is
     // dropped whole, not clipped into the first/last bin. NaN falls out here.
@@ -112,7 +119,7 @@ __device__ __forceinline__ void soft_add_uniform(
         }
 
         const FLOAT scale = w / sum;
-        soft_increment<ATOMIC>(&hist[m], scale);
+        soft_increment<ATOMIC>(&hist[m * stride], scale);
 
         wu = 1; ru = rup;
         wd = 1; rd = rdn;
@@ -122,8 +129,8 @@ __device__ __forceinline__ void soft_add_uniform(
             ru *= sp.iq;
             wd *= rd;
             rd *= sp.iq;
-            soft_increment<ATOMIC>(&hist[m + t], wu * scale);
-            soft_increment<ATOMIC>(&hist[m - t], wd * scale);
+            soft_increment<ATOMIC>(&hist[(m + t) * stride], wu * scale);
+            soft_increment<ATOMIC>(&hist[(m - t) * stride], wd * scale);
         }
 
         return;
@@ -156,7 +163,7 @@ __device__ __forceinline__ void soft_add_uniform(
     // float division of a double: keep it double, the histogram is double.
     const FLOAT scale = w / sum;
 
-    soft_increment<ATOMIC>(&hist[m], scale);
+    soft_increment<ATOMIC>(&hist[m * stride], scale);
 
     wu = 1; ru = rup;
     wd = 1; rd = rdn;
@@ -171,10 +178,10 @@ __device__ __forceinline__ void soft_add_uniform(
         okd = (m - t >= 0) && (wd > sp.cutoff);
 
         if (oku) {
-            soft_increment<ATOMIC>(&hist[m + t], wu * scale);
+            soft_increment<ATOMIC>(&hist[(m + t) * stride], wu * scale);
         }
         if (okd) {
-            soft_increment<ATOMIC>(&hist[m - t], wd * scale);
+            soft_increment<ATOMIC>(&hist[(m - t) * stride], wd * scale);
         }
         if (!oku && !okd) {
             break;
@@ -300,7 +307,8 @@ __device__ __forceinline__ void soft_add_general(
     FLOAT *hist,
     const SoftBinSpec &sp,
     FLOAT s,
-    FLOAT w)
+    FLOAT w,
+    const int stride)
 {
     if (!(s >= sp.lo) || !(s < sp.hi)) {
         return;
@@ -329,19 +337,19 @@ __device__ __forceinline__ void soft_add_general(
     // recurrence to replay; soft_taps='fast' is the knob that makes it cheap.
     const FLOAT scale = w / sum;
 
-    soft_increment<ATOMIC>(&hist[m], scale);
+    soft_increment<ATOMIC>(&hist[m * stride], scale);
 
     for (int k = 1; k <= win.up; ++k) {
         const FLOAT dd = s - cen[m + k];
         soft_increment<ATOMIC>(
-            &hist[m + k],
+            &hist[(m + k) * stride],
             scale * soft_tap_weight(dd * dd * i2s2[m + k] - win.lmin, fast));
     }
 
     for (int k = 1; k <= win.dn; ++k) {
         const FLOAT dd = s - cen[m - k];
         soft_increment<ATOMIC>(
-            &hist[m - k],
+            &hist[(m - k) * stride],
             scale * soft_tap_weight(dd * dd * i2s2[m - k] - win.lmin, fast));
     }
 }
@@ -354,13 +362,312 @@ __device__ __forceinline__ void soft_add(
     FLOAT *hist,
     const SoftBinSpec &sp,
     FLOAT s,
-    FLOAT w)
+    FLOAT w,
+    const int stride)
 {
     if (sp.uniform) {
-        soft_add_uniform<ATOMIC>(hist, sp, s, w);
+        soft_add_uniform<ATOMIC>(hist, sp, s, w, stride);
     }
     else {
-        soft_add_general<ATOMIC>(hist, sp, s, w);
+        soft_add_general<ATOMIC>(hist, sp, s, w, stride);
+    }
+}
+
+
+// ============================================================================
+// Multipole axis: soft mu binning
+// ============================================================================
+//
+// mu is softened with the same truncated Gaussian softmax, on a uniform grid of
+// nmu centres over [-1, 1] (the interval mu already lives in, so the grid needs
+// no range search: the nearest centre is arithmetic). What the pair then
+// accumulates is *not* a histogram in mu but the multipoles,
+//
+//   M_l = sum_j Wmu_j (2l + 1) P_l(mu_j),       sum_j Wmu_j = 1
+//
+// and the s scatter multiplies by M_l instead of by 1. Two consequences worth
+// writing down, because they are the whole reason for this shape:
+//
+//  * the cost per pair is taps_s * nell histogram updates, not
+//    taps_s * taps_mu: the mu profile is a per-pair scalar vector, folded in
+//    before the scatter;
+//  * P_0 = 1 and sum_j Wmu_j = 1, so M_0 = 1 exactly and the monopole of a soft
+//    mu request is bit-for-bit the soft-s count. sigma_mu -> 0 therefore splits
+//    the mu weight between the two neighbouring mu centres and reproduces the
+//    hard multipoles up to that quadrature: the same limit as pyfcfc.
+
+// P_l(centre) for every l <= ellmax, by Bonnet's recursion. The hard kernel's
+// set_legendre() fills 0, 2, 4, 6, 8 on its even-ell fast path and leaves every
+// other order at zero, which is fine there (its layout is contiguous from 0) but
+// not here: a soft request may list any multipoles, in any order, so every
+// requested order is filled in one pass.
+__device__ __forceinline__ void soft_legendre_all(
+    FLOAT *leg,
+    const int ellmax,
+    const FLOAT mu)
+{
+    leg[0] = 1;
+
+    if (ellmax >= 1) {
+        leg[1] = mu;
+    }
+
+    for (int ell = 2; ell <= ellmax; ++ell) {
+        const FLOAT inv = 1 / (FLOAT) ell;
+        leg[ell] = ((2 * ell - 1) * mu * leg[ell - 1] - (ell - 1) * leg[ell - 2]) * inv;
+    }
+}
+
+
+// The truncated softmax over the mu grid folded onto the multipoles. DERIV also
+// returns the derivative of the profile with respect to mu, which is what the
+// adjoint needs:
+//
+//   M_l(mu) = sum_j Wmu_j(mu) (2l+1) P_l(c_j) / sum_j Wmu_j(mu)
+//   dM_l/dmu = (dN_l - M_l dS) / S,   dS = sum_j dWmu_j/dmu
+//   dN_l = sum_j dWmu_j/dmu (2l+1) P_l(c_j),   dWmu_j/dmu = Wmu_j (c_j - mu)/sigma^2
+//
+// Note that there is no dP_l/dmu term: the taps sit on the *fixed* mu grid, so
+// the only thing that moves with mu is the Gaussian weight. (The hard kernel can
+// evaluate P_l at the pair's own mu because there mu is a coordinate; here it is
+// smoothed, and the multipole of a tap is the multipole of its centre.)
+template <bool DERIV>
+__device__ __forceinline__ void soft_mu_profile_uniform(
+    const SoftBinSpec &sp,
+    const FLOAT mu,
+    FLOAT *M,
+    FLOAT *dM)
+{
+    int m = (int) floor((mu - sp.mu_c0) * sp.mu_inv_dmu + 0.5);
+
+    if (m < 0) {
+        m = 0;
+    }
+    else if (m >= sp.nmu) {
+        m = sp.nmu - 1;
+    }
+
+    const FLOAT u = mu - (sp.mu_c0 + m * sp.mu_dmu);
+
+    // Same recurrence as a uniform s window: one exp for the upper ratio, the
+    // lower one is iq / rup.
+    const FLOAT md = (2 * u - sp.mu_dmu) * sp.mu_dmu * sp.mu_inv2sig2;
+    const FLOAT rup = exp(md);
+    const FLOAT rdn = (rup > 0) ? sp.mu_iq / rup : exp(-md - sp.mu_gg);
+    const int kmax = sp.mu_kmax;
+    const int nell = sp.nell;
+
+    FLOAT num[CUCOUNT_SOFT_MAXELL], dnum[CUCOUNT_SOFT_MAXELL];
+    FLOAT leg[CUCOUNT_SOFT_MAXELL];
+
+    for (int ill = 0; ill < nell; ++ill) {
+        num[ill] = 0;
+        dnum[ill] = 0;
+    }
+
+    FLOAT sum = 1, dsum = 0;
+
+    // `W` is the (unnormalised) weight of the tap, `B` its mu cell.
+#define CUCOUNT_SOFT_MU_TAP(B, W)                                               \
+    {                                                                           \
+        const FLOAT m_ = sp.mu_c0 + (FLOAT) (B) * sp.mu_dmu;                     \
+        soft_legendre_all(leg, sp.ell_max, m_);                            \
+        const FLOAT dw_ = DERIV ? (W) * (m_ - mu) * 2 * sp.mu_inv2sig2 : (FLOAT) 0; \
+                                                                                \
+        for (int ill = 0; ill < nell; ++ill) {                                   \
+            const int ell = sp.ells[ill];                                        \
+            const FLOAT pf = (FLOAT) (2 * ell + 1);                              \
+            num[ill] += (W) * pf * leg[ell];                                     \
+                                                                                \
+            if (DERIV) {                                                         \
+                dnum[ill] += dw_ * pf * leg[ell];         \
+            }                                                                    \
+        }                                                                        \
+                                                                                \
+        if (DERIV) {                                                             \
+            dsum += dw_;                                                         \
+        }                                                                        \
+    }
+
+    CUCOUNT_SOFT_MU_TAP(m, 1);
+
+    FLOAT wu = 1, ru = rup;
+    FLOAT wd = 1, rd = rdn;
+
+    for (int t = 1; t <= kmax; ++t) {
+        wu *= ru;
+        ru *= sp.mu_iq;
+        wd *= rd;
+        rd *= sp.mu_iq;
+
+        const bool oku = (m + t < sp.nmu) && (wu > sp.cutoff);
+        const bool okd = (m - t >= 0) && (wd > sp.cutoff);
+
+        if (oku) {
+            sum += wu;
+            CUCOUNT_SOFT_MU_TAP(m + t, wu);
+        }
+
+        if (okd) {
+            sum += wd;
+            CUCOUNT_SOFT_MU_TAP(m - t, wd);
+        }
+
+        if (!oku && !okd) {
+            break;
+        }
+    }
+
+#undef CUCOUNT_SOFT_MU_TAP
+
+    const FLOAT inv = 1 / sum;
+
+    for (int ill = 0; ill < nell; ++ill) {
+        M[ill] = num[ill] * inv;
+
+        if (DERIV) {
+            dM[ill] = (dnum[ill] - M[ill] * dsum) * inv;
+        }
+    }
+}
+
+
+// The same profile on a caller-supplied (non-arithmetic) mu grid. There is no
+// multiplicative recurrence across unequal cells, so the window is expanded cell
+// by cell and each tap pays one exp; the tap set is still the truncated softmax
+// (every cell whose weight is above the cutoff), and the derivative keeps the
+// same form with the tap's own sigma:
+//
+//   dWmu_j/dmu = Wmu_j (c_j - mu) / sigma_j^2.
+template <bool DERIV>
+__device__ __forceinline__ void soft_mu_profile_general(
+    const SoftBinSpec &sp,
+    const FLOAT mu,
+    FLOAT *M,
+    FLOAT *dM)
+{
+    const int nmu = sp.nmu;
+    const FLOAT *cen = sp.mu_centres;
+    const FLOAT *i2s2 = sp.mu_inv2s2;
+    const int nell = sp.nell;
+    const bool fast = sp.fast_taps != 0;
+
+    // Arbitrary edges can make neighbouring cells very different widths, so the
+    // logit is not monotone in the cell index: a local peak search would stop on
+    // the wrong side of a wide cell and miss contributing cells. Scan the whole
+    // grid instead -- the minimum logit, then every cell within the cutoff of it.
+    // This path is opt-in (an arithmetic grid keeps the two-exp recurrence) and
+    // nmu is capped at 1024, so the extra pass stays cheap next to the s window.
+    FLOAT lmin = (mu - cen[0]) * (mu - cen[0]) * i2s2[0];
+
+    for (int j = 1; j < nmu; ++j) {
+        const FLOAT d = mu - cen[j];
+        const FLOAT l = d * d * i2s2[j];
+
+        if (l < lmin) {
+            lmin = l;
+        }
+    }
+
+    FLOAT num[CUCOUNT_SOFT_MAXELL], dnum[CUCOUNT_SOFT_MAXELL];
+    FLOAT leg[CUCOUNT_SOFT_MAXELL];
+
+    for (int ill = 0; ill < nell; ++ill) {
+        num[ill] = 0;
+        dnum[ill] = 0;
+    }
+
+    FLOAT sum = 0, dsum = 0;
+
+    // `W` is the unnormalised weight of the tap, `B` its mu cell; `l` its logit
+    // relative to the peak, so `W = exp(-l)`.
+#define CUCOUNT_SOFT_MU_TAP_G(B, W, L)                                          \
+    {                                                                           \
+        soft_legendre_all(leg, sp.ell_max, cen[B]);                             \
+        const FLOAT dw_ = DERIV ? (W) * (cen[B] - mu) * 2 * i2s2[B] : (FLOAT) 0; \
+                                                                                \
+        for (int ill = 0; ill < nell; ++ill) {                                   \
+            const int ell = sp.ells[ill];                                        \
+            const FLOAT pf = (FLOAT) (2 * ell + 1);                              \
+            num[ill] += (W) * pf * leg[ell];                                     \
+                                                                                \
+            if (DERIV) {                                                         \
+                dnum[ill] += dw_ * pf * leg[ell];                                \
+            }                                                                    \
+        }                                                                        \
+                                                                                \
+        if (DERIV) {                                                             \
+            dsum += dw_;                                                         \
+        }                                                                        \
+    }
+
+    for (int j = 0; j < nmu; ++j) {
+        const FLOAT d = mu - cen[j];
+        const FLOAT l = d * d * i2s2[j] - lmin;
+
+        if (!(l <= sp.thresh)) {
+            continue;
+        }
+
+        const FLOAT w = fast ? __expf(-l) : exp(-l);
+        sum += w;
+        CUCOUNT_SOFT_MU_TAP_G(j, w, l);
+    }
+
+#undef CUCOUNT_SOFT_MU_TAP_G
+
+    const FLOAT inv = 1 / sum;
+
+    for (int ill = 0; ill < nell; ++ill) {
+        M[ill] = num[ill] * inv;
+
+        if (DERIV) {
+            dM[ill] = (dnum[ill] - M[ill] * dsum) * inv;
+        }
+    }
+}
+
+
+// Dispatch: the arithmetic grid keeps the two-exp recurrence, anything else the
+// per-tap window. Both fill the same M/dM contract.
+template <bool DERIV>
+__device__ __forceinline__ void soft_mu_profile(
+    const SoftBinSpec &sp,
+    const FLOAT mu,
+    FLOAT *M,
+    FLOAT *dM)
+{
+    if (sp.mu_uniform) {
+        soft_mu_profile_uniform<DERIV>(sp, mu, M, dM);
+    }
+    else {
+        soft_mu_profile_general<DERIV>(sp, mu, M, dM);
+    }
+}
+
+
+// Soft-s scatter of a pair whose multipole profile is already known: the s
+// window is walked once per multipole (the sum that normalises it does not
+// depend on l), so the extra work over a plain soft-s pair is nell - 1 window
+// walks, and the atomics are exactly taps_s * nell either way.
+template <bool ATOMIC>
+__device__ __forceinline__ void soft_add_pole(
+    FLOAT *hist,
+    const SoftBinSpec &sp,
+    FLOAT s,
+    FLOAT mu,
+    FLOAT w)
+{
+    if (!(s >= sp.lo) || !(s < sp.hi)) {
+        return;
+    }
+
+    FLOAT M[CUCOUNT_SOFT_MAXELL];
+
+    soft_mu_profile<false>(sp, mu, M, M);
+
+    for (int ill = 0; ill < sp.nell; ++ill) {
+        soft_add<ATOMIC>(hist + ill, sp, s, w * M[ill], sp.nell);
     }
 }
 
@@ -439,7 +746,19 @@ struct Count2SoftOp {
                 value2[index_value2.start_negative_weight];
         }
 
-        soft_add<ATOMIC>(hist, spec, s, pair_weight);
+        if (spec.nell > 0) {
+            // The pair's mu, measured exactly as the hard kernel measures it, so
+            // the soft multipoles and the hard ones see the same line of sight.
+            FLOAT mu = 0., mu2 = 0.;
+
+            compute_pair_mu(diff, sposition1, sposition2, position1, position2,
+                            spec.los, s, s * s, true, &mu, &mu2);
+
+            soft_add_pole<ATOMIC>(hist, spec, s, mu, pair_weight);
+        }
+        else {
+            soft_add<ATOMIC>(hist, spec, s, pair_weight, 1);
+        }
     }
 };
 
@@ -484,7 +803,9 @@ __global__ void count2_soft_kernel(
     extern __shared__ FLOAT tile[];
 
     constexpr bool ATOMIC = (REP != 32);
-    const int nbins = spec.nbins;
+    // Histogram entries, i.e. s bins times multipoles: the tile, the row stride
+    // and the reduction all work on the flat slot index.
+    const int nbins = spec.nslots;
     const int nwarps = blockDim.x / CUCOUNT_SOFT_MAXWARP;
     const int nrows = nwarps * (REP > 0 ? REP : 1);
 
@@ -601,7 +922,7 @@ static int pick_rep(const SoftBinSpec &spec, int nthreads_per_block, size_t budg
     }
 
     for (int rep : {8, 4, 2, 1}) {
-        const size_t bytes = (size_t) nwarps * rep * spec.nbins * sizeof(FLOAT);
+        const size_t bytes = (size_t) nwarps * rep * spec.nslots * sizeof(FLOAT);
 
         if (bytes <= budget) {
             return rep;
@@ -623,40 +944,70 @@ static int pick_rep(const SoftBinSpec &spec, int nthreads_per_block, size_t budg
 static void upload_soft_tables(SoftBinSpec &spec, DeviceMemoryBuffer *buffer,
                                cudaStream_t stream)
 {
-    if (spec.uniform) {
-        return;
+    if (!spec.uniform) {
+        const size_t n = (size_t) spec.nbins;
+        FLOAT *d_centres = (FLOAT *) my_device_malloc(n * sizeof(FLOAT), buffer);
+        FLOAT *d_inv2s2 = (FLOAT *) my_device_malloc(n * sizeof(FLOAT), buffer);
+        FLOAT *d_edges = (FLOAT *) my_device_malloc((n + 1) * sizeof(FLOAT), buffer);
+        std::vector<FLOAT> h_centres(n), h_inv2s2(n);
+
+        for (size_t i = 0; i < n; ++i) {
+            const double e0 = (double) spec.host_edges[i];
+            const double e1 = (double) spec.host_edges[i + 1];
+            // sigma_i proportional to the local width unless the caller asked for
+            // one absolute sigma. Both land in the same array, so the kernel has a
+            // single code path.
+            const double sigma = spec.per_bin_sigma
+                ? (double) spec.alpha * (e1 - e0)
+                : (double) spec.sigma;
+
+            h_centres[i] = (FLOAT) (0.5 * (e0 + e1));
+            h_inv2s2[i] = (FLOAT) (1. / (2. * sigma * sigma));
+        }
+
+        CUDA_CHECK(cudaMemcpyAsync(d_centres, h_centres.data(), n * sizeof(FLOAT),
+                                   cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_inv2s2, h_inv2s2.data(), n * sizeof(FLOAT),
+                                   cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_edges, spec.host_edges, (n + 1) * sizeof(FLOAT),
+                                   cudaMemcpyHostToDevice, stream));
+
+        spec.centres = d_centres;
+        spec.inv2s2 = d_inv2s2;
+        spec.edges = d_edges;
     }
 
-    const size_t n = (size_t) spec.nbins;
-    FLOAT *d_centres = (FLOAT *) my_device_malloc(n * sizeof(FLOAT), buffer);
-    FLOAT *d_inv2s2 = (FLOAT *) my_device_malloc(n * sizeof(FLOAT), buffer);
-    FLOAT *d_edges = (FLOAT *) my_device_malloc((n + 1) * sizeof(FLOAT), buffer);
-    std::vector<FLOAT> h_centres(n), h_inv2s2(n);
+    // The mu grid needs the same treatment when it is not arithmetic: centres,
+    // per-cell 1/(2 sigma_j^2) and the edges the window search walks.
+    if (spec.nell > 0 && !spec.mu_uniform) {
+        const size_t n = (size_t) spec.nmu;
+        FLOAT *d_centres = (FLOAT *) my_device_malloc(n * sizeof(FLOAT), buffer);
+        FLOAT *d_inv2s2 = (FLOAT *) my_device_malloc(n * sizeof(FLOAT), buffer);
+        FLOAT *d_edges = (FLOAT *) my_device_malloc((n + 1) * sizeof(FLOAT), buffer);
+        std::vector<FLOAT> h_centres(n), h_inv2s2(n);
 
-    for (size_t i = 0; i < n; ++i) {
-        const double e0 = (double) spec.host_edges[i];
-        const double e1 = (double) spec.host_edges[i + 1];
-        // sigma_i proportional to the local width unless the caller asked for
-        // one absolute sigma. Both land in the same array, so the kernel has a
-        // single code path.
-        const double sigma = spec.per_bin_sigma
-            ? (double) spec.alpha * (e1 - e0)
-            : (double) spec.sigma;
+        for (size_t i = 0; i < n; ++i) {
+            const double e0 = (double) spec.host_mu_edges[i];
+            const double e1 = (double) spec.host_mu_edges[i + 1];
+            const double sigma = spec.mu_per_bin_sigma
+                ? (double) spec.mu_alpha * (e1 - e0)
+                : (double) spec.mu_sigma;
 
-        h_centres[i] = (FLOAT) (0.5 * (e0 + e1));
-        h_inv2s2[i] = (FLOAT) (1. / (2. * sigma * sigma));
+            h_centres[i] = (FLOAT) (0.5 * (e0 + e1));
+            h_inv2s2[i] = (FLOAT) (1. / (2. * sigma * sigma));
+        }
+
+        CUDA_CHECK(cudaMemcpyAsync(d_centres, h_centres.data(), n * sizeof(FLOAT),
+                                   cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_inv2s2, h_inv2s2.data(), n * sizeof(FLOAT),
+                                   cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_edges, spec.host_mu_edges, (n + 1) * sizeof(FLOAT),
+                                   cudaMemcpyHostToDevice, stream));
+
+        spec.mu_centres = d_centres;
+        spec.mu_inv2s2 = d_inv2s2;
+        spec.mu_edge_table = d_edges;
     }
-
-    CUDA_CHECK(cudaMemcpyAsync(d_centres, h_centres.data(), n * sizeof(FLOAT),
-                               cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(cudaMemcpyAsync(d_inv2s2, h_inv2s2.data(), n * sizeof(FLOAT),
-                               cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(cudaMemcpyAsync(d_edges, spec.host_edges, (n + 1) * sizeof(FLOAT),
-                               cudaMemcpyHostToDevice, stream));
-
-    spec.centres = d_centres;
-    spec.inv2s2 = d_inv2s2;
-    spec.edges = d_edges;
 }
 
 
@@ -680,6 +1031,21 @@ static void release_soft_tables(SoftBinSpec &spec, DeviceMemoryBuffer *buffer)
         my_device_free(spec.edges, buffer);
         spec.edges = nullptr;
     }
+
+    if (spec.mu_centres) {
+        my_device_free(spec.mu_centres, buffer);
+        spec.mu_centres = nullptr;
+    }
+
+    if (spec.mu_inv2s2) {
+        my_device_free(spec.mu_inv2s2, buffer);
+        spec.mu_inv2s2 = nullptr;
+    }
+
+    if (spec.mu_edge_table) {
+        my_device_free(spec.mu_edge_table, buffer);
+        spec.mu_edge_table = nullptr;
+    }
 }
 
 
@@ -695,7 +1061,7 @@ void count2_soft(
     const SelectionAttrs sattrs = attrs.sattrs;
     const WeightAttrs wattrs = attrs.wattrs;
 
-    const size_t csize = (size_t) spec.nbins;
+    const size_t csize = (size_t) spec.nslots;
 
     CUDA_CHECK(cudaMemsetAsync(counts, 0, csize * sizeof(FLOAT), stream));
 
@@ -804,7 +1170,10 @@ void count2_soft(
 
 #undef CUCOUNT_LAUNCH_SOFT
 
-    cudaError_t last_error = cudaGetLastError();
+    // Peek, do not consume: the caller's stream sync (pybind) or the FFI
+    // handler's cudaGetLastError() must still see the failure. Reading it here
+    // would clear it and hand back a silently zero histogram.
+    cudaError_t last_error = cudaPeekAtLastError();
 
     if (last_error != cudaSuccess) {
         log_message(LOG_LEVEL_ERROR, "count2_soft launch failed: %s\n",
@@ -842,6 +1211,7 @@ struct SoftVjpPair {
     FLOAT dw;
     FLOAT ds;
     FLOAT dsigma;
+    FLOAT dmu;  // dL/dmu: only nonzero with soft mu binning
 };
 
 
@@ -855,6 +1225,7 @@ __device__ __forceinline__ void soft_vjp_pair_uniform(
     out->dw = 0;
     out->ds = 0;
     out->dsigma = 0;
+    out->dmu = 0;
 
     if (!(s >= sp.lo) || !(s < sp.hi)) {
         return;
@@ -953,6 +1324,7 @@ __device__ __forceinline__ void soft_vjp_pair_uniform(
     out->dw = A;
     out->ds = w * (tcg - cbar * A) * 2 * sp.inv2sig2;
     out->dsigma = w * (txg - xbar * A) * 2 * sp.inv_sigma;
+    out->dmu = 0;
 }
 
 
@@ -969,6 +1341,7 @@ __device__ __forceinline__ void soft_vjp_pair_general(
     out->dw = 0;
     out->ds = 0;
     out->dsigma = 0;
+    out->dmu = 0;
 
     if (!(s >= sp.lo) || !(s < sp.hi)) {
         return;
@@ -1038,6 +1411,7 @@ __device__ __forceinline__ void soft_vjp_pair_general(
 
     out->dw = A;
     out->ds = 2 * w * (T + A * U);
+    out->dmu = 0;
 
     // With sigma_i taken from the bin widths there is no sigma to differentiate.
     if (!sp.per_bin_sigma) {
@@ -1046,14 +1420,323 @@ __device__ __forceinline__ void soft_vjp_pair_general(
 }
 
 
+// The line of sight as a unit vector plus the two coefficients that carry its
+// own dependence on the endpoints. mu = (diff . lhat) / s, so
+//
+//   d mu / d diff_b   = (lhat_b - mu rhat_b) / s,     rhat = diff / s
+//   d mu / d lhat_b   = rhat_b
+//
+// and lhat depends on a position only for the pair-dependent lines of sight
+// (first point, end point, midpoint): lhat = r / |r| there, so
+// d lhat_c / d r_b = (delta_bc - lhat_b lhat_c) / |r|, which is the `k1`/`k2`
+// coefficient below (zero for the fixed x/y/z axes).
+__device__ __forceinline__ void soft_mu_line_of_sight(
+    const LOS_TYPE los,
+    const FLOAT *sposition1,
+    const FLOAT *sposition2,
+    const FLOAT *position1,
+    const FLOAT *position2,
+    FLOAT *lhat,
+    FLOAT *k1,
+    FLOAT *k2)
+{
+    *k1 = 0;
+    *k2 = 0;
+
+    for (int axis = 0; axis < NDIM; ++axis) {
+        lhat[axis] = 0;
+    }
+
+    if (los == LOS_FIRSTPOINT) {
+        // The mesh already stores the unit position of each particle.
+        for (int axis = 0; axis < NDIM; ++axis) {
+            lhat[axis] = sposition1[axis];
+        }
+
+        const FLOAT r = sqrt(dot3(position1, position1));
+
+        if (r > 0) {
+            *k1 = 1 / r;
+        }
+    }
+    else if (los == LOS_ENDPOINT) {
+        for (int axis = 0; axis < NDIM; ++axis) {
+            lhat[axis] = sposition2[axis];
+        }
+
+        const FLOAT r = sqrt(dot3(position2, position2));
+
+        if (r > 0) {
+            *k2 = 1 / r;
+        }
+    }
+    else if (los == LOS_MIDPOINT) {
+        FLOAT v[NDIM];
+
+        add3(v, position1, position2);
+
+        const FLOAT r = sqrt(dot3(v, v));
+
+        if (r > 0) {
+            for (int axis = 0; axis < NDIM; ++axis) {
+                lhat[axis] = v[axis] / r;
+            }
+
+            *k1 = 1 / r;
+            *k2 = 1 / r;
+        }
+    }
+    else if (los == LOS_X) {
+        lhat[0] = 1;
+    }
+    else if (los == LOS_Y) {
+        lhat[1] = 1;
+    }
+    else {
+        // LOS_Z, and the default for a request that reached here without one.
+        lhat[NDIM - 1] = 1;
+    }
+}
+
+
+// Adjoint of a pair counted with soft mu binning. The multipole profile is
+// gathered through the same truncated mu window the forward used, and the
+// cotangent is contracted with it in two directions at once:
+//
+//   * against M_ill, which is what the s adjoint sees (`g` becomes
+//     `geff_b = sum_ill g[b,ill] M_ill`), so the s formulas are unchanged;
+//   * against dM_ill/dmu, which is the mu cotangent the position update needs,
+//     dL/dmu = w sum_ill (sum_b g[b,ill] Ws_b) dM_ill/dmu.
+//
+// Both come out of a single walk of the s window: the sums that carry `ill` are
+// accumulated per multipole and contracted with M afterwards.
+__device__ __forceinline__ void soft_vjp_pair_pole(
+    const FLOAT *g,
+    const SoftBinSpec &sp,
+    FLOAT s,
+    FLOAT mu,
+    FLOAT w,
+    SoftVjpPair *out)
+{
+    out->dw = 0;
+    out->ds = 0;
+    out->dsigma = 0;
+    out->dmu = 0;
+
+    if (!(s >= sp.lo) || !(s < sp.hi)) {
+        return;
+    }
+
+    FLOAT M[CUCOUNT_SOFT_MAXELL], dM[CUCOUNT_SOFT_MAXELL];
+
+    soft_mu_profile<true>(sp, mu, M, dM);
+
+    const int nell = sp.nell;
+
+    // Per multipole: sum_b W_b g[b,ill], and the two sums the s formula needs.
+    FLOAT Bl[CUCOUNT_SOFT_MAXELL];
+    FLOAT tcg_l[CUCOUNT_SOFT_MAXELL];
+    FLOAT txg_l[CUCOUNT_SOFT_MAXELL];
+    FLOAT T_l[CUCOUNT_SOFT_MAXELL];
+
+    for (int ill = 0; ill < nell; ++ill) {
+        Bl[ill] = 0;
+        tcg_l[ill] = 0;
+        txg_l[ill] = 0;
+        T_l[ill] = 0;
+    }
+
+    FLOAT cbar = 0;  // sum_b W_b c_b
+    FLOAT xbar = 0;  // sum_b W_b x_b
+    FLOAT U = 0;     // general path only: sum_b W_b (s - c_b) / sigma_b^2
+
+    if (sp.uniform) {
+        int m = (int) floor((s - sp.c0) * sp.inv_ds + 0.5);
+
+        if (m < 0) {
+            m = 0;
+        }
+        else if (m >= sp.nbins) {
+            m = sp.nbins - 1;
+        }
+
+        const FLOAT u = s - (sp.c0 + m * sp.ds);
+        const FLOAT md = (2 * u - sp.ds) * sp.ds * sp.inv2sig2;
+        const FLOAT rup = exp(md);
+        const FLOAT rdn = (rup > 0) ? sp.iq / rup : exp(-md - sp.gg);
+        const int kmax = sp.kmax;
+
+        FLOAT sum = 1;
+        FLOAT wu = 1, ru = rup;
+        FLOAT wd = 1, rd = rdn;
+
+        for (int t = 1; t <= kmax; ++t) {
+            wu *= ru;
+            ru *= sp.iq;
+            wd *= rd;
+            rd *= sp.iq;
+
+            const bool oku = (m + t < sp.nbins) && (wu > sp.cutoff);
+            const bool okd = (m - t >= 0) && (wd > sp.cutoff);
+
+            if (oku) {
+                sum += wu;
+            }
+
+            if (okd) {
+                sum += wd;
+            }
+
+            if (!oku && !okd) {
+                break;
+            }
+        }
+
+        const FLOAT scale = 1 / sum;
+
+#define CUCOUNT_SOFT_VJP_POLE_TAP_U(B, W)                                      \
+        do {                                                                   \
+            const FLOAT c_ = sp.c0 + (B) * sp.ds;                              \
+            const FLOAT d_ = s - c_;                                           \
+            const FLOAT x_ = d_ * d_ * sp.inv2sig2;                            \
+            const FLOAT w_ = (W) * scale;                                      \
+            const FLOAT *g_ = &g[(size_t) (B) * nell];                         \
+            cbar += w_ * c_;                                                   \
+            xbar += w_ * x_;                                                   \
+                                                                               \
+            for (int ill = 0; ill < nell; ++ill) {                             \
+                Bl[ill] += w_ * g_[ill];                                       \
+                tcg_l[ill] += w_ * g_[ill] * c_;                               \
+                txg_l[ill] += w_ * g_[ill] * x_;                               \
+            }                                                                  \
+        } while (0)
+
+        CUCOUNT_SOFT_VJP_POLE_TAP_U(m, 1);
+
+        wu = 1; ru = rup;
+        wd = 1; rd = rdn;
+
+        for (int t = 1; t <= kmax; ++t) {
+            wu *= ru;
+            ru *= sp.iq;
+            wd *= rd;
+            rd *= sp.iq;
+
+            const bool oku = (m + t < sp.nbins) && (wu > sp.cutoff);
+            const bool okd = (m - t >= 0) && (wd > sp.cutoff);
+
+            if (oku) {
+                CUCOUNT_SOFT_VJP_POLE_TAP_U(m + t, wu);
+            }
+
+            if (okd) {
+                CUCOUNT_SOFT_VJP_POLE_TAP_U(m - t, wd);
+            }
+
+            if (!oku && !okd) {
+                break;
+            }
+        }
+
+#undef CUCOUNT_SOFT_VJP_POLE_TAP_U
+    }
+    else {
+        // Same window as the forward's soft_add_general, from the same helper.
+        const FLOAT *cen = sp.centres;
+        const FLOAT *i2s2 = sp.inv2s2;
+        const bool fast = sp.fast_taps != 0;
+        const SoftWindow win = soft_general_window(sp, s);
+        const int m = win.m;
+
+        FLOAT sum = 1;
+
+        for (int k = 1; k <= win.up; ++k) {
+            const FLOAT dd = s - cen[m + k];
+            sum += soft_tap_weight(dd * dd * i2s2[m + k] - win.lmin, fast);
+        }
+
+        for (int k = 1; k <= win.dn; ++k) {
+            const FLOAT dd = s - cen[m - k];
+            sum += soft_tap_weight(dd * dd * i2s2[m - k] - win.lmin, fast);
+        }
+
+        const FLOAT scale = 1 / sum;
+
+#define CUCOUNT_SOFT_VJP_POLE_TAP_G(B, W)                                      \
+        do {                                                                   \
+            const FLOAT c_ = cen[B];                                           \
+            const FLOAT d_ = s - c_;                                           \
+            const FLOAT i2_ = i2s2[B];                                         \
+            const FLOAT x_ = d_ * d_ * i2_;                                    \
+            const FLOAT w_ = (W) * scale;                                      \
+            const FLOAT *g_ = &g[(size_t) (B) * nell];                         \
+            cbar += w_ * c_;                                                   \
+            xbar += w_ * x_;                                                   \
+            U += w_ * (s - c_) * i2_;                                          \
+                                                                               \
+            for (int ill = 0; ill < nell; ++ill) {                             \
+                Bl[ill] += w_ * g_[ill];                                       \
+                tcg_l[ill] += w_ * g_[ill] * c_;                               \
+                txg_l[ill] += w_ * g_[ill] * x_;                               \
+                T_l[ill] += w_ * g_[ill] * (c_ - s) * i2_;                     \
+            }                                                                  \
+        } while (0)
+
+        CUCOUNT_SOFT_VJP_POLE_TAP_G(m, 1);
+
+        for (int k = 1; k <= win.up; ++k) {
+            const FLOAT dd = s - cen[m + k];
+            CUCOUNT_SOFT_VJP_POLE_TAP_G(
+                m + k, soft_tap_weight(dd * dd * i2s2[m + k] - win.lmin, fast));
+        }
+
+        for (int k = 1; k <= win.dn; ++k) {
+            const FLOAT dd = s - cen[m - k];
+            CUCOUNT_SOFT_VJP_POLE_TAP_G(
+                m - k, soft_tap_weight(dd * dd * i2s2[m - k] - win.lmin, fast));
+        }
+
+#undef CUCOUNT_SOFT_VJP_POLE_TAP_G
+    }
+
+    // Contract the per-multipole sums with the profile: this is where the mu
+    // weights disappear from the s adjoint and reappear as dL/dmu.
+    FLOAT A = 0;
+    FLOAT tcg = 0;
+    FLOAT txg = 0;
+    FLOAT T = 0;
+
+    for (int ill = 0; ill < nell; ++ill) {
+        A += M[ill] * Bl[ill];
+        tcg += M[ill] * tcg_l[ill];
+        txg += M[ill] * txg_l[ill];
+        T += M[ill] * T_l[ill];
+        out->dmu += w * Bl[ill] * dM[ill];
+    }
+
+    out->dw = A;
+
+    if (sp.uniform) {
+        out->ds = w * (tcg - cbar * A) * 2 * sp.inv2sig2;
+    }
+    else {
+        out->ds = 2 * w * (T + A * U);
+    }
+}
+
+
 __device__ __forceinline__ void soft_vjp_pair(
     const FLOAT *g,
     const SoftBinSpec &sp,
     FLOAT s,
+    FLOAT mu,
     FLOAT w,
     SoftVjpPair *out)
 {
-    if (sp.uniform) {
+    if (sp.nell > 0) {
+        soft_vjp_pair_pole(g, sp, s, mu, w, out);
+    }
+    else if (sp.uniform) {
         soft_vjp_pair_uniform(g, sp, s, w, out);
     }
     else {
@@ -1162,8 +1845,16 @@ struct Count2SoftVjpOp {
                 value2[index_value2.start_negative_weight];
         }
 
+        // The pair's mu, measured exactly as the forward measures it.
+        FLOAT mu = 0., mu2 = 0.;
+
+        if (spec.nell > 0) {
+            compute_pair_mu(diff, sposition1, sposition2, position1, position2,
+                            spec.los, s, s * s, true, &mu, &mu2);
+        }
+
         SoftVjpPair acc;
-        soft_vjp_pair(g, spec, s, pair_weight, &acc);
+        soft_vjp_pair(g, spec, s, mu, pair_weight, &acc);
 
         const size_t i1 = original_index1[slot1];
         const size_t i2 = original_index2[(position2 - positions2) / NDIM];
@@ -1178,15 +1869,45 @@ struct Count2SoftVjpOp {
             atomicAdd(&grad_weight2[i2], acc.dw * w1 * bw);
         }
 
-        // s = |r1 - r2|, so ds/dr1 = (r1 - r2) / s = -diff / s.
+        // s = |r1 - r2|, so ds/dr1 = (r1 - r2) / s = -diff / s. With soft mu
+        // binning there is a second, mu-only direction: mu = (diff . lhat) / s,
+        // so with rhat = diff / s and k the line of sight's own dependence on
+        // that endpoint (zero for the fixed x/y/z axes),
+        //
+        //   dL/dr1_b = -ds rhat_b + dL/dmu [ -(lhat_b - mu rhat_b)/s
+        //                                    + k1 (rhat_b - mu lhat_b) ]
+        //   dL/dr2_b = +ds rhat_b + dL/dmu [ +(lhat_b - mu rhat_b)/s
+        //                                    + k2 (rhat_b - mu lhat_b) ]
+        //
+        // (see soft_mu_line_of_sight for where k comes from).
         if (s > 0) {
             const FLOAT e = acc.ds / s;
             FLOAT *gp1 = &grad_position1[NDIM * i1];
             FLOAT *gp2 = &grad_position2[NDIM * i2];
 
-            for (size_t axis = 0; axis < NDIM; ++axis) {
-                atomicAdd(&gp1[axis], -e * diff[axis]);
-                atomicAdd(&gp2[axis], e * diff[axis]);
+            if (acc.dmu != 0) {
+                FLOAT lhat[NDIM];
+                FLOAT k1 = 0, k2 = 0;
+
+                soft_mu_line_of_sight(spec.los, sposition1, sposition2,
+                                      position1, position2, lhat, &k1, &k2);
+
+                const FLOAT gm = acc.dmu;
+
+                for (size_t axis = 0; axis < NDIM; ++axis) {
+                    const FLOAT rhat = diff[axis] / s;
+                    const FLOAT dl = (lhat[axis] - mu * rhat) / s;
+                    const FLOAT dk = rhat - mu * lhat[axis];
+
+                    atomicAdd(&gp1[axis], -e * diff[axis] + gm * (k1 * dk - dl));
+                    atomicAdd(&gp2[axis], e * diff[axis] + gm * (k2 * dk + dl));
+                }
+            }
+            else {
+                for (size_t axis = 0; axis < NDIM; ++axis) {
+                    atomicAdd(&gp1[axis], -e * diff[axis]);
+                    atomicAdd(&gp2[axis], e * diff[axis]);
+                }
             }
         }
 
@@ -1225,7 +1946,7 @@ __global__ void count2_soft_vjp_kernel(
     const FLOAT *g = cotangent;
 
     if constexpr (G_SHARED) {
-        for (int i = threadIdx.x; i < spec.nbins; i += blockDim.x) {
+        for (int i = threadIdx.x; i < spec.nslots; i += blockDim.x) {
             gsh[i] = cotangent[i];
         }
 
@@ -1352,7 +2073,7 @@ void count2_soft_vjp(
     int max_shmem = 48 * 1024;
     cudaDeviceGetAttribute(&max_shmem, cudaDevAttrMaxSharedMemoryPerBlock, dev);
 
-    const size_t need = (size_t) spec.nbins * sizeof(FLOAT);
+    const size_t need = (size_t) spec.nslots * sizeof(FLOAT);
     const bool g_shared = need <= (size_t) max_shmem;
     const size_t shmem = g_shared ? need : 0;
 
@@ -1381,7 +2102,7 @@ void count2_soft_vjp(
 
 #undef CUCOUNT_LAUNCH_SOFT_VJP
 
-    cudaError_t last_error = cudaGetLastError();
+    cudaError_t last_error = cudaPeekAtLastError();
 
     if (last_error != cudaSuccess) {
         log_message(LOG_LEVEL_ERROR, "count2_soft_vjp launch failed: %s\n",

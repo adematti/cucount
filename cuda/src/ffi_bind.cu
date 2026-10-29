@@ -39,6 +39,10 @@ static IndexValue index_value2[2] = {0};
 // Soft binning rides the same attrs; only the tap window is extra state.
 static SoftBinSpec soft_spec2;
 
+// Host copy of the optional mu edges the setter was given; soft_spec2 points
+// into it (see set_count2_soft_attrs_py).
+static std::vector<FLOAT> soft_mu_edges2;
+
 // -----------------------------------------------------------------------------
 // Static state for count3close
 // -----------------------------------------------------------------------------
@@ -156,7 +160,10 @@ void set_count2_soft_attrs_py(
     const SplitAttrs_py spattrs_py = SplitAttrs_py(),
     double soft_sigma = 0.,
     double soft_cutoff = 1e-13,
-    const std::string &soft_taps = "exact")
+    const std::string &soft_taps = "exact",
+    double soft_mu_sigma = 0.,
+    int soft_mu_bins = 0,
+    py::object soft_mu_edges = py::none())
 {
     owned2.clear();
 
@@ -169,8 +176,24 @@ void set_count2_soft_attrs_py(
     owned2.own(&battrs2);
     owned2.own(&wattrs2);
 
+    // Optional caller-supplied mu edges. The spec keeps a pointer into this
+    // static vector, which stays stable until the next set (when the spec is
+    // rebuilt), so the FFI handlers can copy the spec and launch later.
+    soft_mu_edges2.clear();
+
+    if (!soft_mu_edges.is_none()) {
+        py::array_t<FLOAT, py::array::c_style | py::array::forcecast> arr =
+            py::cast<py::array_t<FLOAT, py::array::c_style | py::array::forcecast>>(
+                soft_mu_edges);
+        const auto *data = arr.data();
+        soft_mu_edges2.assign(data, data + arr.size());
+    }
+
     size_t csize = 0;
-    soft_spec2 = make_soft_bin_spec(battrs2, wattrs2, spattrs2, soft_sigma, soft_cutoff, &csize);
+    soft_spec2 = make_soft_bin_spec(
+        battrs2, wattrs2, spattrs2, soft_sigma, soft_cutoff, &csize, soft_mu_sigma,
+        soft_mu_bins, soft_mu_edges2.empty() ? nullptr : soft_mu_edges2.data(),
+        (int) soft_mu_edges2.size());
 
     if (soft_taps == "fast") {
         soft_spec2.fast_taps = 1;
@@ -799,7 +822,10 @@ PYBIND11_MODULE(ffi_cuda, m) {
         py::arg("spattrs") = SplitAttrs_py(),
         py::arg("soft_sigma") = 0.,
         py::arg("soft_cutoff") = 1e-13,
-        py::arg("soft_taps") = "exact");
+        py::arg("soft_taps") = "exact",
+        py::arg("soft_mu_sigma") = 0.,
+        py::arg("soft_mu_bins") = 0,
+        py::arg("soft_mu_edges") = py::none());
 
     m.def("count2_soft", []() { return EncapsulateFfiCall(count2Softffi); });
     m.def("count2_soft_vjp", []() { return EncapsulateFfiCall(count2SoftVjpffi); });

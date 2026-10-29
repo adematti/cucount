@@ -2025,6 +2025,8 @@ def count3_analytic(battrs12: BinAttrs, battrs13: BinAttrs, mattrs: MeshAttrs=No
 # without the soft kernel -- an older extension, or a CPU-only build -- still
 # imports the package and keeps every hard-binning entry point working.
 try:
-    from .soft import count2_soft, count2_soft_vjp, soft_weights, default_sigma
+    from .soft import (count2_soft, count2_soft_vjp, soft_weights,
+                       default_sigma, mu_grid, mu_spec, mu_kmax,
+                       soft_mu_weights, is_uniform, sigmas)
 except ImportError:  # pragma: no cover - depends on which extension was built
     pass

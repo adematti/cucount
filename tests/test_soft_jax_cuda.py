@@ -283,3 +283,173 @@ def test_sharded_counts_and_gradients_match_single_device():
                                rtol=1e-12, atol=1e-9 * np.abs(ref_gpos).max())
     np.testing.assert_allclose(np.asarray(grad.values[0]).reshape(-1), ref_gw,
                                rtol=1e-12, atol=1e-9 * np.abs(ref_gw).max())
+
+
+@needs_soft_jax
+def test_soft_mu_multipoles_match_the_numpy_frontend():
+    """A pole axis is soft-binned in mu too, and the FFI carries its slot count.
+
+    The output is ``(nbins, nell)``; ``M_0 == 1`` makes the monopole column equal
+    the soft-s counts, which is the cheapest check that the extra axis is wired
+    through rather than dropped or transposed.
+    """
+    ells = np.array([0, 2, 4])
+    rng = np.random.default_rng(61)
+    n = 48
+    pos1 = rng.uniform(0., BOX, (n, 3))
+    pos2 = rng.uniform(0., BOX, (n, 3))
+    w1 = rng.uniform(0.5, 1.5, n)
+    w2 = rng.uniform(0.5, 1.5, n)
+    ba_s = BinAttrs(s=EDGES)
+    ba_mu = BinAttrs(s=EDGES, pole=(ells, 'z'))
+    p1, p2 = Particles(pos1, w1), Particles(pos2, w2)
+    ma_s = MeshAttrs(p1, p2, boxsize=BOX, battrs=ba_s, periodic=True)
+    ma_mu = MeshAttrs(p1, p2, boxsize=BOX, battrs=ba_mu, periodic=True)
+
+    expected = np.asarray(_reference_counts(pos1, pos2, w1, w2, ba_mu, ma_mu))
+    got = np.asarray(_jax_counts(pos1, w1, pos2, w2, ba_mu, ma_mu))
+    assert got.shape == expected.shape == (EDGES.size - 1, ells.size)
+    np.testing.assert_allclose(got, expected, rtol=1e-12, atol=1e-12)
+
+    iso = np.asarray(_jax_counts(pos1, w1, pos2, w2, ba_s, ma_s))
+    np.testing.assert_allclose(got[:, 0], iso, rtol=1e-14, atol=1e-14)
+
+
+@needs_soft_jax
+def test_soft_mu_multipole_gradient_matches_the_numpy_vjp():
+    """The custom_vjp must hand the kernel an (nbins, nell) cotangent.
+
+    The FFI buffer is flat (one slot per bin and multipole), so a transposed or
+    truncated cotangent would still run and silently return the wrong gradient;
+    comparing against the numpy adjoint, which takes the 2-D cotangent directly,
+    pins the layout down.
+    """
+    ells = np.array([0, 2])
+    rng = np.random.default_rng(67)
+    n = 40
+    pos1 = rng.uniform(0., BOX, (n, 3))
+    pos2 = rng.uniform(0., BOX, (n, 3))
+    w1 = rng.uniform(0.5, 1.5, n)
+    w2 = rng.uniform(0.5, 1.5, n)
+    battrs = BinAttrs(s=EDGES, pole=(ells, 'z'))
+    p1, p2 = Particles(pos1, w1), Particles(pos2, w2)
+    mattrs = MeshAttrs(p1, p2, boxsize=BOX, battrs=battrs, periodic=True)
+    cot = rng.normal(size=(EDGES.size - 1, ells.size))
+
+    ref = nsoft.count2_soft_vjp(p1, p2, battrs=battrs, cotangent=cot,
+                                soft_sigma=SIGMA, soft_cutoff=CUTOFF,
+                                mattrs=mattrs, backend='cuda')
+    # argnums are ordered to match the destructuring, not the argument list.
+    gpos1, gpos2, gw1, gw2 = jax.grad(
+        lambda a, wa, b, wb: (_jax_counts(a, wa, b, wb, battrs, mattrs) * cot).sum(),
+        argnums=(0, 2, 1, 3))(pos1, w1, pos2, w2)
+
+    np.testing.assert_allclose(np.asarray(gpos1), np.asarray(ref['grad_position1']),
+                               rtol=1e-12, atol=1e-10 * np.abs(ref['grad_position1']).max())
+    np.testing.assert_allclose(np.asarray(gpos2), np.asarray(ref['grad_position2']),
+                               rtol=1e-12, atol=1e-10 * np.abs(ref['grad_position2']).max())
+    np.testing.assert_allclose(np.asarray(gw1).reshape(-1),
+                               np.asarray(ref['grad_weight1']).reshape(-1),
+                               rtol=1e-12, atol=1e-10 * np.abs(ref['grad_weight1']).max())
+    np.testing.assert_allclose(np.asarray(gw2).reshape(-1),
+                               np.asarray(ref['grad_weight2']).reshape(-1),
+                               rtol=1e-12, atol=1e-10 * np.abs(ref['grad_weight2']).max())
+
+
+@needs_soft_jax
+def test_soft_mu_edges_match_the_numpy_frontend_and_vjp():
+    """Caller-supplied mu edges travel through the FFI as a static attribute.
+
+    The edges are not a traced operand, so a mismatch between what the custom_vjp
+    declares (buffer size, metadata) and what the kernel uses would either crash
+    or return zeros; both the value and the gradient are pinned against the numpy
+    frontend, which takes the same edges in-process.
+    """
+    ells = np.array([0, 2])
+    mu_edges = -np.cos(np.linspace(0.0, np.pi, 25))
+    rng = np.random.default_rng(83)
+    n = 40
+    pos1 = rng.uniform(0., BOX, (n, 3))
+    pos2 = rng.uniform(0., BOX, (n, 3))
+    w1 = rng.uniform(0.5, 1.5, n)
+    w2 = rng.uniform(0.5, 1.5, n)
+    battrs = BinAttrs(s=EDGES, pole=(ells, 'z'))
+    p1, p2 = Particles(pos1, w1), Particles(pos2, w2)
+    mattrs = MeshAttrs(p1, p2, boxsize=BOX, battrs=battrs, periodic=True)
+    cot = rng.normal(size=(EDGES.size - 1, ells.size))
+
+    ref = nsoft.count2_soft(p1, p2, battrs=battrs, mattrs=mattrs, backend='cuda',
+                            soft_sigma=SIGMA, soft_cutoff=CUTOFF,
+                            soft_mu_edges=mu_edges)
+    assert ref['soft']['mu_uniform'] is False
+
+    def counts(a, wa, b, wb):
+        return cjax.count2_soft(cjax.Particles(a, wa), cjax.Particles(b, wb),
+                                battrs=battrs, mattrs=mattrs, backend='cuda',
+                                soft_sigma=SIGMA, soft_cutoff=CUTOFF,
+                                soft_mu_edges=mu_edges)
+
+    got = np.asarray(counts(pos1, w1, pos2, w2)['weight'])
+    np.testing.assert_allclose(got, np.asarray(ref['weight']), rtol=1e-12, atol=1e-12)
+
+    vjp = nsoft.count2_soft_vjp(p1, p2, battrs=battrs, cotangent=cot, mattrs=mattrs,
+                                backend='cuda', soft_sigma=SIGMA,
+                                soft_cutoff=CUTOFF, soft_mu_edges=mu_edges)
+    gpos1, gpos2, gw1, gw2 = jax.grad(
+        lambda a, wa, b, wb: (counts(a, wa, b, wb)['weight'] * cot).sum(),
+        argnums=(0, 2, 1, 3))(pos1, w1, pos2, w2)
+
+    for name, got_g in (('grad_position1', gpos1), ('grad_position2', gpos2)):
+        want = np.asarray(vjp[name])
+        np.testing.assert_allclose(np.asarray(got_g), want, rtol=1e-12,
+                                   atol=1e-10 * np.abs(want).max())
+    for name, got_g in (('grad_weight1', gw1), ('grad_weight2', gw2)):
+        want = np.asarray(vjp[name])
+        np.testing.assert_allclose(np.asarray(got_g).reshape(-1), want.reshape(-1),
+                                   rtol=1e-12, atol=1e-10 * np.abs(want).max())
+
+
+@needs_two_gpus
+def test_sharded_soft_mu_gradients_match_single_device():
+    """Soft-mu multipoles go through the same shard_map custom_vjp.
+
+    Nothing about the extra pole axis changes the split, but it does change the
+    shapes whose manual sharding the bwd rule has to agree with, so the sharded
+    value and gradients are checked against the single-device adjoint.
+    """
+    ndev = _n_devices()
+    n = 8 * ndev
+    ells = np.array([0, 2])
+    rng = np.random.default_rng(71)
+    pos = rng.uniform(0., BOX, (n, 3))
+    w = rng.uniform(0.5, 1.5, n)
+    battrs = BinAttrs(s=EDGES, pole=(ells, 'z'))
+    p = Particles(pos, w)
+    mattrs = MeshAttrs(p, p, boxsize=BOX, battrs=battrs, periodic=True)
+    cot = rng.normal(size=(EDGES.size - 1, ells.size))
+
+    ref = np.asarray(_reference_counts(pos, pos, w, w, battrs, mattrs))
+    vjp = nsoft.count2_soft_vjp(Particles(pos, w), Particles(pos, w), battrs=battrs,
+                                cotangent=cot, soft_sigma=SIGMA, soft_cutoff=CUTOFF,
+                                mattrs=mattrs, backend='cuda')
+    ref_gpos = np.asarray(vjp['grad_position1']) + np.asarray(vjp['grad_position2'])
+    ref_gw = (np.asarray(vjp['grad_weight1']).reshape(-1)
+              + np.asarray(vjp['grad_weight2']).reshape(-1))
+
+    with cjax.create_sharding_mesh() as mesh:
+        assert mesh.devices.size == ndev
+        pj = cjax.Particles(pos, w)
+
+        def loss(pp):
+            counts = cjax.count2_soft(pp, pp, battrs=battrs, soft_sigma=SIGMA,
+                                      soft_cutoff=CUTOFF, mattrs=mattrs,
+                                      backend='cuda')['weight']
+            return (counts * cot).sum()
+
+        value, grad = jax.value_and_grad(loss)(pj)
+
+    np.testing.assert_allclose(float(value), float(np.sum(ref * cot)), rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(grad.positions), ref_gpos,
+                               rtol=1e-12, atol=1e-9 * np.abs(ref_gpos).max())
+    np.testing.assert_allclose(np.asarray(grad.values[0]).reshape(-1), ref_gw,
+                               rtol=1e-12, atol=1e-9 * np.abs(ref_gw).max())

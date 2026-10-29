@@ -228,12 +228,16 @@ def test_rejects_bad_taps_mode():
 
 
 @needs_cuda
-def test_rejects_second_axis():
-    """v1 softens s only; a mu axis must be refused, not quietly hard-binned."""
+def test_rejects_an_unsupported_second_axis():
+    """Only s and a pole axis are softened; anything else must be refused.
+
+    A real ``mu`` axis is a hard-binned coordinate the soft kernel does not
+    serve, and quietly hard-binning it would be worse than refusing.
+    """
     p, ba, ma = _setup()
     ba2 = BinAttrs(s=EDGES, mu=(np.linspace(-1, 1, 9), 'z'))
     ma2 = MeshAttrs(p, p, boxsize=BOX, battrs=ba2, periodic=True)
-    with pytest.raises(ValueError, match='single'):
+    with pytest.raises(ValueError, match='not served'):
         count2_soft(p, p, battrs=ba2, mattrs=ma2, backend='cuda')
 
 

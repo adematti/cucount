@@ -45,6 +45,27 @@
 // relative resolution" instead of "wide bins are under-smoothed and narrow ones
 // are over-smoothed", and because sigma_i is then a function of the edges it is
 // a constant of the binning: there is no dL/dsigma to compute for it.
+//
+// Multipoles (a second axis, VAR_POLE) are softened on the *mu* axis with the
+// same truncated softmax, evaluated on a uniform grid of nmu centres over
+// [-1, 1]. The mu weights are folded into the multipoles before the s scatter,
+//
+//   M_l = sum_j Wmu_j (2 l + 1) P_l(mu_j),        sum_j Wmu_j = 1
+//   counts[s bin i, l] += w_pair * Ws_i * M_l
+//
+// so a pair costs taps_s * nell histogram updates instead of the
+// taps_s * taps_mu it would cost to soften both axes on the histogram grid.
+// P_0 = 1, so M_0 = 1 and the monopole is exactly the soft-s count.
+//
+// mu is *not* folded: it runs over the full [-1, 1] interval that cucount's
+// line of sight defines, so odd multipoles are meaningful and no |mu| symmetry is
+// assumed (fcfc folds mu; cucount does not, and the soft kernel follows cucount).
+// The grid over that interval is uniform by default (``mu_bins``/``mu_sigma``
+// below), which keeps the two-exp recurrence, but the caller may hand in its own
+// strictly increasing ``mu_edges`` covering (part of) [-1, 1]. Arithmetic edges
+// keep the recurrence path; anything else gets a per-cell sigma and one exp per
+// tap, the same split the s axis has. A pair whose mu falls outside a partial
+// grid is carried by the nearest boundary cell.
 
 #include <algorithm>
 #include <cmath>
@@ -53,6 +74,10 @@
 
 #include "common.h"
 #include "args.h"
+
+// One int per multipole, plus room for MAX_POLE + 1 of them in the kernel's
+// per-pair scratch. Held by value in the spec, i.e. in constant memory.
+#define CUCOUNT_SOFT_MAXELL (MAX_POLE + 2)
 
 
 // Everything the kernel needs per pair, resolved on the host. Small enough to
@@ -89,6 +114,43 @@ struct SoftBinSpec {
     // bin, which only shows up when the kernel is narrow enough for the error
     // not to be covered by the window.
     FLOAT *edges;             // device, nbins + 1 (general path only)
+
+    // --- multipoles (soft mu) ---------------------------------------------
+    //
+    // nell == 0 is plain soft-s counting. Otherwise the request was
+    // BinAttrs(s=..., pole=(ells, los)) and the histogram has nbins * nell
+    // slots, s-major: slot = s bin * nell + multipole position.
+    int nell;
+    int ell_max;
+    int ells[CUCOUNT_SOFT_MAXELL];  // the multipoles, in output order
+    int nslots;                     // nbins * max(nell, 1): entries in counts
+    LOS_TYPE los;                   // how mu is measured, from the pole axis
+
+    // Uniform mu quadrature grid over [-1, 1]: nmu centres
+    // mu_j = mu_c0 + j * mu_dmu, the same structure as a uniform s grid.
+    int nmu;
+    FLOAT mu_c0;       // centre of cell 0
+    FLOAT mu_dmu;      // width of a mu cell
+    FLOAT mu_inv_dmu;
+    FLOAT mu_sigma;
+    FLOAT mu_inv2sig2;  // 1 / (2 sigma_mu^2)
+    FLOAT mu_gg;        // mu_dmu^2 / sigma_mu^2
+    FLOAT mu_iq;        // exp(-mu_gg)
+    int mu_kmax;        // taps tried on each side of the mu peak
+
+    // --- user-supplied mu edges -------------------------------------------
+    //
+    // mu_uniform == 1 when the (default or caller-supplied) mu edges are an
+    // arithmetic progression: the recurrence path above. Otherwise the kernel
+    // binary-searches the mu edges, expands the window to the cutoff and pays one
+    // exp per tap, and the per-cell width/sigma tables below are uploaded.
+    int mu_uniform;
+    int mu_per_bin_sigma;    // 1 when sigma_j = mu_alpha * cell width
+    FLOAT mu_alpha;
+    const FLOAT *host_mu_edges;  // host, nmu + 1 (general path only)
+    FLOAT *mu_centres;           // device, nmu (general path only)
+    FLOAT *mu_inv2s2;            // device, nmu (general path only)
+    FLOAT *mu_edge_table;        // device, nmu + 1 (general path only)
 };
 
 
@@ -111,14 +173,29 @@ __device__ __forceinline__ FLOAT soft_tap_weight(FLOAT delta, bool fast)
 // serve, so a caller can never silently get hard binning instead.
 inline SoftBinSpec make_soft_bin_spec(const BinAttrs &battrs, const WeightAttrs &wattrs,
                                       const SplitAttrs &spattrs, double sigma,
-                                      double cutoff, size_t *csize)
+                                      double cutoff, size_t *csize,
+                                      double mu_sigma = 0., int mu_bins = 0,
+                                      const FLOAT *mu_edges = nullptr,
+                                      int mu_nedges = 0)
 {
     const char *prefix = "cuda backend, soft binning: ";
 
-    if (battrs.ndim != 1 || battrs.var[0] != VAR_S) {
+    // Two requests are served: 's' alone (isotropic clustering) and
+    // 's' + 'pole' (soft mu binning, i.e. differentiable multipoles). The pole
+    // axis is last by construction (BinAttrs_py sorts it there).
+    const bool multipoles =
+        (battrs.ndim == 2) && (battrs.var[0] == VAR_S) && (battrs.var[1] == VAR_POLE);
+
+    if (!((battrs.ndim == 1 && battrs.var[0] == VAR_S) || multipoles)) {
         throw std::invalid_argument(
-            std::string(prefix) + "v1 softens a single 's' axis (isotropic clustering); "
-            "a request with " + std::to_string(battrs.ndim) + " axis/axes is not served yet");
+            std::string(prefix) + "softens the 's' axis and, optionally, a 'pole' axis after "
+            "it; a request with " + std::to_string(battrs.ndim) + " axis/axes is not served yet");
+    }
+
+    if ((battrs.ndim == 2) && (battrs.var[1] == VAR_POLE) && (battrs.los[1] == LOS_NONE)) {
+        throw std::invalid_argument(
+            std::string(prefix) + "the 'pole' axis needs a line of sight, e.g. "
+            "pole=(ells, 'z') or pole=(ells, 'firstpoint')");
     }
 
     if (spattrs.mode != SPLIT_NONE) {
@@ -250,12 +327,202 @@ inline SoftBinSpec make_soft_bin_spec(const BinAttrs &battrs, const WeightAttrs 
     // and writes the choice back into spec.path (0 = direct global atomics).
     spec.path = 0;
 
-    *csize = nbins;
+    // ------------------------------------------------------------------
+    // Multipole axis: the mu quadrature grid and its softmax width.
+    // ------------------------------------------------------------------
+    //
+    // By default the grid is uniform over [-1, 1] whatever the s grid is: the
+    // Legendre sums are per mu cell, so all they need is a set of centres, and a
+    // uniform grid is what lets the mu window reuse the two-exp recurrence. Its
+    // resolution is a pure quadrature choice, kept at dmu <= sigma_mu / 2 when
+    // sigma is given, so the discretisation error stays well under 1e-4 of the
+    // profile.
+    //
+    // A caller may instead hand in its own strictly increasing mu edges in
+    // [-1, 1]. Arithmetic edges are detected here and still take the recurrence
+    // path (same centres, same sigma rule), so the user grid and the internal one
+    // are interchangeable when they coincide; any other monotone grid switches to
+    // the general mu window. mu is never folded.
+    spec.nell = 0;
+    spec.ell_max = 0;
+    spec.los = LOS_NONE;
+    spec.nmu = 0;
+    spec.mu_uniform = 1;
+    spec.mu_per_bin_sigma = 0;
+    spec.mu_alpha = 0.5;
+    spec.host_mu_edges = nullptr;
+    spec.mu_centres = nullptr;
+    spec.mu_inv2s2 = nullptr;
+    spec.mu_edge_table = nullptr;
+    spec.mu_kmax = 0;
+
+    if (multipoles) {
+        const int nell = (int) battrs.shape[1];
+
+        if (nell < 1 || nell > MAX_POLE + 1) {
+            throw std::invalid_argument(
+                std::string(prefix) + "between 1 and " + std::to_string(MAX_POLE + 1) +
+                " multipoles are served, got " + std::to_string(nell));
+        }
+
+        for (int i = 0; i < nell; i++) {
+            const double raw = (double) battrs.array[1][i];
+            const int ell = (int) std::llround(raw);
+
+            if (std::fabs(raw - (double) ell) > 1e-9 || ell < 0 || ell > MAX_POLE) {
+                throw std::invalid_argument(
+                    std::string(prefix) + "multipoles must be integers in [0, " +
+                    std::to_string(MAX_POLE) + "], got " + std::to_string(raw));
+            }
+
+            if (i > 0 && ell <= spec.ells[i - 1]) {
+                throw std::invalid_argument(
+                    std::string(prefix) + "multipoles must be strictly increasing");
+            }
+
+            spec.ells[i] = ell;
+            spec.ell_max = std::max(spec.ell_max, ell);
+        }
+
+        spec.nell = nell;
+        spec.los = battrs.los[1];
+
+        if (!std::isfinite(mu_sigma)) {
+            throw std::invalid_argument(std::string(prefix) + "soft_mu_sigma must be finite");
+        }
+
+        int nmu = 0;
+        double dmu = 0.;
+
+        if (mu_edges && mu_nedges > 0) {
+            // User-supplied quadrature: centres at the midpoints, exactly like the
+            // s axis. The grid must stay inside mu's own range and be monotone;
+            // it need not cover all of [-1, 1] (the boundary cells then carry the
+            // pairs beyond the grid).
+            if (mu_bins > 0) {
+                throw std::invalid_argument(
+                    std::string(prefix) + "give soft_mu_edges or soft_mu_bins, not both");
+            }
+
+            if (mu_nedges < 2) {
+                throw std::invalid_argument(
+                    std::string(prefix) + "at least 2 mu edges are needed");
+            }
+
+            if (mu_nedges - 1 > 1024) {
+                throw std::invalid_argument(
+                    std::string(prefix) + "at most 1024 mu bins are served, got " +
+                    std::to_string(mu_nedges - 1));
+            }
+
+            for (int i = 0; i < mu_nedges; ++i) {
+                if (!std::isfinite((double) mu_edges[i])) {
+                    throw std::invalid_argument(
+                        std::string(prefix) + "mu edges must be finite");
+                }
+            }
+
+            if ((double) mu_edges[0] < -1. - 1e-9 ||
+                (double) mu_edges[mu_nedges - 1] > 1. + 1e-9) {
+                throw std::invalid_argument(
+                    std::string(prefix) + "mu edges must lie in [-1, 1] (mu is not folded); got [" +
+                    std::to_string((double) mu_edges[0]) + ", " +
+                    std::to_string((double) mu_edges[mu_nedges - 1]) + "]");
+            }
+
+            for (int i = 0; i + 1 < mu_nedges; ++i) {
+                if (!((double) mu_edges[i + 1] > (double) mu_edges[i])) {
+                    throw std::invalid_argument(
+                        std::string(prefix) + "mu edges must be strictly increasing");
+                }
+            }
+
+            nmu = mu_nedges - 1;
+            dmu = (double) mu_edges[1] - (double) mu_edges[0];
+
+            bool mu_uniform = true;
+            const double mtol = 1e-9 * std::fabs(dmu);
+
+            for (int i = 2; i <= nmu; ++i) {
+                const double want = (double) mu_edges[0] + (double) i * dmu;
+
+                if (std::fabs((double) mu_edges[i] - want) > mtol) {
+                    mu_uniform = false;
+                    break;
+                }
+            }
+
+            spec.mu_uniform = mu_uniform ? 1 : 0;
+            spec.host_mu_edges = mu_edges;
+            spec.mu_c0 = (FLOAT) ((double) mu_edges[0] + 0.5 * dmu);
+        }
+        else {
+            // mu_bins wins when given; otherwise a given sigma sets the grid
+            // (dmu = sigma / 2) and a sigma-less request falls back to 40 cells
+            // (dmu = 0.05, sigma_mu = 0.025).
+            nmu = (mu_bins > 0) ? mu_bins
+                                : ((mu_sigma > 0) ? (int) std::ceil(4. / mu_sigma) : 40);
+            nmu = std::min(std::max(nmu, 4), 1024);
+            dmu = 2. / (double) nmu;
+            spec.mu_uniform = 1;
+            spec.mu_c0 = (FLOAT) (-1. + 0.5 * dmu);
+        }
+
+        const bool mu_width_scaled = !(mu_sigma > 0) && !spec.mu_uniform;
+        double sg = 0.;
+
+        if (mu_width_scaled) {
+            // Per-cell widths on a non-uniform grid: half of each cell, the mu
+            // analogue of the s default.
+            spec.mu_per_bin_sigma = 1;
+            spec.mu_alpha = 0.5f;
+        }
+        else {
+            sg = (mu_sigma > 0) ? mu_sigma : 0.5 * dmu;
+
+            if (!(sg > 0)) {
+                throw std::invalid_argument(
+                    std::string(prefix) +
+                    "soft_mu_sigma must be positive (or None for half a mu cell)");
+            }
+        }
+
+        spec.nmu = nmu;
+        spec.mu_dmu = (FLOAT) dmu;
+        spec.mu_inv_dmu = (FLOAT) (1. / dmu);
+
+        if (spec.mu_uniform) {
+            spec.mu_sigma = (FLOAT) sg;
+            spec.mu_inv2sig2 = (FLOAT) (1. / (2. * sg * sg));
+            spec.mu_gg = (FLOAT) (dmu * dmu / (sg * sg));
+            spec.mu_iq = (FLOAT) std::exp(-(double) spec.mu_gg);
+
+            const double kmax =
+                std::ceil(std::sqrt(2. * std::log(1. / cutoff)) * sg / dmu);
+            spec.mu_kmax = (int) std::min(std::max(kmax, 1.), (double) (nmu - 1));
+        }
+        else {
+            // The window is expanded until the cutoff stops it, so its length in
+            // cells depends on the pair; the cap is the whole grid. Keep the
+            // absolute sigma (if the caller gave one) in the metadata, since the
+            // per-cell tables are built from it.
+            spec.mu_sigma = (FLOAT) sg;
+            spec.mu_inv2sig2 = 0;
+            spec.mu_gg = 0;
+            spec.mu_iq = 1;
+            spec.mu_kmax = nmu - 1;
+        }
+    }
+
+    spec.nslots = spec.nbins * (spec.nell > 0 ? spec.nell : 1);
+    *csize = spec.nslots;
 
     return spec;
 }
 
 
+// Writes spec.nslots entries: nbins for a plain soft-s request, nbins * nell
+// for soft mu binning (s-major: slot = s bin * nell + multipole position).
 void count2_soft(FLOAT *counts, const Mesh *list_mesh, const Count2Attrs &attrs,
                  SoftBinSpec &spec, DeviceMemoryBuffer *buffer,
                  cudaStream_t stream);
@@ -282,6 +549,21 @@ void count2_soft(FLOAT *counts, const Mesh *list_mesh, const Count2Attrs &attrs,
 //   dL/ds      = (w_pair / sigma^2) sum_b g_b W_b (c_b - cbar)
 //   dL/dsigma  = (2 w_pair / sigma) sum_b g_b W_b (x_b - xbar)
 //   dL/dr_i    = dL/ds * (r_i - r_j) / s ,  dL/dr_j = -dL/dr_i
+//
+// With soft mu binning there is one more chain: the multipole profile
+// M_l = sum_j Wmu_j (2l+1) P_l(mu_j) depends on the pair's mu,
+//
+//   dL/dmu = (w_pair / sum_j Wmu_j) sum_l G_l dM_l/dmu,
+//   dM_l/dmu = (dN_l - M_l dS) / sum_j Wmu_j,
+//   dN_l = sum_j dWmu_j/dmu (2l+1) P_l(mu_j),   dS = sum_j dWmu_j/dmu,
+//   dWmu_j/dmu = Wmu_j (mu_j - mubar) / sigma_j^2,
+//
+// and mu is a function of the pair difference (and, for the midpoint and
+// first/end-point lines of sight, of the endpoints themselves), so dL/dmu
+// enters dL/dpositions through the same (r_i - r_j) / s geometry plus the
+// line-of-sight term. The mu window and grid are constants, so they are not
+// differentiated. dL/dsigma_mu is deliberately zero: the mu width is a fixed
+// property of the request, like the s width of a per-bin sigma.
 //
 // which is pyfcfc's soft_hist_vjp. Window membership and the range check are
 // piecewise constant in s, so they are treated as constants (the standard
