@@ -224,6 +224,30 @@ def test_count3close_ffi_matches_numpy(third):
     close(got, want)
 
 
+@pytest.mark.parametrize('close_pair', [(1, 2), (1, 3), (2, 3)])
+def test_count3close_ffi_close_pair_on_default_meshes(close_pair):
+    """Every close_pair through the jax frontend, with the meshes it builds itself.
+
+    The regression case: this frontend sized the default meshes for close_pair
+    whatever the CPU module traversed, so with a module that walked every close
+    pair from particle 1, (2, 3) swept windows sized for the (2, 3) leg over the
+    (1, 2) and (1, 3) ones and dropped nearly every triplet. The selection must
+    be tighter than the binning, and the catalogues dense enough that the
+    default mesh is finer than the shortfall, or the bug does not show.
+    """
+    cats = [sky_catalog(s, n=3000) for s in (21, 22, 23)]
+    e12 = np.linspace(10., 400., 5)
+    b12, b13 = BinAttrs(s=e12), BinAttrs(s=e12)
+    kw = dict(battrs12=b12, battrs13=b13)
+    kw[f'sattrs{close_pair[0]:d}{close_pair[1]:d}'] = SelectionAttrs(s=(0., 60.))
+    nparticles = [Particles(*c) for c in cats]
+    want = count3close(*nparticles, backend='cpu', close_pair=(1, 2), **kw)['weight']
+    with on_cpu():
+        jparticles = [cj.Particles(*c) for c in cats]
+        got = cj.count3close(*jparticles, backend='cpu', close_pair=close_pair, **kw)['weight']
+    close(got, want)
+
+
 def test_unknown_backend_is_rejected():
     pos, w = catalog(17, n=100)
     battrs = BinAttrs(s=SEDGES)

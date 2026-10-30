@@ -13,17 +13,20 @@ namespace cpu {
 // where the 3-dimensional angular upweight applies, indexed by the three
 // cos(theta) of the triangle.
 //
-// The CUDA backend picks among several search strategies with `close_pair`;
-// all of them enumerate the same triplets, and the choice is a performance
-// hint. This backend has one strategy -- walk catalogue 2 and then catalogue 3
-// from each primary -- so `close_pair` is accepted and ignored.
+// `close_pair` (Count3Args::close_pair: 12, 13 or 23) picks the search
+// strategy, as on CUDA; all of them enumerate the same triplets. (1, 2) and
+// (1, 3) walk from each particle 1: the close leg first, then the other one,
+// so mattrs2 has to bound the (1, 2) separation and mattrs3 the (1, 3) one.
+// (2, 3) walks from each particle 2: its close particles 3 in mattrs3's
+// window, which bounds the (2, 3) separation, then particle 1 in mattrs1's,
+// which bounds the (1, 2) one.
 //
-// That makes the meshes it is handed part of the contract. Centring on
-// particle 1 means mattrs2 has to bound the (1, 2) separation and mattrs3 the
-// (1, 3) one, whatever close_pair says; a mesh sized for the (2, 3) leg
-// sweeps too narrow a window and drops triplets rather than rejecting them,
-// which is quietly wrong rather than merely slow. The frontend sizes the
-// default meshes for this traversal and checks any mesh passed in by hand.
+// That makes the meshes part of the contract: one too narrow for the leg it
+// is walked over drops triplets rather than rejecting them, which is quietly
+// wrong rather than merely slow. The frontends size the default meshes for
+// close_pair, as for CUDA, when the module has `count3close_strategies` (an
+// older build walked every close pair from particle 1, and needed the (1, 2)
+// sizing whatever close_pair said), and check any mesh passed in by hand.
 void Count3Close(const Count3Args& args);
 
 }  // namespace cpu

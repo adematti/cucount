@@ -490,6 +490,31 @@ def test_close_pair_choice_does_not_change_the_result_on_default_meshes(close_pa
     assert np.allclose(got, ref, rtol=1e-12, atol=0)
 
 
+@pytest.mark.parametrize('close_pair', [(1, 2), (2, 3)])
+def test_close_default_meshes_match_triplet_sum(close_pair):
+    """The default meshes against a brute-force sum, not against each other.
+
+    The default meshes are built from one catalogue each, so the particles of
+    another catalogue walked over them can sit outside their box; their cell
+    index used to be wrapped there, as on a periodic mesh, which put the
+    window on the far side of the box and lost 0.1-0.2% of the triplets. The
+    test above compared two strategies that lost the same ones, and passed.
+    """
+    cats = [sky_catalog(s, 4000) for s in (11, 12, 13)]
+    particles = [Particles(*c) for c in cats]
+    smax23 = E12[len(E12) // 2]
+    kw = dict(battrs12=BinAttrs(s=E12), battrs13=BinAttrs(s=E12), sattrs23=SelectionAttrs(s=(0., smax23)))
+    got = count3close(*particles, backend='cpu', close_pair=close_pair, **kw)['weight']
+    (p1, w1), (p2, w2), (p3, w3) = cats
+    i2, i3 = np.nonzero(np.linalg.norm(p2[:, None] - p3[None], axis=-1) <= smax23)
+    d12 = np.linalg.norm(p1[:, None] - p2[None, i2], axis=-1)
+    d13 = np.linalg.norm(p1[:, None] - p3[None, i3], axis=-1)
+    ok = (d12 >= E12[0]) & (d12 < E12[-1]) & (d13 >= E12[0]) & (d13 < E12[-1])
+    want = np.sum(ok * (w1[:, None] * (w2[i2] * w3[i3])[None]))
+    assert want > 0
+    assert np.isclose(np.sum(got), want, rtol=1e-12, atol=0)
+
+
 def test_close_declines_a_mesh_too_narrow_for_the_leg_it_walks():
     """A hand-built mesh gets the check the defaults no longer need.
 
@@ -499,7 +524,10 @@ def test_close_declines_a_mesh_too_narrow_for_the_leg_it_walks():
     """
     particles, kw, _ = _close_setup()
     narrow = SelectionAttrs(s=(0., E12[1]))
-    kw['mattrs2'] = MeshAttrs(*particles, battrs=None, sattrs=narrow)
+    # close_pair (2, 3) walks the (1, 2) leg on mattrs1 from each particle 2;
+    # an older module walked it on mattrs2 from each particle 1.
+    walked = 'mattrs1' if getattr(cpulib, 'count3close_strategies', False) else 'mattrs2'
+    kw[walked] = MeshAttrs(*particles, battrs=None, sattrs=narrow)
     with pytest.raises(ValueError, match='too narrow'):
         count3close(*particles, backend='cpu', close_pair=(2, 3),
                     sattrs23=narrow, **kw)

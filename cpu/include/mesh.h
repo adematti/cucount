@@ -125,6 +125,18 @@ inline int wrap_periodic_int(int idx, int meshsize) {
     return (r < 0) ? r + meshsize : r;
 }
 
+// A cartesian cell index along one axis: wrapped on a periodic mesh, clamped
+// to the edge cells otherwise. A position outside the box is routine there --
+// the default meshes of a triplet count are built from one catalogue each and
+// walked from the particles of another -- and wrapping it put its window on
+// the far side of the box, dropping its neighbours (0.1-0.2% of the triplets
+// in the default-mesh tests). Clamping only brings cells closer together, so
+// every neighbour within smax stays inside the +-delta window.
+inline int mesh_axis_index(int idx, int meshsize, bool periodic) {
+    if (periodic) return wrap_periodic_int(idx, meshsize);
+    return std::min(std::max(idx, 0), meshsize - 1);
+}
+
 // The fmod form the CUDA kernel uses, rather than the Highway kernel's
 // Round-based nearest image: identical for every separation inside the box,
 // and this way the port has no arithmetic of its own to get wrong.
@@ -164,7 +176,7 @@ inline size_t cartesian_cell_index(const MeshAttrs& mattrs, const double* positi
         const double offset = mattrs.boxcenter[axis] - mattrs.boxsize[axis] / 2;
         const int index_axis = static_cast<int>(std::floor(
             (position[axis] - offset) * mattrs.meshsize[axis] / mattrs.boxsize[axis]));
-        index += wrap_periodic_int(index_axis, static_cast<int>(mattrs.meshsize[axis]));
+        index += mesh_axis_index(index_axis, static_cast<int>(mattrs.meshsize[axis]), mattrs.periodic);
     }
     return index;
 }
@@ -254,7 +266,7 @@ inline void set_cartesian_bounds(const double* position, const MeshAttrs& mattrs
         const double offset = mattrs.boxcenter[axis] - mattrs.boxsize[axis] / 2;
         int index = static_cast<int>(std::floor(
             (position[axis] - offset) * meshsize / mattrs.boxsize[axis]));
-        index = wrap_periodic_int(index, meshsize);
+        index = mesh_axis_index(index, meshsize, mattrs.periodic);
         const int delta = static_cast<int>(
             std::ceil(mattrs.smax / mattrs.boxsize[axis] * meshsize));
 

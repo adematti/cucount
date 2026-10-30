@@ -568,29 +568,42 @@ def count3close(
 
     assert close_pair in [(1, 2), (1, 3), (2, 3)]
 
+    # Which pair the default meshes are sized for, as cucount.numpy.count3close:
+    # an older CPU module walks every close pair from particle 1, and needs the
+    # (1, 2) sizing whatever close_pair says (see numpy._close_mesh_pair).
+    mode, ffi_module, _ = _resolve_ffi_backend(backend)
+    cpu_module = ffi_module if mode == 'cpu' else None
+    mesh_pair = numpy._close_mesh_pair(close_pair, cpu_module)
+
     if mattrs1 is None:
         mattrs1 = MeshAttrs(
             particles[0],
-            sattrs=sattrs13 if close_pair == (1, 3) else sattrs12,
-            battrs=battrs13 if close_pair == (1, 3) else battrs12,
+            sattrs=sattrs13 if mesh_pair == (1, 3) else sattrs12,
+            battrs=battrs13 if mesh_pair == (1, 3) else battrs12,
             backend=backend,
         )
 
     if mattrs2 is None:
         mattrs2 = MeshAttrs(
             particles[1],
-            sattrs=sattrs23 if close_pair == (2, 3) else sattrs12,
-            battrs=battrs23 if close_pair == (2, 3) else battrs12,
+            sattrs=sattrs23 if mesh_pair == (2, 3) else sattrs12,
+            battrs=battrs23 if mesh_pair == (2, 3) else battrs12,
             backend=backend,
         )
 
     if mattrs3 is None:
         mattrs3 = MeshAttrs(
             particles[2],
-            sattrs=sattrs23 if close_pair == (2, 3) else sattrs13,
-            battrs=battrs23 if close_pair == (2, 3) else battrs13,
+            sattrs=sattrs23 if mesh_pair == (2, 3) else sattrs13,
+            battrs=battrs23 if mesh_pair == (2, 3) else battrs13,
             backend=backend,
         )
+
+    # The defaults above are already wide enough; this catches a mesh passed
+    # in by hand, which the CPU traversal would otherwise walk too narrowly.
+    if mode == 'cpu':
+        numpy._check_close_meshes(close_pair, mattrs1, mattrs2, mattrs3, sattrs12, sattrs13, sattrs23,
+                                  battrs12, battrs13, battrs23, cpu_module=cpu_module)
 
     wattrs.check(*particles)
 

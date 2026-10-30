@@ -951,6 +951,34 @@ def _check_mesh_reaches(mattrs, name, leg, sattrs=None, battrs=None):
             f'{name}=None build one.')
 
 
+def _close_mesh_pair(close_pair, cpu_module=None):
+    """The pair whose legs the default close-triplet meshes are sized for.
+
+    close_pair names the search strategy, and each strategy bounds a different
+    leg: (2, 3) walks catalogue 3 from each particle 2, so there the tight
+    window belongs to the (2, 3) leg. CUDA, and a CPU module with
+    ``count3close_strategies``, traverse as close_pair says. An older CPU module
+    walks every close pair from particle 1, so it needs the (1, 2) and (1, 3)
+    windows whatever close_pair says, and a mesh sized for (2, 3) makes it sweep
+    too narrowly and silently drop triplets; (1, 2) sizing is correct for it, as
+    a wider window only costs candidates the binning and selections reject.
+    """
+    if cpu_module is None or getattr(cpu_module, 'count3close_strategies', False):
+        return close_pair
+    return (1, 2)
+
+
+def _check_close_meshes(close_pair, mattrs1, mattrs2, mattrs3, sattrs12, sattrs13, sattrs23,
+                        battrs12, battrs13, battrs23, cpu_module=None):
+    """Raise unless the meshes reach the legs the close_pair strategy walks over (see :func:`_close_mesh_pair`)."""
+    if _close_mesh_pair(close_pair, cpu_module) == (2, 3):
+        _check_mesh_reaches(mattrs3, 'mattrs3', '(2, 3)', sattrs23, battrs23)
+        _check_mesh_reaches(mattrs1, 'mattrs1', '(1, 2)', sattrs12, battrs12)
+    else:
+        _check_mesh_reaches(mattrs2, 'mattrs2', '(1, 2)', sattrs12, battrs12)
+        _check_mesh_reaches(mattrs3, 'mattrs3', '(1, 3)', sattrs13, battrs13)
+
+
 @dataclass(init=False)
 class MeshAttrs(object):
 
@@ -1629,18 +1657,11 @@ def count3close(*particles: Particles,
 
     assert close_pair in [(1, 2), (1, 3), (2, 3)]
 
-    # Which pair the default meshes are sized for. close_pair names the search
-    # strategy, and each strategy bounds a different leg: CUDA's (2, 3) walks
-    # catalogue 3 from each particle 2, so there the tight window belongs to
-    # the (2, 3) leg. The CPU backend has one traversal -- walk 2, then 3,
-    # from each primary -- so whatever close_pair says, it needs the (1, 2)
-    # and (1, 3) windows, and a mesh sized for (2, 3) makes it sweep too
-    # narrowly and silently drop triplets. (1, 2) sizing is correct for every
-    # strategy, since a wider window only costs candidates that the binning
-    # and the selections then reject; it is merely not the tightest for CUDA.
+    # Which pair the default meshes are sized for (see _close_mesh_pair).
     # 'compare' runs both backends on one mesh set, so it takes the sizing
-    # that serves both.
-    mesh_pair = close_pair if mode == 'cuda' else (1, 2)
+    # that serves both: close_pair's, unless the CPU module is an older build.
+    cpu_module = None if mode == 'cuda' else cpulib
+    mesh_pair = _close_mesh_pair(close_pair, cpu_module)
 
     if mattrs1 is None:
         mattrs1 = MeshAttrs(
@@ -1669,8 +1690,8 @@ def count3close(*particles: Particles,
     # The defaults above are already wide enough; this catches a mesh passed
     # in by hand, which the CPU traversal would otherwise walk too narrowly.
     if mode != 'cuda':
-        _check_mesh_reaches(mattrs2, 'mattrs2', '(1, 2)', sattrs12, battrs12)
-        _check_mesh_reaches(mattrs3, 'mattrs3', '(1, 3)', sattrs13, battrs13)
+        _check_close_meshes(close_pair, mattrs1, mattrs2, mattrs3, sattrs12, sattrs13, sattrs23,
+                            battrs12, battrs13, battrs23, cpu_module=cpulib)
 
     cparticles = [_to_c_particles(p) for p in particles]
     mattrs = (mattrs1, mattrs2, mattrs3)

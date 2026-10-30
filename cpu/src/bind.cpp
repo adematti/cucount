@@ -436,9 +436,9 @@ py::object count3_py(Particles_py& particles1, Particles_py& particles2,
 }
 
 // The attrs-based close-triplet entry point, mirroring
-// cucountlib.cuda.count3close. close_pair is accepted for signature parity and
-// ignored: it selects among search strategies that all enumerate the same
-// triplets, and this backend has one.
+// cucountlib.cuda.count3close. close_pair selects the search strategy, as on
+// CUDA: all of them enumerate the same triplets, and the meshes must be sized
+// for it (see count3close.h).
 py::object count3close_py(Particles_py& particles1, Particles_py& particles2,
                           Particles_py& particles3,
                           MeshAttrs_py mattrs1_py, MeshAttrs_py mattrs2_py,
@@ -454,9 +454,8 @@ py::object count3close_py(Particles_py& particles1, Particles_py& particles2,
                           const SelectionAttrs_py veto23_py,
                           py::tuple close_pair,
                           const int nthreads, const bool return_timings) {
-    (void)close_pair;
-
     Count3Args a;
+    a.close_pair = 10 * close_pair[0].cast<int>() + close_pair[1].cast<int>();
     a.attrs.mattrs1 = mattrs1_py.data();
     a.attrs.mattrs2 = mattrs2_py.data();
     a.attrs.mattrs3 = mattrs3_py.data();
@@ -569,7 +568,10 @@ PYBIND11_MODULE(cpu, m, py::mod_gil_not_used()) {
           py::arg("return_timings") = false,
           "Close triplet counts on the CPU, with the same signature and output\n"
           "as cucountlib.cuda.count3close; nthreads means CPU threads and\n"
-          "close_pair is accepted for parity and ignored.");
+          "close_pair picks the search strategy, as on CUDA.");
+    // The frontends size the default meshes for close_pair only when this is
+    // set; an older build walked every close pair from particle 1.
+    m.attr("count3close_strategies") = true;
 
     m.def("set_target", &SetTarget, py::arg("name") = "",
           "Restrict Highway to one ISA (e.g. 'AVX2'); '' restores automatic "

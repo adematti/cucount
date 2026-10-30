@@ -102,6 +102,7 @@ SelectionAttrs sattrs3_12, sattrs3_13, sattrs3_23;
 SelectionAttrs veto3_12, veto3_13, veto3_23;
 WeightAttrs wattrs3;
 IndexValue index_value3[3] = {};
+int close_pair3 = 12;
 
 Particles ffi_particles(const ffi::Buffer<ffi::F64>& positions,
                         const ffi::Buffer<ffi::F64>& values,
@@ -466,6 +467,7 @@ ffi::Error count3closeImpl(ffi::Buffer<ffi::F64> positions1, ffi::Buffer<ffi::F6
     a.attrs.veto13 = veto3_13;
     a.attrs.veto23 = veto3_23;
     a.nthreads = staged_nthreads;
+    a.close_pair = close_pair3;
 
     Count3Layout layout = get_count3_layout(battrs3_12, battrs3_13, battrs3_23);
     a.out = counts->typed_data();
@@ -502,6 +504,9 @@ PYBIND11_MODULE(ffi_cpu, m) {
     m.doc() = "JAX FFI entry points for the portable CPU backend";
 
     register_attrs(m);
+    // The frontends size the default meshes for close_pair only when this is
+    // set; an older build walked every close pair from particle 1.
+    m.attr("count3close_strategies") = true;
 
     m.def("set_nthreads", &set_nthreads_py, py::arg("nthreads"),
           "CPU threads each FFI call uses (per device, so shard_map over N\n"
@@ -536,8 +541,8 @@ PYBIND11_MODULE(ffi_cpu, m) {
           py::arg("size_bitwise_weight") = 0,
           py::arg("size_negative_weight") = 0);
 
-    // close_pair is accepted for signature parity with the CUDA module and
-    // ignored: every search strategy enumerates the same triplets.
+    // close_pair picks the search strategy, as on CUDA: every one enumerates
+    // the same triplets, and the meshes must be sized for it (count3close.h).
     m.def("set_count3close_attrs",
           [](MeshAttrs_py m1, MeshAttrs_py m2, MeshAttrs_py m3, BinAttrs_py b12,
              BinAttrs_py b13, py::object b23, WeightAttrs_py w,
@@ -545,9 +550,9 @@ PYBIND11_MODULE(ffi_cpu, m) {
              const SelectionAttrs_py s23, const SelectionAttrs_py v12,
              const SelectionAttrs_py v13, const SelectionAttrs_py v23,
              py::tuple close_pair) {
-              (void)close_pair;
               set_count3_attrs_py(m1, m2, m3, b12, b13, b23, w, s12, s13, s23,
                                   v12, v13, v23);
+              close_pair3 = 10 * close_pair[0].cast<int>() + close_pair[1].cast<int>();
           },
           py::arg("mattrs1"), py::arg("mattrs2"), py::arg("mattrs3"),
           py::arg("battrs12"), py::arg("battrs13"),

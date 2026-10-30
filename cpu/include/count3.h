@@ -33,6 +33,10 @@ struct Count3Args {
 
     int nthreads = 1;
 
+    // Count3Close only: the close pair, 12, 13 or 23, which picks the search
+    // strategy (see count3close.h). Count3 ignores it.
+    int close_pair = 12;
+
     // The accumulators get_count3_layout describes. Zeroed by the caller.
     double* out = nullptr;
 
